@@ -2,6 +2,7 @@
 
 历史踩坑与流程经验沉淀在 `docs/memory/`——规则见 `docs/memory/RULES.md`（kit 管辖），索引见 `docs/memory/README.md`：
 
+- 会话开始先读 `docs/memory/PROFILE.md`（L3 画像，存在时），再查 `README.md` 索引。
 - 修改代码前先查 `docs/memory/pitfalls/`，命中相关条目必须先读全文；状态为「待验证」的条目不得作为修改依据。
 - Bug 修复经人工审核通过后，将原因、影响范围和修复方案整理为新 pitfall 条目入库。
 - 环境操作、测试数据、可执行测试流程放 `docs/memory/playbooks/`。
