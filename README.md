@@ -76,6 +76,15 @@ cd repo-memory-kit && git pull
 待验证 ──(人工确认)──▶ 已确认 ──(失效)──▶ deprecated（标记，不删除）
 ```
 
+### 分层与下钻（吸收自 L0-L3 分层架构）
+
+```text
+L3 PROFILE.md（项目经验画像）→ L2 playbooks（场景流程）→ L1 pitfalls（原子坑）→ L0 权威文档/代码（证据）
+```
+
+- L3 是宏观引导层（风险域地图/稳定约定/反模式），**条目 ≥ 10 时才建立**——上层只存结论与指针，下钻链闭合
+- 刻意不吸收：短期会话压缩、自动 L0 捕获、向量检索——那些属于自动蒸馏阶段，人工体系引入只增维护成本
+
 ### 压缩与矫正（记忆怎么保鲜）
 
 - 大小约束：pitfall ≤ 60 行、playbook ≤ 150 行，超限压缩（细节下沉权威文档留指针）
@@ -97,6 +106,7 @@ cd repo-memory-kit && git pull
 | --- | --- |
 | 大小约束 + 压缩下沉 | 召回字符预算（如 maxCharsPerMemory） |
 | 校验点 + 代码核验 | 向量去重 + 冲突检测 |
+| L3 PROFILE 手工蒸馏 | L2/L3 自动蒸馏管线 |
 | 用后即校 + 人工确认 | 人工审核后才升为共享资产 |
 
 当坑条目的产量超过人工整理能力时，这些结构化条目就是平移到记忆服务的种子数据——格式不用重整理。
@@ -108,6 +118,7 @@ repo-memory-kit/
 ├── install.sh                  # 接入/更新脚本（--update）
 ├── templates/
 │   ├── memory-README.md        # → 目标仓库 docs/memory/README.md
+│   ├── profile.md              # → docs/memory/PROFILE.md（L3，条目 ≥10 时创建）
 │   ├── claude-md-section.md    # → 追加进 CLAUDE.md 的段落
 │   ├── agents-md-section.md    # → 追加进 AGENTS.md 的段落
 │   └── pitfall-entry.md        # 单条 pitfall 模板
