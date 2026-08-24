@@ -1,0 +1,16 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 语法检查（sh -n）
+        run: sh -n install.sh validate-memory.sh tests/install.test.sh
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck >/dev/null
+          shellcheck install.sh validate-memory.sh tests/install.test.sh
+      - name: 安装器与校验器测试
+        run: sh tests/install.test.sh

@@ -39,7 +39,9 @@ git clone <this-repo> && cd repo-memory-kit
 ./install.sh /path/to/your-project
 ```
 
-install.sh 幂等，做四件事：创建 `docs/memory/{pitfalls,playbooks}/` 并写入规则 README；安装双端命令（Claude Code `/memory-check`、`/memory-capture` + Codex 同名技能）；向 `CLAUDE.md` / `AGENTS.md` 追加「项目记忆」指引段落（已有则跳过）；写入 `.cbmignore` 否定规则（使用图谱工具时记忆条目自动入索引；须逐层否定 `!docs/` → `docs/*` → `!docs/memory/` 规避父子裁剪——目录被排除后不会下钻，单否定子目录无效）。
+install.sh 幂等，做四件事：创建 `docs/memory/{pitfalls,playbooks}/`，安装规则与用户索引（**规则 RULES.md 由 kit 管辖自动升级，README.md 索引归用户所有绝不覆盖**）；安装双端技能到**仓库级**目录（Claude → `.claude/skills/`，Codex → `.agents/skills/`，两端同一份 SKILL.md，随仓库版本化、零跨项目污染）；向 `CLAUDE.md` / `AGENTS.md` 追加「项目记忆」指引段落（已有则跳过）；写入 `.cbmignore` 托管区块（带 start/end 标记，整体校验替换；逐层否定 `!docs/` → `docs/*` → `!docs/memory/` 规避父子裁剪）。
+
+另有 `validate-memory.sh <目标仓库>`：校验记忆区结构完整性与 `.anchors.json` 协议（schema_version / 排序 / 去重）；`tests/install.test.sh` 覆盖安装器全部场景（幂等、空格路径、残缺配置、用户文件保护），CI 在每次推送时运行（sh -n + ShellCheck + 测试）。
 
 **前置依赖**：巡检默认强制依赖结构化代码检索工具（代码知识图谱类，参考实现 [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)，MIT）。grep 有三个结构性盲区，不能作为兜底：路由前缀配置在 context-path（字面量搜不到）、符号改名后关键字静默失效、无索引覆盖信号无法判断结果可信度。工具不可用时巡检默认终止，用户显式要求方可降级（报告须标注"置信度低"）。
 
@@ -47,7 +49,7 @@ install.sh 幂等，做四件事：创建 `docs/memory/{pitfalls,playbooks}/` �
 
 | 归 kit 管辖（自动刷新） | 归用户所有（只提示差异，不覆盖） |
 | --- | --- |
-| 双端巡检/捕获命令、Codex 技能、条目模板、`.cbmignore` | `docs/memory/README.md`（含索引与巡检记录）、指令文件段落、全部记忆条目 |
+| `docs/memory/RULES.md`（全部规则）、双端技能（`.claude/skills` + `.agents/skills`）、条目/画像模板、`.cbmignore` 托管区块 | `docs/memory/README.md`（索引与巡检记录）、指令文件段落、全部记忆条目、`.anchors.json` |
 
 ## 日常使用
 
@@ -83,18 +85,19 @@ install.sh 幂等，做四件事：创建 `docs/memory/{pitfalls,playbooks}/` �
 ```text
 repo-memory-kit/
 ├── install.sh                  # 接入/更新脚本（--update）
+├── validate-memory.sh          # 记忆区结构与 .anchors.json 协议校验器
+├── skills/                     # 双端技能唯一来源（安装到 .claude/skills 与 .agents/skills）
+│   ├── memory-check/SKILL.md   # 巡检（全量/增量）
+│   └── memory-capture/SKILL.md # 捕获/蒸馏
 ├── templates/
-│   ├── memory-README.md        # → 目标仓库 docs/memory/README.md（规则唯一来源）
-│   ├── profile.md              # → docs/memory/PROFILE.md（L3，条目 ≥10 时创建）
+│   ├── memory-RULES.md         # → docs/memory/RULES.md（规则，kit 管辖）
+│   ├── memory-README.md        # → docs/memory/README.md（用户索引，仅首次创建）
+│   ├── profile.md              # → docs/memory/_PROFILE_TEMPLATE.md（L3 模板）
 │   ├── claude-md-section.md    # → 追加进 CLAUDE.md 的段落
 │   ├── agents-md-section.md    # → 追加进 AGENTS.md 的段落
-│   └── pitfall-entry.md        # 单条 pitfall 模板（含校验点小节）
-├── commands/
-│   ├── memory-check.md         # → .claude/commands/（巡检：全量/增量）
-│   └── memory-capture.md       # → .claude/commands/（捕获/蒸馏）
-└── codex/skills/
-    ├── memory-check/SKILL.md   # → ~/.codex/skills/（Codex 巡检）
-    └── memory-capture/SKILL.md # → ~/.codex/skills/（Codex 捕获）
+│   └── pitfall-entry.md        # → docs/memory/pitfalls/_TEMPLATE.md
+├── tests/install.test.sh       # 安装器测试（8 组场景，25 断言）
+└── .github/workflows/ci.yml    # sh -n + ShellCheck + 测试
 ```
 
 ## License
