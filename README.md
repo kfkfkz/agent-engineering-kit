@@ -30,10 +30,28 @@ cd repo-memory-kit
 脚本会：
 
 1. 创建 `docs/memory/{pitfalls,playbooks}/` 并放入 README（含条目模板与全部规则）
-2. 安装 `/memory-check` 巡检命令到 `.claude/commands/`
-3. 向 `CLAUDE.md` 与 `AGENTS.md`（存在时）追加「项目记忆」指引段落（幂等，已存在则跳过）
+2. 安装 `/memory-check` 巡检命令到 `.claude/commands/`（Claude Code）
+3. 检测到 `~/.codex/skills` 时安装 Codex 技能 `memory-check`（双端巡检）
+4. 向 `CLAUDE.md` 与 `AGENTS.md`（存在时）追加「项目记忆」指引段落（幂等，已存在则跳过）
 
 之后首次沉淀一条记忆：把最近一个 bug 的原因/影响范围/修复方案写成一条 pitfall（模板见 `docs/memory/README.md`）。
+
+## 动态更新
+
+kit 升级后，目标仓库同步最新机制：
+
+```bash
+cd repo-memory-kit && git pull
+./install.sh --update /path/to/your-project
+```
+
+文件所有权约定：
+
+| 文件 | 归属 | --update 行为 |
+| --- | --- | --- |
+| `.claude/commands/memory-check.md`、Codex 技能、`_TEMPLATE.md` | kit 管辖 | 始终刷新为最新版 |
+| `docs/memory/README.md` | 用户所有（含索引与巡检记录） | 不覆盖，有差异时提示手动合并 |
+| `CLAUDE.md` / `AGENTS.md` 段落 | 用户所有 | 不动 |
 
 ## 核心机制
 
@@ -79,14 +97,16 @@ cd repo-memory-kit
 
 ```text
 repo-memory-kit/
-├── install.sh                  # 一键接入脚本
+├── install.sh                  # 接入/更新脚本（--update）
 ├── templates/
 │   ├── memory-README.md        # → 目标仓库 docs/memory/README.md
 │   ├── claude-md-section.md    # → 追加进 CLAUDE.md 的段落
 │   ├── agents-md-section.md    # → 追加进 AGENTS.md 的段落
 │   └── pitfall-entry.md        # 单条 pitfall 模板
-└── commands/
-    └── memory-check.md         # → .claude/commands/memory-check.md
+├── commands/
+│   └── memory-check.md         # → .claude/commands/memory-check.md（Claude Code）
+└── codex/skills/memory-check/
+    └── SKILL.md                # → ~/.codex/skills/（Codex）
 ```
 
 ## License
