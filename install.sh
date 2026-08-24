@@ -28,16 +28,18 @@ else
     echo "已写入 docs/memory/README.md（含条目模板与全部规则）"
 fi
 
-# 2. Claude Code 巡检命令（kit 管辖：始终刷新为最新版）
+# 2. Claude Code 命令（kit 管辖：始终刷新为最新版）
 mkdir -p "$TARGET/.claude/commands"
 cp "$KIT_DIR/commands/memory-check.md" "$TARGET/.claude/commands/memory-check.md"
-echo "已安装/更新 Claude Code 命令 /memory-check"
+cp "$KIT_DIR/commands/memory-capture.md" "$TARGET/.claude/commands/memory-capture.md"
+echo "已安装/更新 Claude Code 命令 /memory-check、/memory-capture"
 
-# 3. Codex 巡检技能（本机 ~/.codex/skills 存在时安装，kit 管辖：始终刷新）
+# 3. Codex 技能（本机 ~/.codex/skills 存在时安装，kit 管辖：始终刷新）
 if [ -d "$HOME/.codex/skills" ]; then
-    mkdir -p "$HOME/.codex/skills/memory-check"
+    mkdir -p "$HOME/.codex/skills/memory-check" "$HOME/.codex/skills/memory-capture"
     cp "$KIT_DIR/codex/skills/memory-check/SKILL.md" "$HOME/.codex/skills/memory-check/SKILL.md"
-    echo "已安装/更新 Codex 技能 memory-check（~/.codex/skills/）"
+    cp "$KIT_DIR/codex/skills/memory-capture/SKILL.md" "$HOME/.codex/skills/memory-capture/SKILL.md"
+    echo "已安装/更新 Codex 技能 memory-check、memory-capture（~/.codex/skills/）"
 else
     echo "跳过 Codex 技能（~/.codex/skills 不存在）"
 fi

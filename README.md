@@ -69,6 +69,8 @@ cd repo-memory-kit && git pull
 | --- | --- |
 | Bug 修复（人工审核通过后） | 修复方案分析直接落一条 pitfall，零额外成本 |
 | 功能验收通过（功能蒸馏） | 按「功能蒸馏清单」沉淀：核心流程、环境信息、可复用测试数据 → playbooks；过程中的坑 → pitfalls |
+| 口头触发（"记一下/沉淀记忆"） | 记忆捕获（`/memory-capture`）：候选提取 → 起草 → 用户确认 → 入库 |
+| 任务收尾（验收/修复完成时） | 主动提议本次值得沉淀的经验，走同一捕获流程 |
 
 ### 生命周期（记忆怎么管）
 
@@ -123,9 +125,11 @@ repo-memory-kit/
 │   ├── agents-md-section.md    # → 追加进 AGENTS.md 的段落
 │   └── pitfall-entry.md        # 单条 pitfall 模板
 ├── commands/
-│   └── memory-check.md         # → .claude/commands/memory-check.md（Claude Code）
-└── codex/skills/memory-check/
-    └── SKILL.md                # → ~/.codex/skills/（Codex）
+│   ├── memory-check.md         # → .claude/commands/（Claude Code 巡检）
+│   └── memory-capture.md       # → .claude/commands/（Claude Code 捕获/蒸馏）
+└── codex/skills/
+    ├── memory-check/SKILL.md   # → ~/.codex/skills/（Codex 巡检）
+    └── memory-capture/SKILL.md # → ~/.codex/skills/（Codex 捕获/蒸馏）
 ```
 
 ## License
