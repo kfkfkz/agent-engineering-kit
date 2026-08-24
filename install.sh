@@ -44,7 +44,13 @@ else
     echo "跳过 Codex 技能（~/.codex/skills 不存在）"
 fi
 
-# 4. CLAUDE.md / AGENTS.md 追加指引段落（幂等：已有段落则跳过）
+# 4. codebase-memory 集成：解除 docs/memory 的启发式排除（幂等；不用 codebase-memory 时无副作用）
+if [ ! -f "$TARGET/.cbmignore" ] || ! grep -q '!docs/memory/' "$TARGET/.cbmignore" 2>/dev/null; then
+    printf '!docs/\ndocs/*\n!docs/memory/\n' >> "$TARGET/.cbmignore"
+    echo "已写入 .cbmignore 否定规则（使用 codebase-memory 等图谱工具时，记忆条目自动入索引）"
+fi
+
+# 5. CLAUDE.md / AGENTS.md 追加指引段落（幂等：已有段落则跳过）
 append_section() {
     file="$1"; section="$2"; marker="$3"
     if [ ! -f "$TARGET/$file" ]; then
@@ -62,7 +68,7 @@ append_section() {
 append_section "CLAUDE.md" "claude-md-section.md" "项目记忆（坑与流程）"
 append_section "AGENTS.md" "agents-md-section.md" "项目记忆（坑与流程）"
 
-# 5. 条目模板附赠到 pitfalls 目录（kit 管辖：始终刷新）
+# 6. 条目模板附赠到 pitfalls 目录（kit 管辖：始终刷新）
 cp "$KIT_DIR/templates/pitfall-entry.md" "$TARGET/docs/memory/pitfalls/_TEMPLATE.md"
 echo "已放置条目模板 docs/memory/pitfalls/_TEMPLATE.md"
 

@@ -130,9 +130,11 @@ L3 PROFILE.md（项目经验画像）→ L2 playbooks（场景流程）→ L1 pi
 
 | 步骤 | 内容 | 状态 |
 | --- | --- | --- |
-| 1 | 记忆文件入索引：markdown 原生可被索引（实测 .specify 文档已入图），但 docs/ 类目录默认被排除，需配置包含 | 待配置 |
+| 1 | 记忆文件入索引：markdown 原生可被图谱索引，但 `docs/` 属启发式跳过层，需 `.cbmignore` 否定规则解除（install.sh 自动写入；实测 codebase-memory-mcp 有效，记忆条目成为可检索的一等图节点） | ✅ 已验证 |
 | 2 | "决定"类记忆走图谱工具自带的 ADR 通道持久化 | 部分工具已支持 |
 | 3 | 扩展记忆节点类型与 CITES 边（校验点 → 代码符号），detect_changes 影响分析覆盖记忆条目——**巡检从定期全量变成事件驱动增量** | 阶段二 |
+
+参考实现：[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)（MIT，`.cbmignore` 支持 gitignore 语法与 `!` 否定，注意父子裁剪——需逐层否定：`!docs/` → `docs/*` → `!docs/memory/`）。
 
 与路线 A 不互斥：图谱化解决"记忆与代码的联动"，记忆服务解决"自动捕获与蒸馏"。
 
