@@ -132,7 +132,7 @@ L3 PROFILE.md（项目经验画像）→ L2 playbooks（场景流程）→ L1 pi
 | --- | --- | --- |
 | 1 | 记忆文件入索引：markdown 原生可被图谱索引，但 `docs/` 属启发式跳过层，需 `.cbmignore` 否定规则解除（install.sh 自动写入；实测 codebase-memory-mcp 有效，记忆条目成为可检索的一等图节点） | ✅ 已验证 |
 | 2 | "决定"类记忆走图谱工具自带的 ADR 通道持久化 | 部分工具已支持 |
-| 3 | 事件驱动巡检：**工作流已可用**——`/memory-check <符号>` 增量模式（图谱反查波及条目，文本匹配近似符号关联）。显式 CITES 边与 detect_changes 联动属图谱工具演进，本地验证好用后再议上游贡献 | 工作流 ✅ / 图谱扩展待议 |
+| 3 | 事件驱动巡检：**增量模式 + 锚点表已可用**——`.anchors.json`（符号→条目精确映射，全量巡检时刷新，`unresolved` 为漂移/跨仓库信号）。原生图谱边（CITES / detect_changes 联动）为自改 fork 选项，撞到天花板再启用 | 增量+锚点 ✅ / fork 待议 |
 
 参考实现：[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)（MIT，`.cbmignore` 支持 gitignore 语法与 `!` 否定，注意父子裁剪——需逐层否定：`!docs/` → `docs/*` → `!docs/memory/`）。
 
