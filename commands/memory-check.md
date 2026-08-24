@@ -4,10 +4,13 @@ description: 巡检 docs/memory 记忆条目：核验校验点与当前代码是
 
 对 `docs/memory/` 全部条目执行巡检（压缩与矫正），规则见 `docs/memory/README.md` 的「条目大小与时效」一节。
 
+**前置依赖（默认强制）**：需要结构化代码检索工具（代码知识图谱类，如 codebase-memory MCP；或提供符号定位、调用关系、索引覆盖信号的等效 codegraph 工具）。不可用时报告缺失并终止，除非用户明确要求降级（降级报告必须标注"grep 降级，置信度低"）。
+
 ## 执行步骤
 
-1. **提取校验点**：逐条读取 `docs/memory/pitfalls/` 与 `docs/memory/playbooks/` 下的条目。没有「校验点」小节的，从正文提取可机器核验的事实（接口路由、类/方法名、文件路径、配置键）生成该小节。
-2. **代码级核验**：对每个校验点比对当前代码库。代码查询优先使用结构化检索工具（代码知识图谱、符号检索等，如环境中有）；grep 仅用于字面量、配置文件与非代码文件（注意服务路由前缀通常配置在 application 配置文件的 context-path，直接搜路径字面量可能搜不到）：
+1. **前置检查**：确认结构化检索工具可用、当前项目已索引且索引未陈旧（如 codebase-memory：`list_projects` → `index_status` → 对涉及文件 `check_index_coverage`；索引缺失或 metadata_changed 直接 Read 源码核验）。索引缺失/陈旧先重建再巡检。
+2. **提取校验点**：逐条读取 `docs/memory/pitfalls/` 与 `docs/memory/playbooks/` 下的条目。没有「校验点」小节的，从正文提取可机器核验的事实（接口路由、类/方法名、文件路径、配置键）生成该小节。
+3. **代码级核验**：对每个校验点比对当前代码库（符号定位用图工具：search_graph 定位、get_code_snippet 读源码、trace_path 查调用；grep 仅用于字面量、配置文件与非代码文件——服务路由前缀通常在 application 配置的 context-path，直接搜路径字面量搜不到）：
    - 接口路由：在 Controller / 网关配置中确认前缀与路径仍存在；
    - 类/方法：确认仍存在且关键逻辑未变（如查询条件、状态枚举值）；
    - 文件路径：确认文件仍存在；

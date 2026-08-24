@@ -70,3 +70,5 @@ if [ "$UPDATE" = "1" ]; then
 else
     echo "完成。下一步：把最近一个 bug 写成第一条 pitfall（复制 _TEMPLATE.md，按日期命名），并在 docs/memory/README.md 索引表中登记。"
 fi
+echo
+echo "提醒: 巡检默认强制依赖结构化代码检索工具（代码知识图谱类，如 codebase-memory MCP），未安装请先配置——grep 无法可靠核验记忆条目。"
