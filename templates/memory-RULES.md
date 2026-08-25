@@ -106,14 +106,13 @@ L0  权威文档与代码（记忆区外）   证据：接口文档、spec、源
 **协议（所有写入方必须遵守，schema_version 兼容性依据）**：
 
 - `schema_version`：当前为 `2`；读取方遇到不认识的版本应拒绝解析并提示重新生成。
-- 键为**类型化限定符** `"<kind>:<identifier>"`——裸类名/方法名在大型仓库必然碰撞（重载、同名类、save/build 这类通用名），禁止使用：
-  - `class:<全限定名>`，如 `class:com.example.OrderService`
-  - `method:<全限定类名>.<方法名>`，如 `method:com.example.OrderService.create`
-  - `file:<仓库相对路径>`
-  - `route:<HTTP 方法> <路径>`，如 `route:POST /api/v1/orders`
-  - `config:<配置键>`，如 `config:server.servlet.context-path`
-- `anchors`：对象；值为 `{ "entries": [...], "file": "<可选，仓库相对路径>", "signature": "<可选，方法签名>", "repo": "<可选，跨仓库锚点>" }`；`entries` 为条目相对路径数组（相对 `docs/memory/`），升序排序、去重。
-- **跨仓库锚点**：条目依赖其他仓库的符号时（如前端条目引用后端接口、平台条目引用 SDK 符号），键仍用目标仓库内的全限定名，`repo` 字段标注目标仓库名。本仓库增量巡检只匹配无 `repo` 字段的锚点；带 `repo` 的锚点在巡检报告中列为"跨仓库待核验"，其核验在目标仓库进行。
+- 键为**类型化限定定位符** `"<kind>:[<repo>@]<identifier>[<参数签名>]"`——裸类名/方法名在大型仓库必然碰撞（重载、同名类、save/build 这类通用名），禁止使用：
+  - kind：`class` / `method` / `file` / `route` / `config`
+  - `repo@` 前缀：跨仓库锚点必填，本地符号省略。**仓库进键（而非值）**——同一符号在本地与多个远程仓库都存在时分别建键即可区分：`class:com.x.A` 与 `class:other-repo@com.x.A` 是两个不同锚点
+  - `method` 存在重载歧义时，identifier 必须带参数类型：`method:com.example.OrderService.create(OrderRequest)`
+  - 示例：`class:com.example.OrderService`、`method:com.x.OrderService.create(OrderRequest)`、`file:src/x.yml`、`route:POST /api/v1/orders`、`config:server.servlet.context-path`、`class:other-repo@com.example.C`
+- `anchors`：对象；值为 `{ "entries": [...], "file": "<可选，仓库相对路径>", "signature": "<可选，方法签名>" }`；`entries` 为条目相对路径数组（相对 `docs/memory/`），升序排序、去重。
+- **跨仓库锚点**：键带 `repo@` 前缀标识目标仓库（如前端条目引用后端接口、平台条目引用 SDK 符号）。本仓库增量巡检只匹配无前缀的本地锚点；带 `repo@` 的锚点在巡检报告中列为"跨仓库待核验"，其核验在目标仓库进行。
 - `unresolved`：对象；键同上，值为 `{ "entries": [...], "reason": "<漂移待修 | 跨仓库>" }`。
 - 写入必须**原子**（先写临时文件再重命名），`anchors` 与 `unresolved` 各自按键升序排序。
 - 刷新时机：全量巡检时——解析全部条目「校验点」中的代码符号（经图谱解析为全限定名后拼键），成功的进 `anchors`，失败的进 `unresolved`；`unresolved` 不可静默丢弃（符号改名 → 更新条目校验点；跨仓库 → 标注原因保留）。

@@ -83,24 +83,35 @@ assert not missing_in_index, f"条目未登记进 README 索引: {sorted(missing
 assert not dead_links, f"README 索引链接指向不存在的条目: {sorted(dead_links)}"
 
 VALID_STATUS = {"已确认", "已验证", "待验证", "deprecated"}
-for sub in ("pitfalls", "decisions"):
+
+def check_semantic(sub, name, text):
+    title = re.search(r"^# (.+)$", text, re.M)
+    assert title, f"{sub}/{name}: 缺一级标题"
+    assert "<" not in title.group(1) and ">" not in title.group(1), f"{sub}/{name}: 标题仍是模板占位符"
+    if sub == "playbooks":
+        assert "最后有效" in text, f"{sub}/{name}: 缺「最后有效」日期"
+    else:
+        m = re.search(r"[-*]?\s*\**状态\**\s*[:：]\s*(.+)$", text, re.M)
+        assert m, f"{sub}/{name}: 缺状态行"
+        line = m.group(1).strip()
+        assert "/" not in line, f"{sub}/{name}: 状态行仍是模板多选占位"
+        status = re.split(r"[（(,，]", line)[0].strip()
+        assert status in VALID_STATUS, f"{sub}/{name}: 非法状态 {status}（合法: {sorted(VALID_STATUS)}）"
+    for dm in re.finditer(r"(?:最后有效|定位日期|日期|最后蒸馏)\s*[:：]\s*(.+)$", text, re.M):
+        v = dm.group(1)
+        assert "YYYY" not in v, f"{sub}/{name}: 日期仍是模板占位符（YYYY-MM-DD）"
+        assert re.search(r"\d{4}-\d{2}-\d{2}", v), f"{sub}/{name}: 缺真实日期（YYYY-MM-DD 格式）"
+
+for sub in SUBS:
     for name in sorted(os.listdir(os.path.join(mem, sub))):
         if not name.endswith(".md") or name.startswith("_"):
             continue
-        text = open(os.path.join(mem, sub, name), encoding="utf-8").read()
-        m = re.search(r"[-*]?\s*\**状态\**\s*[:：]\s*([^\s（(,，]+)", text)
-        assert m, f"{sub}/{name}: 缺状态行"
-        assert m.group(1) in VALID_STATUS, f"{sub}/{name}: 非法状态 {m.group(1)}（合法: {sorted(VALID_STATUS)}）"
-for name in sorted(os.listdir(os.path.join(mem, "playbooks"))):
-    if not name.endswith(".md") or name.startswith("_"):
-        continue
-    text = open(os.path.join(mem, "playbooks", name), encoding="utf-8").read()
-    assert "最后有效" in text, f"playbooks/{name}: 缺「最后有效」日期"
+        check_semantic(sub, name, open(os.path.join(mem, sub, name), encoding="utf-8").read())
 PYEOF
     then
         ok ".anchors.json 符合协议（schema_version=2，类型化键/路径/排序校验通过）"
         ok "README 索引与实际条目一致（无漏登、无死链）"
-        ok "条目语义完整（状态合法、playbook 含最后有效日期）"
+        ok "条目语义完整（占位符/多选状态/假日期被拒，状态与日期合法）"
     else
         err ".anchors.json 协议、索引一致性或条目语义校验失败（见上方信息）"
     fi
@@ -121,19 +132,28 @@ for sub in SUBS:
 assert not (actual - linked), f"条目未登记进 README 索引: {sorted(actual - linked)}"
 assert not (linked - actual), f"README 索引死链: {sorted(linked - actual)}"
 VALID_STATUS = {"已确认", "已验证", "待验证", "deprecated"}
-for sub in ("pitfalls", "decisions"):
+def check_semantic(sub, name, text):
+    title = re.search(r"^# (.+)$", text, re.M)
+    assert title, f"{sub}/{name}: 缺一级标题"
+    assert "<" not in title.group(1) and ">" not in title.group(1), f"{sub}/{name}: 标题仍是模板占位符"
+    if sub == "playbooks":
+        assert "最后有效" in text, f"{sub}/{name}: 缺「最后有效」日期"
+    else:
+        m = re.search(r"[-*]?\s*\**状态\**\s*[:：]\s*(.+)$", text, re.M)
+        assert m, f"{sub}/{name}: 缺状态行"
+        line = m.group(1).strip()
+        assert "/" not in line, f"{sub}/{name}: 状态行仍是模板多选占位"
+        status = re.split(r"[（(,，]", line)[0].strip()
+        assert status in VALID_STATUS, f"{sub}/{name}: 非法状态 {status}"
+    for dm in re.finditer(r"(?:最后有效|定位日期|日期|最后蒸馏)\s*[:：]\s*(.+)$", text, re.M):
+        v = dm.group(1)
+        assert "YYYY" not in v, f"{sub}/{name}: 日期仍是模板占位符"
+        assert re.search(r"\d{4}-\d{2}-\d{2}", v), f"{sub}/{name}: 缺真实日期"
+for sub in SUBS:
     for name in os.listdir(os.path.join(mem, sub)):
         if not name.endswith(".md") or name.startswith("_"):
             continue
-        text = open(os.path.join(mem, sub, name), encoding="utf-8").read()
-        m = re.search(r"[-*]?\s*\**状态\**\s*[:：]\s*([^\s（(,，]+)", text)
-        assert m, f"{sub}/{name}: 缺状态行"
-        assert m.group(1) in VALID_STATUS, f"{sub}/{name}: 非法状态 {m.group(1)}"
-for name in os.listdir(os.path.join(mem, "playbooks")):
-    if not name.endswith(".md") or name.startswith("_"):
-        continue
-    text = open(os.path.join(mem, "playbooks", name), encoding="utf-8").read()
-    assert "最后有效" in text, f"playbooks/{name}: 缺「最后有效」日期"
+        check_semantic(sub, name, open(os.path.join(mem, sub, name), encoding="utf-8").read())
 PYEOF
 fi
 

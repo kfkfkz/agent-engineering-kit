@@ -45,14 +45,32 @@ docs/memory/_PROFILE_TEMPLATE.md
 .repo-memory-kit/bin/validate-memory.sh
 "
 
-hash_of() { sha256sum | cut -d' ' -f1; }
+# 哈希命令探测（Linux: sha256sum / macOS: shasum -a 256）
+if command -v sha256sum >/dev/null 2>&1; then
+    hash_of() { sha256sum | cut -d' ' -f1; }
+elif command -v shasum >/dev/null 2>&1; then
+    hash_of() { shasum -a 256 | cut -d' ' -f1; }
+else
+    echo "错误: 找不到 sha256sum 或 shasum，无法继续" >&2
+    exit 1
+fi
 file_hash() { hash_of < "$1"; }
 
-# kit 内某路径在 git 历史中所有版本的内容指纹（kit 无 git 时为空）
-kit_path_hashes() {
+# kit 内某路径在 git 历史中所有版本的内容指纹。
+# norm=1 时先去空行再哈希（用于段落匹配——目标文件中的段落与模板原文的空行口径不同）。
+# blob 不存在的提交必须跳过：git show 失败时管道仍会产出"空内容哈希"，
+# 导致空的用户文件被误判为 kit 产物而删除。
+kit_path_hashes() { # $1=kit 内相对路径 [$2=0原文|1去空行]
     [ -d "$KIT_DIR/.git" ] || return 0
+    norm="${2:-0}"
     git -C "$KIT_DIR" log --all --format=%H -- "$1" 2>/dev/null | while read -r rev; do
-        git -C "$KIT_DIR" show "$rev:$1" 2>/dev/null | hash_of
+        if git -C "$KIT_DIR" cat-file -e "$rev:$1" 2>/dev/null; then
+            if [ "$norm" = "1" ]; then
+                git -C "$KIT_DIR" show "$rev:$1" | sed '/^[[:space:]]*$/d' | hash_of
+            else
+                git -C "$KIT_DIR" show "$rev:$1" | hash_of
+            fi
+        fi
     done | sort -u
 }
 
@@ -60,7 +78,7 @@ kit_path_hashes() {
 content_is_kit_artifact() { # $1=文件 $2=kit 内相对路径
     [ -f "$1" ] || return 1
     h="$(file_hash "$1")"
-    [ "$h" = "$(hash_of < "$KIT_DIR/$2" 2>/dev/null)" ] && return 0
+    if [ -f "$KIT_DIR/$2" ] && [ "$(hash_of < "$KIT_DIR/$2")" = "$h" ]; then return 0; fi
     kit_path_hashes "$2" | grep -q "^$h$"
 }
 
@@ -68,10 +86,30 @@ content_is_kit_artifact() { # $1=文件 $2=kit 内相对路径
 uninstall() {
     MANIFEST="$TARGET/.repo-memory-kit/manifest"
     if [ -f "$MANIFEST" ]; then
-        grep '  ' "$MANIFEST" | while read -r _h _rel; do
-            rm -f "$TARGET/$_rel"
-        done
-        echo "已按清单移除 kit 管辖文件"
+        managed_spaced="$(echo $MANAGED_FILES)"
+        while read -r line; do
+            case "$line" in
+                *"  "*) h="${line%%  *}"; rel="${line#*  }" ;;
+                *) continue ;;
+            esac
+            # 路径安全：拒绝绝对路径与含 .. 的路径（防篡改清单越界删除）
+            case "$rel" in
+                /*|*..*) echo "拒绝删除可疑路径: $rel（清单被篡改？）"; continue ;;
+            esac
+            # 范围限制：只删清单白名单内的路径
+            case " $managed_spaced " in
+                *" $rel "*) ;;
+                *) echo "拒绝删除清单外路径: $rel"; continue ;;
+            esac
+            [ -f "$TARGET/$rel" ] || continue
+            # 漂移保护：指纹不一致（被手工修改过）一律保留
+            if [ "$(file_hash "$TARGET/$rel")" != "$h" ]; then
+                echo "漂移保护: $rel 内容与清单指纹不一致（疑似被手工修改），保留不删"
+                continue
+            fi
+            rm -f "$TARGET/$rel"
+        done < "$MANIFEST"
+        echo "已按清单移除 kit 管辖文件（通过路径校验与指纹比对）"
     else
         echo "警告: 无安装清单，仅移除托管区块与技能目录；kit 管辖文件（RULES.md 等）请手动删除"
     fi
@@ -209,9 +247,11 @@ install_section() { # $1=目标文件名 $2=kit 模板名
         sed -i.bak "/^${SEC_START}\$/,/^${SEC_END}\$/d" "$f"
         rm -f "$f.bak"
     elif grep -q "^## 项目记忆（坑与流程）" "$f" 2>/dev/null; then
+        # 两端统一"去空行后哈希"口径——段落从目标文件提取时空行与模板原文不同，
+        # 历史模板同样归一化后再比对，否则历史版本永远匹配不上（被误判为定制内容）
         body_h="$(section_body "$f" | sed '/^[[:space:]]*$/d' | hash_of)"
         tpl_h="$(sed '/^[[:space:]]*$/d' < "$tpl" | hash_of)"
-        if [ "$body_h" = "$tpl_h" ] || kit_path_hashes "templates/$2" | grep -q "^$body_h$"; then
+        if [ "$body_h" = "$tpl_h" ] || kit_path_hashes "templates/$2" 1 | grep -q "^$body_h$"; then
             remove_legacy_section "$f"
             echo "已自动迁移 $1 的旧版「项目记忆」段落 → 托管区块"
         else

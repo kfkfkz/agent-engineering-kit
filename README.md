@@ -92,7 +92,7 @@ install.sh 幂等，做四件事：创建 `docs/memory/{pitfalls,decisions,playb
 | 自动变更影响巡检 | `/memory-check --changed`（读 git diff）与 `--since <ref>`，图谱影响分析定位波及条目，PR 报告模式 | 用户经常只知道"改了哪些文件"，不知道完整符号 |
 | 冲突与替代关系 | `superseded` 状态与 `supersedes/conflicts_with/related/verified_at/verified_commit/evidence` 字段 | 结论冲突、重复记录、新旧替代目前无表达 |
 
-跨仓库锚点已先行落地（锚点协议 v2 的 `repo` 字段，前端条目引用后端接口即此用例）。
+跨仓库锚点已先行落地（锚点协议 v2 的 `repo@` 键前缀；方法重载歧义用参数签名消解——仓库与签名都进键，是身份的一部分）。
 
 ## 目录结构
 

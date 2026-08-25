@@ -115,6 +115,50 @@ grep -qF '<!-- repo-memory-kit:start -->' "$P4/CLAUDE.md" && bad "卸载后 CLAU
 assert_exists   "卸载：README 索引保留"    "$P4/docs/memory/README.md"
 assert_exists   "卸载：用户条目目录保留"   "$P4/docs/memory/pitfalls"
 
+# ── T15 卸载漂移保护：被修改过的 kit 文件不删 ──
+P7="$T/proj7"; mkdir -p "$P7"; printf '# P\n' > "$P7/CLAUDE.md"
+"$KIT/install.sh" "$P7" >/dev/null
+echo "# 手工修改" >> "$P7/docs/memory/RULES.md"
+"$KIT/install.sh" --uninstall "$P7" >/dev/null
+assert_exists "卸载漂移保护：修改过的 RULES.md 保留" "$P7/docs/memory/RULES.md"
+assert_gone     "卸载：未修改的技能正常移除" "$P7/.claude/skills/memory-check"
+
+# ── T16 卸载路径安全：篡改清单的越界路径被拒 ──
+P8="$T/proj8"; mkdir -p "$P8"; printf '# P\n' > "$P8/CLAUDE.md"
+"$KIT/install.sh" "$P8" >/dev/null
+printf 'deadbeef  docs/../escape-marker\ndeadbeef  %s\n' "$T/abs-escape-marker" >> "$P8/.repo-memory-kit/manifest"
+touch "$P8/escape-marker" "$T/abs-escape-marker"
+"$KIT/install.sh" --uninstall "$P8" >/dev/null
+assert_exists "篡改清单：../ 路径未越界删除" "$P8/escape-marker"
+assert_exists "篡改清单：绝对路径未删除"    "$T/abs-escape-marker"
+
+# ── T17 空文件不再误判为 kit 产物（历史指纹的空哈希修复）──
+P9="$T/proj9"; mkdir -p "$P9"
+mkdir -p "$HOME/.codex/skills/memory-check"
+: > "$HOME/.codex/skills/memory-check/SKILL.md"
+"$KIT/install.sh" "$P9" >/dev/null
+assert_exists "空的同名用户技能文件被保留" "$HOME/.codex/skills/memory-check/SKILL.md"
+
+# ── T18 历史版本段落自动迁移（哈希口径统一修复）──
+P10="$T/proj10"; mkdir -p "$P10"
+prev_rev="$(git -C "$KIT" log --all --format=%H -- templates/claude-md-section.md | sed -n '2p')"
+if [ -n "$prev_rev" ]; then
+    { printf '# P\n\n'; git -C "$KIT" show "$prev_rev:templates/claude-md-section.md"; } > "$P10/CLAUDE.md"
+    "$KIT/install.sh" "$P10" >/dev/null
+    grep -qF '<!-- repo-memory-kit:start -->' "$P10/CLAUDE.md" && ok "历史版本段落自动迁移" || bad "历史版本段落未迁移（被误判定制）"
+    assert_eq "迁移后段落=1" "$(grep -c '^## 项目记忆（坑与流程）' "$P10/CLAUDE.md")" "1"
+else
+    ok "（跳过：kit 无历史提交）历史版本段落自动迁移"
+fi
+
+# ── T19 校验器拒绝未填写的模板条目 ──
+P11="$T/proj11"; mkdir -p "$P11"
+"$KIT/install.sh" "$P11" >/dev/null
+cp "$KIT/templates/pitfall-entry.md" "$P11/docs/memory/pitfalls/2026-01-01-tpl.md"
+printf '\n| [tpl](pitfalls/2026-01-01-tpl.md) | 已确认 | 测试 |\n' >> "$P11/docs/memory/README.md"
+if sh "$KIT/validate-memory.sh" "$P11" >/dev/null 2>&1; then bad "校验器接受了未填写的模板条目"; else ok "校验器拒绝未填写的模板条目"; fi
+rm -f "$P11/docs/memory/pitfalls/2026-01-01-tpl.md"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]
