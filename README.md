@@ -47,6 +47,8 @@ install.sh 幂等，做四件事：创建 `docs/memory/{pitfalls,decisions,playb
 
 **前置依赖**：巡检默认强制依赖结构化代码检索工具（代码知识图谱类，参考实现 [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)，MIT）。grep 有三个结构性盲区，不能作为兜底：路由前缀配置在 context-path（字面量搜不到）、符号改名后关键字静默失效、无索引覆盖信号无法判断结果可信度。工具不可用时巡检默认终止，用户显式要求方可降级（报告须标注"置信度低"）。
 
+**非 git 仓库（SVN / 仅本地）**：记忆区无法随代码版本化，失去回滚与备份，git 系自动巡检（`--changed` / detect_changes）也不可用。建议将 `docs/memory/` 单独 `git init` 并推送私有仓库备份（与主仓库的版本控制系统互不干扰，主仓库 ignore 该目录即可）。
+
 **升级**：`./install.sh --update <目标仓库>`。文件所有权约定：
 
 | 归 kit 管辖（自动刷新） | 归用户所有（只提示差异，不覆盖） |
