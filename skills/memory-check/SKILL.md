@@ -7,7 +7,7 @@ description: "巡检 docs/memory 记忆条目：核验校验点与当前代码�
 
 - **全量巡检**（无输入）：对全部条目执行。
 - **增量巡检**（用户给出变更的类/方法/文件/路由）：查锚点表 `.anchors.json` 精确反查波及条目，表缺失或未命中时回退结构化检索文本反查，只核验命中条目。
-- **自动变更巡检**（用户说 --changed / --since <ref> / "看下这次改动影响哪些记忆"）：运行 `.repo-memory-kit/bin/memory-build --changed [ref]`（工作区变更）或 `--since <ref>`（某提交以来的变更）得到文件级波及条目；需要方法级精度时再对涉及符号走增量巡检（经图谱）。
+- **自动变更巡检**（用户说 --changed / --since <ref> / "看下这次改动影响哪些记忆"）：运行 `.repo-memory-kit/bin/memory-build --changed [ref]`（自动探测 git/svn）或 `--since <ref>`，或任意来源清单经 stdin：`<变更命令> | memory-build --files [仓库]`；需要 Markdown 影响报告（PR/CI）加 `--report <路径>`（`--strict` 有波及时退出码 2）。需要方法级精度时再对涉及符号走增量巡检（经图谱）。
 
 **规则与步骤的唯一来源：`docs/memory/RULES.md`「条目大小与时效」一节。** 按其中的「巡检步骤」逐步执行，从步骤 1（前置检查：结构化代码检索工具可用、当前项目已索引且索引未陈旧）开始，不得跳过；工具不可用时默认终止巡检，用户显式要求降级方可继续，且报告必须标注"grep 降级，置信度低"。巡检结束的收尾步骤：条目符号锚点有增删改时，统一运行 `memory-build` 刷新 README 索引与 `.anchors.json`（生成物，禁止手改）。
 

@@ -61,7 +61,7 @@ install.sh 在目标仓库安装：
 - **指纹删除**：所有清理（旧全局技能、旧命令、卸载）只删"内容指纹匹配 kit 当前或 git 历史版本"的文件——与 kit 产物不一致的一律保留并提示；历史指纹经 `git cat-file -e` 守卫，杜绝空文件误判。
 - **卸载三重防线**：路径白名单（拒绝绝对路径 / `..` / 清单外路径）+ 删除前指纹比对（漂移内容保留）+ 安装清单（`.repo-memory-kit/manifest`，kit 版本与受管文件哈希，覆盖前漂移提示）。
 - **校验器** `validate-memory.sh` + **生成器** `memory-build`（均随仓库安装，可直接接入目标仓库 CI）：条目 frontmatter 校验（状态枚举/真实日期/类型化锚点/关系引用/supersedes 双向一致）、README 索引与 `.anchors.json` 与条目一致性（生成物被手改即报过期）。需要 python3——缺解析器明确失败，不做"假绿"跳过；哈希兼容 sha256sum / shasum（macOS）。
-- **测试与 CI**：`tests/install.test.sh`（52 断言：幂等、空格路径、残缺配置、用户文件保护、安全清理、段落迁移、卸载保护、篡改清单，临时 HOME 隔离）+ `tests/build.test.sh`（17 断言：frontmatter 校验、索引/锚点生成、--check 新鲜度、--migrate 迁移、--changed 影响、supersedes 一致性）；GitHub Actions 每次 push 运行 sh -n + ShellCheck + 两套测试。
+- **测试与 CI**：`tests/install.test.sh`（52 断言：幂等、空格路径、残缺配置、用户文件保护、安全清理、段落迁移、卸载保护、篡改清单，临时 HOME 隔离）+ `tests/build.test.sh`（24 断言：frontmatter 校验、索引/锚点生成、--check 新鲜度、--migrate 迁移、--changed/--files 影响、--report 报告、--strict 退出码、supersedes 一致性）；GitHub Actions 每次 push 运行 sh -n + ShellCheck + 两套测试。
 
 ## 日常使用
 
@@ -70,9 +70,10 @@ install.sh 在目标仓库安装：
 | 会话开始 | 读 `PROFILE.md`（存在时）→ 查 `README.md` 索引（自动生成） |
 | 想沉淀经验 | 说"记一下"，或功能验收后确认 Agent 的提议 → 候选列表 → 确认入库（Agent 自动跑 memory-build） |
 | 改代码前（知道符号） | `/memory-check <类名>`：查锚点表看波及条目 |
-| 改代码前（只知道文件） | `memory-build --changed [ref]` / `--since <ref>`：git 变更 → 波及条目 |
+| 改代码前（只知道文件） | `memory-build --changed [ref]` / `--since <ref>`（自动探测 git/svn）→ 波及条目 |
 | 每迭代一次 | `/memory-check`：全量巡检——矫正漂移、压缩超限、刷新锚点表 |
 | 条目增删改后 | `memory-build`：刷新索引与锚点表（生成物，勿手改） |
+| 合入前 / PR / CI | `<VCS 变更命令> \| memory-build --files <仓库> --report impact.md`：Markdown 影响报告（VCS 无关；`--strict` 有波及条目时退出码 2 供阻断） |
 | 目标仓库 CI | `.repo-memory-kit/bin/validate-memory.sh .` 校验记忆区完整性 |
 
 ## 设计原则
@@ -83,9 +84,9 @@ install.sh 在目标仓库安装：
 4. **凭证永不入库**：token / 密钥 / 内网地址存指针不存值；误入库有应急流程（删除 + 清历史 + 轮换凭证）。
 5. **门槛驱动升级**：L3 要 10 条起步、标签路由要 50 条、向量检索要 200 条——每级升级由可测量信号触发，不由想象触发。
 
-## 待办
+## 已实现
 
-- PR 记忆影响报告：CI 中自动输出"本次变更影响哪些记忆、哪些需要重新验证"（先 warning，成熟后再考虑阻断）。
+PR 记忆影响报告已实现（VCS 无关）：`--files` 接收任意来源的变更清单（stdin），`--report` 输出 Markdown 影响报告（波及条目/状态/最近验证/命中锚点/跨仓库待核验），`--strict` 供 CI 阻断（默认仅 warning）。`--changed` 自动探测 git（diff+未跟踪）/svn（status / diff --summarize）。
 
 已实现（原 v3 三件）：条目 frontmatter 单一事实源 + `memory-build` 自动生成索引与锚点表；`--changed`/`--since` 自动变更影响巡检（文件级启发式，方法级精度走图谱增量巡检）；`superseded` 状态与 `supersedes/conflicts_with/related/verified/verified_commit/evidence` 冲突与替代字段。跨仓库锚点见协议 `repo@` 键前缀。
 
@@ -110,7 +111,7 @@ repo-memory-kit/
 │   └── agents-md-section.md    # → AGENTS.md 托管区块
 ├── tests/
 │   ├── install.test.sh         # 52 断言（临时 HOME 隔离）
-│   └── build.test.sh           # 17 断言（frontmatter/生成/迁移/变更影响）
+│   └── build.test.sh           # 24 断言（frontmatter/生成/迁移/变更影响/报告）
 └── .github/workflows/ci.yml    # sh -n + ShellCheck + 两套测试
 ```
 

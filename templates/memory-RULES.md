@@ -97,7 +97,7 @@ L0  权威文档与代码（记忆区外）   证据：接口文档、spec、源
 
 输入变更范围，只核验受波及的条目——用于 bug 修复合入前、大功能开工前、或快速确认某次重构没打断记忆链：
 
-1. **确定变更面**：只知道改了哪些文件时，运行 `memory-build --changed [ref]` / `--since <ref>`（文件名启发式匹配锚点）；知道符号时直接查 `.anchors.json`，表缺失或未命中时回退结构化检索文本反查（如 codebase-memory `search_code(符号, path_filter="docs/memory")`）。
+1. **确定变更面**：只知道改了哪些文件时，运行 `memory-build --changed [ref]` / `--since <ref>`（自动探测 git/svn），或任意来源用 `<变更命令> | memory-build --files [目标仓库]`（可加 `--report <路径>` 生成 Markdown 影响报告、`--strict` 供 CI 阻断）；知道符号时直接查 `.anchors.json`，表缺失或未命中时回退结构化检索文本反查（如 codebase-memory `search_code(符号, path_filter="docs/memory")`）。
 2. **命中条目**执行全量巡检的核验与矫正步骤；**无命中**则报告"本次变更不波及任何记忆条目"。
 
 ### 锚点表（符号 → 条目映射）

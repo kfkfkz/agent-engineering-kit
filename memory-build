@@ -5,8 +5,10 @@
   memory-build [目标仓库]                # 校验 frontmatter + 重新生成索引与锚点表
   memory-build --check [目标仓库]        # 只校验不写文件（CI/校验器用）；索引或锚点过期则报错
   memory-build --migrate [目标仓库]      # 旧格式条目自动合成 frontmatter（状态行/最后有效/文件名日期/旧锚点表反填）
-  memory-build --changed [目标仓库]      # 工作区 git 变更 → 受影响记忆条目（文件名启发式匹配）
-  memory-build --since <ref> [目标仓库]  # ref..HEAD 的变更 → 受影响记忆条目
+  memory-build --changed [目标仓库]      # 工作区变更（自动探测 git/svn）→ 受影响记忆条目
+  memory-build --since <ref> [目标仓库]  # git ref..HEAD 或 svn -r ref:HEAD 的变更 → 受影响条目
+  <变更命令> | memory-build --files [目标仓库]  # 任意来源的文件清单（stdin，VCS 无关）→ 受影响条目
+  影响模式可加: --report <路径|- >（Markdown 影响报告）、--strict（有波及条目时退出码 2，供 CI 阻断）
 """
 import json, os, re, subprocess, sys, tempfile
 
@@ -236,21 +238,51 @@ def migrate(entries, mem):
     print("提示: 检查各条目 frontmatter（补 summary/module/verified），然后运行 memory-build 重新生成索引与锚点表")
 
 
-def git_changed(target, ref=None):
-    if ref:
-        cmd = ["git", "-C", target, "diff", "--name-only", f"{ref}..HEAD"]
-    else:
-        cmd = ["git", "-C", target, "diff", "--name-only", "HEAD"]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        die(f"git diff 失败（本仓库可能是 SVN/本地，无 git 历史可用）: {r.stderr.strip()}")
-    files = [l.strip() for l in r.stdout.splitlines() if l.strip()]
-    if not ref:
-        # 工作区模式：git diff 不含未跟踪文件，补上
-        u = subprocess.run(["git", "-C", target, "ls-files", "--others", "--exclude-standard"],
-                           capture_output=True, text=True)
-        files += [l.strip() for l in u.stdout.splitlines() if l.strip()]
-    return files
+def vcs_kind(target):
+    """功能探测而非目录探测：空 .git 残留目录不会误判为 git。"""
+    r = subprocess.run(["git", "-C", target, "rev-parse", "--git-dir"],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        return "git"
+    if os.path.isdir(os.path.join(target, ".svn")):
+        return "svn"
+    return None
+
+
+def changed_files(target, ref=None):
+    """VCS 无关的变更清单：git（diff+未跟踪）/ svn（status / diff --summarize）。"""
+    kind = vcs_kind(target)
+    if kind == "git":
+        if ref:
+            cmd = ["git", "-C", target, "diff", "--name-only", f"{ref}..HEAD"]
+        else:
+            cmd = ["git", "-C", target, "diff", "--name-only", "HEAD"]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"git diff 失败: {r.stderr.strip()}")
+        files = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+        if not ref:
+            u = subprocess.run(["git", "-C", target, "ls-files", "--others", "--exclude-standard"],
+                               capture_output=True, text=True)
+            files += [l.strip() for l in u.stdout.splitlines() if l.strip()]
+        return files, "git"
+    if kind == "svn":
+        if ref:
+            r = subprocess.run(["svn", "diff", "--summarize", "-r", f"{ref}:HEAD"],
+                               cwd=target, capture_output=True, text=True)
+            if r.returncode != 0:
+                die(f"svn diff 失败: {r.stderr.strip()}")
+            files = [l[8:].strip() for l in r.stdout.splitlines()
+                     if len(l) > 8 and l[0] in "MARD"]
+        else:
+            r = subprocess.run(["svn", "status"], cwd=target, capture_output=True, text=True)
+            if r.returncode != 0:
+                die(f"svn status 失败: {r.stderr.strip()}")
+            files = [l[8:].strip() for l in r.stdout.splitlines()
+                     if len(l) > 8 and l[0] in "MADRC?"]
+        return files, "svn"
+    die("未识别的版本控制（非 git/svn）。请显式提供变更清单："
+        "<VCS 变更命令> | memory-build --files <目标仓库>")
 
 
 def affected(entries, changed_files):
@@ -273,9 +305,42 @@ def affected(entries, changed_files):
     return hits
 
 
+def impact_report(entries, hits, files, source):
+    """VCS 无关的 Markdown 影响报告（CI 工件 / PR 评论素材）。"""
+    import datetime
+    by_rel = {e["rel"]: e for e in entries}
+    lines = [
+        "# 记忆影响报告", "",
+        f"- 变更来源: {source}",
+        f"- 变更文件: {len(files)} 个",
+        f"- 生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}", "",
+    ]
+    if not hits:
+        lines += ["## 结论", "", "本次变更不波及任何记忆条目。", ""]
+        return "\n".join(lines)
+    lines += [f"## 需要重新验证的记忆条目（{len(hits)} 条）", "",
+              "| 条目 | 状态 | 最近验证 | 命中锚点 |", "| --- | --- | --- | --- |"]
+    for rel in sorted(hits):
+        e = by_rel[rel]
+        st = STATUS_MAP.get(e["fm"].get("status"), "?")
+        vd = e["fm"].get("verified") or "—"
+        lines.append(f"| [{e['title']}]({rel}) | {st} | {vd} | {', '.join(sorted(hits[rel]))} |")
+    cross = [(k, rel) for rel, ks in hits.items() for k in ks if "@" in k]
+    if cross:
+        lines += ["", f"## 跨仓库锚点（{len(cross)} 个，需在目标仓库核验）", "",
+                  "| 锚点 | 条目 | 目标仓库 |", "| --- | --- | --- |"]
+        for k, rel in sorted(set(cross)):
+            lines.append(f"| `{k}` | {rel} | {k.split('@')[0].split(':', 1)[1]} |")
+    lines += ["", "## 说明", "",
+              "- 文件级启发式匹配；方法级精确解析请运行 `/memory-check <符号>` 增量巡检（经代码图谱）",
+              "- 人工核验后更新条目 `verified` 日期并运行 `memory-build`", ""]
+    return "\n".join(lines)
+
+
 def main():
     args = sys.argv[1:]
     mode, ref, target = "build", None, "."
+    report_path, strict = None, False
     i = 0
     while i < len(args):
         a = args[i]
@@ -285,12 +350,21 @@ def main():
             mode = "migrate"
         elif a == "--changed":
             mode = "changed"
+        elif a == "--files":
+            mode = "files"
         elif a == "--since":
             mode = "changed"
             i += 1
             if i >= len(args):
-                die("--since 需要一个 git ref")
+                die("--since 需要一个版本号（git ref 或 svn 版本号）")
             ref = args[i]
+        elif a == "--report":
+            i += 1
+            if i >= len(args):
+                die("--report 需要输出路径（或 - 表示 stdout）")
+            report_path = args[i]
+        elif a == "--strict":
+            strict = True
         elif not a.startswith("-"):
             target = a
         i += 1
@@ -299,12 +373,24 @@ def main():
     if not os.path.isdir(mem):
         die(f"未找到 {mem}（目标仓库装过 repo-memory-kit 吗？）")
 
-    if mode == "changed":
-        files = git_changed(target, ref)
+    if mode in ("changed", "files"):
+        entries = load_entries(mem)
+        if mode == "changed":
+            files, vcs = changed_files(target, ref)
+            source = f"{vcs} {'工作区变更' if not ref else f'{ref}..HEAD'}"
+        else:
+            files = [l.strip() for l in sys.stdin if l.strip()]
+            source = "显式文件列表（stdin）"
         if not files:
             print("无变更文件")
             return
-        hits = affected(load_entries(mem), files)
+        hits = affected(entries, files)
+        rpt = impact_report(entries, hits, files, source)
+        if report_path == "-":
+            print(rpt)
+        elif report_path:
+            atomic_write(report_path, rpt)
+            print(f"✓ 影响报告已写入 {report_path}")
         if not hits:
             print(f"本次 {len(files)} 个变更文件不波及任何记忆条目")
             return
@@ -312,6 +398,8 @@ def main():
         for rel, keys in sorted(hits.items()):
             print(f"  - {rel}  ←  {', '.join(keys)}")
         print("提示: 方法级精确解析请运行 /memory-check <符号> 增量巡检（经图谱）")
+        if strict:
+            sys.exit(2)
         return
 
     entries = load_entries(mem)

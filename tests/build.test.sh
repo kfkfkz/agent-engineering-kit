@@ -136,6 +136,26 @@ case "$OUT" in *alpha*) ok "--changed 命中 Alpha 条目";; *) bad "--changed �
 OUT2="$(MB --since HEAD "$P")"
 case "$OUT2" in *无变更文件*|*不波及*) ok "--since HEAD 无提交变更时正确报告";; *) bad "--since HEAD 预期无变更（输出: $OUT2）";; esac
 
+# ── B9 --files：stdin 文件清单（VCS 无关入口）──
+OUT3="$(printf 'src/BetaService.java\nsrc/other.py\n' | MB --files "$P")"
+case "$OUT3" in *beta-flow*) ok "--files 命中 Beta 条目";; *) bad "--files 未命中（输出: $OUT3）";; esac
+
+# ── B10 --report：Markdown 影响报告 ──
+printf 'src/AlphaService.java\n' | MB --files "$P" --report "$T/impact.md" >/dev/null
+[ -f "$T/impact.md" ] && ok "影响报告已生成" || bad "影响报告未生成"
+assert_grep "报告含波及条目"      "2026-01-01-alpha"    "$T/impact.md"
+assert_grep "报告含变更来源"      "显式文件列表"        "$T/impact.md"
+assert_grep "报告含核验指引"      "重新验证"            "$T/impact.md"
+
+# ── B11 --strict：无波及退出 0，有波及退出 2 ──
+printf 'docs/x.md\n' | MB --files "$P" >/dev/null 2>&1 && ok "--strict 前置：无波及退出 0" || bad "无波及时异常退出"
+if printf 'src/AlphaService.java\n' | MB --files "$P" --strict >/dev/null 2>&1; then
+    bad "--strict 有波及时未退出 2"
+else
+    rc=$?
+    [ "$rc" = "2" ] && ok "--strict 有波及时退出 2" || bad "--strict 退出码为 $rc（期望 2）"
+fi
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]
