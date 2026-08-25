@@ -1,11 +1,14 @@
 ---
 name: memory-capture
-description: "记忆捕获与蒸馏：从当前会话提取候选记忆，起草条目，经用户确认后入库 docs/memory。适用于：记一下、记住这个、沉淀记忆、功能结束整理记忆、同步到跨agent记忆区。"
+description: "记忆捕获与蒸馏：从当前会话提取候选记忆，起草条目（frontmatter 单一事实源），经用户确认后入库并运行 memory-build 刷新索引与锚点表。适用于：记一下、记住这个、沉淀记忆、功能结束整理记忆、同步到跨agent记忆区。"
 ---
 
 对当前会话执行记忆捕获。触发时机：用户口头要求（"记一下/记住这个/沉淀一下"等），或任务收尾（功能验收通过、bug 修复完成）。
 
-**流程与规则的唯一来源：`docs/memory/RULES.md`「触发与捕获」一节**——按其中的候选提取 → 分类起草 → 呈现确认 → 入库 → 后续提示逐步执行。
+**流程与规则的唯一来源：`docs/memory/RULES.md`「触发与捕获」与「条目格式」两节**——按候选提取 → 分类起草 → 呈现确认 → 入库 → 后续提示逐步执行。要点：
+
+- 草稿必须带 **frontmatter**（type/status/created 必填，playbook 还须 verified；符号锚点写进 `anchors`，索引一句话写进 `summary`）——状态与日期不再写在正文。
+- 入库后**必须运行** `.repo-memory-kit/bin/memory-build` 刷新 README 索引与 `.anchors.json`（生成物，禁止手改）。
 
 ## 边界（固定约束）
 

@@ -43,6 +43,7 @@ docs/memory/_PROFILE_TEMPLATE.md
 .agents/skills/memory-check/SKILL.md
 .agents/skills/memory-capture/SKILL.md
 .repo-memory-kit/bin/validate-memory.sh
+.repo-memory-kit/bin/memory-build
 "
 
 # 哈希命令探测（Linux: sha256sum / macOS: shasum -a 256）
@@ -207,8 +208,9 @@ done
 # ── 3. 校验器随仓库安装 ─────────────────────────────────────────────
 mkdir -p "$TARGET/.repo-memory-kit/bin"
 cp "$KIT_DIR/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/validate-memory.sh"
+cp "$KIT_DIR/memory-build" "$TARGET/.repo-memory-kit/bin/memory-build"
 chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh"
-echo "已安装校验器 .repo-memory-kit/bin/validate-memory.sh（可接入目标仓库 CI）"
+echo "已安装校验器与生成器 .repo-memory-kit/bin/{validate-memory.sh,memory-build}"
 
 # ── 4. .cbmignore 托管区块（整体校验与替换）───────────────────────────
 CBM="$TARGET/.cbmignore"

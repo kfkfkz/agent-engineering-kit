@@ -1,0 +1,360 @@
+#!/usr/bin/env python3
+"""repo-memory-kit v3: 条目 frontmatter 是唯一事实源，本工具自动生成 README 索引与 .anchors.json。
+
+用法:
+  memory-build [目标仓库]                # 校验 frontmatter + 重新生成索引与锚点表
+  memory-build --check [目标仓库]        # 只校验不写文件（CI/校验器用）；索引或锚点过期则报错
+  memory-build --migrate [目标仓库]      # 旧格式条目自动合成 frontmatter（状态行/最后有效/文件名日期/旧锚点表反填）
+  memory-build --changed [目标仓库]      # 工作区 git 变更 → 受影响记忆条目（文件名启发式匹配）
+  memory-build --since <ref> [目标仓库]  # ref..HEAD 的变更 → 受影响记忆条目
+"""
+import json, os, re, subprocess, sys, tempfile
+
+STATUS_MAP = {"confirmed": "已确认", "unverified": "待验证", "deprecated": "已废弃", "superseded": "已替代"}
+VALID_STATUS = set(STATUS_MAP)
+TYPE_BY_DIR = {"pitfalls": "pitfall", "decisions": "decision", "playbooks": "playbook"}
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+KEY_RE = re.compile(r"^(class|method|file|route|config):.+")
+INDEX_START = "<!-- index:start -->"
+INDEX_END = "<!-- index:end -->"
+
+
+def die(msg):
+    sys.exit(f"✗ {msg}")
+
+
+def parse_frontmatter(text):
+    """返回 (fm dict or None, body)。支持 key: value、锚点等列表（缩进 '- '）、行内 # 注释。"""
+    if not text.startswith("---\n"):
+        return None, text
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return None, text
+    fm, key = {}, None
+    for ln in text[4:end].splitlines():
+        if re.match(r"^\s+-\s+", ln):
+            if key is not None:
+                if not isinstance(fm.get(key), list):
+                    fm[key] = []
+                fm[key].append(ln.strip()[2:].strip())
+            continue
+        m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", ln)
+        if m:
+            key = m.group(1)
+            val = m.group(2).split(" #")[0].strip()
+            fm[key] = val
+    return fm, text[end + 5:]
+
+
+def as_list(v):
+    if v is None:
+        return []
+    return v if isinstance(v, list) else [v]
+
+
+def load_entries(mem):
+    entries = []
+    for sub, typ in TYPE_BY_DIR.items():
+        d = os.path.join(mem, sub)
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".md") or name.startswith("_"):
+                continue
+            text = open(os.path.join(d, name), encoding="utf-8").read()
+            fm, body = parse_frontmatter(text)
+            tm = re.search(r"^# (.+)$", body, re.M)
+            entries.append({
+                "rel": f"{sub}/{name}", "path": os.path.join(d, name),
+                "fm": fm or {}, "has_fm": fm is not None, "body": body, "type": typ,
+                "title": tm.group(1).strip() if tm else name,
+            })
+    return entries
+
+
+def validate(entries):
+    errs = []
+    rels = {e["rel"] for e in entries}
+    superseded_by = {}
+    for e in entries:
+        rel, fm = e["rel"], e["fm"]
+        if not e["has_fm"]:
+            errs.append(f"{rel}: 缺 frontmatter（运行 memory-build --migrate）")
+            continue
+        if fm.get("type") != e["type"]:
+            errs.append(f"{rel}: type 应为 {e['type']}")
+        if fm.get("status") not in VALID_STATUS:
+            errs.append(f"{rel}: 非法 status {fm.get('status')!r}（合法: {sorted(VALID_STATUS)}）")
+        for dk in ("created", "verified"):
+            v = fm.get(dk)
+            if v and not DATE_RE.match(str(v)):
+                errs.append(f"{rel}: {dk} 日期非法 {v!r}（YYYY-MM-DD）")
+        if e["type"] == "playbook" and not fm.get("verified"):
+            errs.append(f"{rel}: playbook 必须有 verified（最后有效日期）")
+        for k in as_list(fm.get("anchors")):
+            if not (isinstance(k, str) and KEY_RE.match(k)):
+                errs.append(f"{rel}: 锚点键非法 {k!r}（须 <kind>:<定位符>，跨仓库用 repo@）")
+        for rk in ("supersedes", "conflicts_with", "related"):
+            for r in as_list(fm.get(rk)):
+                if r not in rels:
+                    errs.append(f"{rel}: {rk} 指向不存在的条目 {r}")
+        for r in as_list(fm.get("supersedes")):
+            superseded_by.setdefault(r, []).append(rel)
+    for e in entries:
+        if e["has_fm"] and e["fm"].get("status") == "superseded" and e["rel"] not in superseded_by:
+            errs.append(f"{e['rel']}: 状态为 superseded 但没有任何条目 supersedes 它")
+    by_rel = {e["rel"]: e for e in entries}
+    for e in entries:
+        for r in as_list(e["fm"].get("supersedes")):
+            t = by_rel.get(r)
+            if t and t["has_fm"] and t["fm"].get("status") != "superseded":
+                errs.append(f"{e['rel']}: supersedes {r}，但对方状态仍为 {t['fm'].get('status')}（应为 superseded）")
+    return errs
+
+
+def build_index(entries):
+    lines = ["## 索引（memory-build 自动生成，勿手改）", ""]
+    for sub in TYPE_BY_DIR:
+        es = [e for e in entries if e["type"] == TYPE_BY_DIR[sub]]
+        if not es:
+            continue
+        lines += [f"### {sub}", ""]
+        if sub == "playbooks":
+            lines += ["| 条目 | 说明 |", "| --- | --- |"]
+            for e in sorted(es, key=lambda x: x["rel"]):
+                desc = e["fm"].get("summary") or e["title"]
+                lines.append(f"| [{e['title']}]({e['rel']}) | {desc[:40]} |")
+        else:
+            lines += ["| 条目 | 状态 | 一句话 |", "| --- | --- | --- |"]
+            for e in sorted(es, key=lambda x: x["rel"]):
+                st = STATUS_MAP.get(e["fm"].get("status"), "?")
+                desc = e["fm"].get("summary") or e["title"]
+                lines.append(f"| [{e['title']}]({e['rel']}) | {st} | {desc[:40]} |")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_readme(readme_path, index_text):
+    text = open(readme_path, encoding="utf-8").read() if os.path.exists(readme_path) else ""
+    block = f"{INDEX_START}\n{index_text}{INDEX_END}"
+    if INDEX_START in text and INDEX_END in text:
+        pre, rest = text.split(INDEX_START, 1)
+        _, post = rest.split(INDEX_END, 1)
+        return pre + block + post
+    return text.rstrip() + "\n\n" + block + "\n"
+
+
+def build_anchors(entries, mem):
+    anchors = {}
+    for e in entries:
+        for k in as_list(e["fm"].get("anchors")):
+            anchors.setdefault(k, set()).add(e["rel"])
+    old = {}
+    p = os.path.join(mem, ".anchors.json")
+    if os.path.exists(p):
+        try:
+            old = json.load(open(p, encoding="utf-8"))
+        except Exception:
+            old = {}
+    old_a = old.get("anchors", {}) if isinstance(old, dict) else {}
+    unresolved = old.get("unresolved", {}) if isinstance(old, dict) else {}
+    out = {"schema_version": 2, "anchors": {}, "unresolved": {k: unresolved[k] for k in sorted(unresolved)}}
+    for k in sorted(anchors):
+        val = {}
+        if isinstance(old_a.get(k), dict):
+            val = {kk: old_a[k][kk] for kk in ("file", "signature") if kk in old_a[k]}
+        val["entries"] = sorted(anchors[k])
+        out["anchors"][k] = val
+    return out, os.path.exists(p)
+
+
+def atomic_write(path, text):
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def fm_to_text(fm):
+    lines = ["---"]
+    for k, v in fm.items():
+        if isinstance(v, list):
+            lines.append(f"{k}:")
+            lines += [f"  - {x}" for x in v]
+        elif v not in (None, "", []):
+            lines.append(f"{k}: {v}")
+    lines.append("---")
+    return "\n".join(lines) + "\n"
+
+
+def migrate(entries, mem):
+    """旧条目合成 frontmatter：状态行/最后有效行 → fm；文件名日期 → created；旧锚点表反填 anchors。"""
+    old_a = {}
+    p = os.path.join(mem, ".anchors.json")
+    if os.path.exists(p):
+        try:
+            d = json.load(open(p, encoding="utf-8"))
+            old_a = d.get("anchors", {})
+        except Exception:
+            pass
+    rev = {}
+    for k, v in old_a.items():
+        for rel in (v.get("entries", []) if isinstance(v, dict) else []):
+            rev.setdefault(rel, []).append(k)
+    status_map = {"已确认": "confirmed", "已验证": "confirmed", "待验证": "unverified", "deprecated": "deprecated"}
+    changed = 0
+    for e in entries:
+        if e["has_fm"]:
+            continue
+        body = e["body"]
+        fm = {"type": e["type"], "status": "unverified", "module": ""}
+        m = re.search(r"[-*]?\s*\**状态\**\s*[:：]\s*([^\s（(,，]+)", body)
+        if m:
+            fm["status"] = status_map.get(m.group(1), "unverified")
+            body = re.sub(r"^[-*]?\s*\**状态\**\s*[:：].*$\n?", "", body, count=1, flags=re.M)
+        m = re.search(r"[-*]?\s*模块\s*[:：]\s*(.+)$", body, re.M)
+        if m:
+            fm["module"] = m.group(1).strip()
+            body = re.sub(r"^[-*]?\s*模块\s*[:：].*$\n?", "", body, count=1, flags=re.M)
+        dm = re.match(r"^(\d{4}-\d{2}-\d{2})-", os.path.basename(e["rel"]))
+        if dm:
+            fm["created"] = dm.group(1)
+        if e["type"] == "playbook":
+            vm = re.search(r"最后有效[：:]\s*(\d{4}-\d{2}-\d{2})", body)
+            if vm:
+                fm["verified"] = vm.group(1)
+                body = re.sub(r"^最后有效[：:].*$\n?", "", body, count=1, flags=re.M)
+        if rev.get(e["rel"]):
+            fm["anchors"] = sorted(rev[e["rel"]])
+        atomic_write(e["path"], fm_to_text(fm) + "\n" + body.lstrip("\n"))
+        changed += 1
+        print(f"已迁移 {e['rel']}（status={fm['status']}, anchors={len(fm.get('anchors', []))}）")
+    if not changed:
+        print("无需要迁移的条目")
+    print("提示: 检查各条目 frontmatter（补 summary/module/verified），然后运行 memory-build 重新生成索引与锚点表")
+
+
+def git_changed(target, ref=None):
+    if ref:
+        cmd = ["git", "-C", target, "diff", "--name-only", f"{ref}..HEAD"]
+    else:
+        cmd = ["git", "-C", target, "diff", "--name-only", "HEAD"]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"git diff 失败（本仓库可能是 SVN/本地，无 git 历史可用）: {r.stderr.strip()}")
+    files = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+    if not ref:
+        # 工作区模式：git diff 不含未跟踪文件，补上
+        u = subprocess.run(["git", "-C", target, "ls-files", "--others", "--exclude-standard"],
+                           capture_output=True, text=True)
+        files += [l.strip() for l in u.stdout.splitlines() if l.strip()]
+    return files
+
+
+def affected(entries, changed_files):
+    """文件名启发式：file: 锚点精确匹配路径；class/method 锚点用类名匹配变更文件名主干。
+    方法级精确解析请走 /memory-check <符号> 增量巡检（图谱）。"""
+    stems = {os.path.splitext(os.path.basename(f))[0] for f in changed_files}
+    cset = set(changed_files)
+    hits = {}
+    for e in entries:
+        for k in as_list(e["fm"].get("anchors")):
+            kind, _, ident = k.partition(":")
+            ok = False
+            if kind == "file" and ident in cset:
+                ok = True
+            elif kind in ("class", "method"):
+                cls = ident.split("@")[-1].split(".")[-1].split("(")[0]
+                ok = cls in stems
+            if ok:
+                hits.setdefault(e["rel"], []).append(k)
+    return hits
+
+
+def main():
+    args = sys.argv[1:]
+    mode, ref, target = "build", None, "."
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--check":
+            mode = "check"
+        elif a == "--migrate":
+            mode = "migrate"
+        elif a == "--changed":
+            mode = "changed"
+        elif a == "--since":
+            mode = "changed"
+            i += 1
+            if i >= len(args):
+                die("--since 需要一个 git ref")
+            ref = args[i]
+        elif not a.startswith("-"):
+            target = a
+        i += 1
+
+    mem = os.path.join(target, "docs", "memory")
+    if not os.path.isdir(mem):
+        die(f"未找到 {mem}（目标仓库装过 repo-memory-kit 吗？）")
+
+    if mode == "changed":
+        files = git_changed(target, ref)
+        if not files:
+            print("无变更文件")
+            return
+        hits = affected(load_entries(mem), files)
+        if not hits:
+            print(f"本次 {len(files)} 个变更文件不波及任何记忆条目")
+            return
+        print(f"变更 {len(files)} 个文件，波及 {len(hits)} 条记忆：")
+        for rel, keys in sorted(hits.items()):
+            print(f"  - {rel}  ←  {', '.join(keys)}")
+        print("提示: 方法级精确解析请运行 /memory-check <符号> 增量巡检（经图谱）")
+        return
+
+    entries = load_entries(mem)
+
+    if mode == "migrate":
+        migrate(entries, mem)
+        return
+
+    errs = validate(entries)
+    if errs:
+        for e in errs:
+            print(f"✗ {e}")
+        sys.exit(f"共 {len(errs)} 个条目格式问题，先修复（或对旧条目运行 --migrate）")
+
+    readme = os.path.join(mem, "README.md")
+    index_text = build_index(entries)
+    anchors, has_anchors = build_anchors(entries, mem)
+
+    if mode == "check":
+        problems = []
+        if os.path.exists(readme):
+            cur = open(readme, encoding="utf-8").read()
+            if INDEX_START in cur:
+                if render_readme(readme, index_text) != cur:
+                    problems.append("README 索引与条目不一致（运行 memory-build 刷新）")
+            else:
+                problems.append("README 缺索引托管区块（运行 memory-build 生成）")
+        ap = os.path.join(mem, ".anchors.json")
+        if has_anchors or anchors["anchors"] or anchors["unresolved"]:
+            if not has_anchors or json.load(open(ap, encoding="utf-8")) != anchors:
+                problems.append(".anchors.json 与条目 frontmatter 不一致（运行 memory-build 刷新）")
+        if problems:
+            for p in problems:
+                print(f"✗ {p}")
+            sys.exit(1)
+        print("✓ frontmatter 校验通过；索引与锚点表均为最新")
+        return
+
+    atomic_write(readme, render_readme(readme, index_text))
+    print(f"✓ README 索引已生成/刷新（{len(entries)} 条目）")
+    if anchors["anchors"] or has_anchors or anchors["unresolved"]:
+        atomic_write(os.path.join(mem, ".anchors.json"),
+                     json.dumps(anchors, ensure_ascii=False, indent=2) + "\n")
+        print(f"✓ .anchors.json 已生成/刷新（{len(anchors['anchors'])} 个锚点）")
+
+
+if __name__ == "__main__":
+    main()

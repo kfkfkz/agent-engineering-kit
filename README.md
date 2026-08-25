@@ -14,7 +14,7 @@
 
 ```text
 写入 ──┐  触发：口头（"记一下"）· 任务收尾 · bug 修复 · 功能蒸馏
-       │  流程：候选提取 → 分类起草 → 用户确认 → 入库    （/memory-capture）
+       │  流程：候选提取 → 分类起草（frontmatter）→ 用户确认 → 入库 → memory-build
        ▼
 分层 ──┤  L3  PROFILE.md              项目经验画像（风险域/稳定约定/反模式，条目 ≥10 时建立，会话开始先读）
        │  L2  playbooks/              场景流程：某功能/环境怎么跑通（含验证/回滚）
@@ -26,7 +26,8 @@
        │  增量巡检（改码前）：查锚点表，只核验受波及条目    （/memory-check <符号>）
        │  生命周期：待验证 → 已确认 → deprecated（须人工确认）
        ▼
-联动 ──┘  .anchors.json   类型化定位符 → 条目精确映射（repo@ 跨仓库锚点；unresolved = 漂移信号）
+联动 ──┘  .anchors.json   类型化定位符 → 条目精确映射（memory-build 从条目 frontmatter 自动生成；
+                          repo@ 跨仓库锚点；unresolved = 漂移信号）
           .cbmignore 托管区块：记忆条目纳入代码图谱索引，与代码/规格同图可检索
 ```
 
@@ -45,11 +46,11 @@ install.sh 在目标仓库安装：
 
 | 安装物 | 位置 | 所有权 |
 | --- | --- | --- |
-| 规则 RULES.md、用户索引 README.md、四类条目模板 | `docs/memory/{pitfalls,decisions,playbooks}/` | RULES 与模板 kit 管辖；README 与条目归用户 |
+| 规则 RULES.md、用户索引 README.md、四类条目模板 | `docs/memory/{pitfalls,decisions,playbooks}/` | RULES 与模板 kit 管辖；条目归用户；README 索引区块由 memory-build 生成 |
 | 双端技能（同一份 SKILL.md，仓库级零跨项目污染） | `.claude/skills/` + `.agents/skills/` | kit 管辖 |
 | 「项目记忆」指引区块（旧版段落自动迁移，定制内容只提示） | `CLAUDE.md` / `AGENTS.md` 托管区块 | kit 管辖 |
 | 图谱索引否定规则（逐层否定规避父子裁剪） | `.cbmignore` 托管区块 | kit 管辖 |
-| 校验器 + 安装清单 | `.repo-memory-kit/` | kit 管辖 |
+| 校验器 + 生成器 memory-build + 安装清单 | `.repo-memory-kit/` | kit 管辖 |
 
 **前置依赖**：巡检默认强制依赖结构化代码检索工具（代码知识图谱类，参考实现 [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)，MIT）。grep 有三个结构性盲区，不能作为兜底：路由前缀配置在 context-path（字面量搜不到）、符号改名后关键字静默失效、无索引覆盖信号无法判断结果可信度。工具不可用时巡检默认终止，用户显式要求方可降级（报告须标注"置信度低"）。
 
@@ -59,17 +60,19 @@ install.sh 在目标仓库安装：
 
 - **指纹删除**：所有清理（旧全局技能、旧命令、卸载）只删"内容指纹匹配 kit 当前或 git 历史版本"的文件——与 kit 产物不一致的一律保留并提示；历史指纹经 `git cat-file -e` 守卫，杜绝空文件误判。
 - **卸载三重防线**：路径白名单（拒绝绝对路径 / `..` / 清单外路径）+ 删除前指纹比对（漂移内容保留）+ 安装清单（`.repo-memory-kit/manifest`，kit 版本与受管文件哈希，覆盖前漂移提示）。
-- **校验器** `validate-memory.sh`（随仓库安装，可直接接入目标仓库 CI）：结构完整性、锚点协议 v2（类型化键、`repo@` 跨仓库、排序去重、防路径逃逸）、README 索引与实际条目双向一致、条目语义（拒绝未填写模板、多选状态占位、假日期）。需要 python3——缺解析器明确失败，不做"假绿"跳过；哈希兼容 sha256sum / shasum（macOS）。
-- **测试与 CI**：`tests/install.test.sh` 覆盖幂等、空格路径、残缺配置、用户文件保护、安全清理、段落迁移、卸载保护、篡改清单（52 断言，临时 HOME 隔离）；GitHub Actions 每次 push 运行 sh -n + ShellCheck + 测试。
+- **校验器** `validate-memory.sh` + **生成器** `memory-build`（均随仓库安装，可直接接入目标仓库 CI）：条目 frontmatter 校验（状态枚举/真实日期/类型化锚点/关系引用/supersedes 双向一致）、README 索引与 `.anchors.json` 与条目一致性（生成物被手改即报过期）。需要 python3——缺解析器明确失败，不做"假绿"跳过；哈希兼容 sha256sum / shasum（macOS）。
+- **测试与 CI**：`tests/install.test.sh`（52 断言：幂等、空格路径、残缺配置、用户文件保护、安全清理、段落迁移、卸载保护、篡改清单，临时 HOME 隔离）+ `tests/build.test.sh`（17 断言：frontmatter 校验、索引/锚点生成、--check 新鲜度、--migrate 迁移、--changed 影响、supersedes 一致性）；GitHub Actions 每次 push 运行 sh -n + ShellCheck + 两套测试。
 
 ## 日常使用
 
 | 场景 | 动作 |
 | --- | --- |
-| 会话开始 | 读 `PROFILE.md`（存在时）→ 查 `README.md` 索引 |
-| 想沉淀经验 | 说"记一下"，或功能验收后确认 Agent 的提议 → 候选列表 → 确认入库 |
-| 改代码前 | `/memory-check <类名>`：查锚点表看本次变更波及哪些记忆条目 |
+| 会话开始 | 读 `PROFILE.md`（存在时）→ 查 `README.md` 索引（自动生成） |
+| 想沉淀经验 | 说"记一下"，或功能验收后确认 Agent 的提议 → 候选列表 → 确认入库（Agent 自动跑 memory-build） |
+| 改代码前（知道符号） | `/memory-check <类名>`：查锚点表看波及条目 |
+| 改代码前（只知道文件） | `memory-build --changed [ref]` / `--since <ref>`：git 变更 → 波及条目 |
 | 每迭代一次 | `/memory-check`：全量巡检——矫正漂移、压缩超限、刷新锚点表 |
+| 条目增删改后 | `memory-build`：刷新索引与锚点表（生成物，勿手改） |
 | 目标仓库 CI | `.repo-memory-kit/bin/validate-memory.sh .` 校验记忆区完整性 |
 
 ## 设计原则
@@ -80,22 +83,19 @@ install.sh 在目标仓库安装：
 4. **凭证永不入库**：token / 密钥 / 内网地址存指针不存值；误入库有应急流程（删除 + 清历史 + 轮换凭证）。
 5. **门槛驱动升级**：L3 要 10 条起步、标签路由要 50 条、向量检索要 200 条——每级升级由可测量信号触发，不由想象触发。
 
-## 待办（v3）
+## 待办
 
-| 功能 | 内容 | 为什么 |
-| --- | --- | --- |
-| 条目 frontmatter 单一事实源 | 状态/日期/模块/锚点/验证证据进 frontmatter，`memory-build` 自动生成 README 索引与 `.anchors.json` | 消灭"条目/索引/锚点"三处人工同步——长期必然漂移 |
-| 自动变更影响巡检 | `--changed`（读 git diff）/ `--since <ref>`，图谱影响分析定位波及条目，PR 报告模式 | 用户经常只知道"改了哪些文件"，不知道完整符号 |
-| 冲突与替代关系 | `superseded` 状态与 `supersedes/conflicts_with/related/verified_at/verified_commit/evidence` | 结论冲突、重复记录、新旧替代目前无表达 |
+- PR 记忆影响报告：CI 中自动输出"本次变更影响哪些记忆、哪些需要重新验证"（先 warning，成熟后再考虑阻断）。
 
-跨仓库锚点已先行落地（协议 v2 的 `repo@` 键前缀，方法重载用参数签名消解）。
+已实现（原 v3 三件）：条目 frontmatter 单一事实源 + `memory-build` 自动生成索引与锚点表；`--changed`/`--since` 自动变更影响巡检（文件级启发式，方法级精度走图谱增量巡检）；`superseded` 状态与 `supersedes/conflicts_with/related/verified/verified_commit/evidence` 冲突与替代字段。跨仓库锚点见协议 `repo@` 键前缀。
 
 ## 目录结构
 
 ```text
 repo-memory-kit/
 ├── install.sh                  # 接入/更新/卸载（指纹安全清理）
-├── validate-memory.sh          # 记忆区校验器（随仓库安装）
+├── memory-build                # 索引/锚点生成器 + frontmatter 校验 + 变更影响（随仓库安装）
+├── validate-memory.sh          # 记忆区校验器（随仓库安装，委托 memory-build --check）
 ├── skills/                     # 双端技能唯一来源
 │   ├── memory-check/SKILL.md   # 巡检（全量/增量）
 │   └── memory-capture/SKILL.md # 捕获/蒸馏
@@ -108,8 +108,10 @@ repo-memory-kit/
 │   ├── profile.md              # → _PROFILE_TEMPLATE.md（L3 模板）
 │   ├── claude-md-section.md    # → CLAUDE.md 托管区块
 │   └── agents-md-section.md    # → AGENTS.md 托管区块
-├── tests/install.test.sh       # 52 断言（临时 HOME 隔离）
-└── .github/workflows/ci.yml    # sh -n + ShellCheck + 测试
+├── tests/
+│   ├── install.test.sh         # 52 断言（临时 HOME 隔离）
+│   └── build.test.sh           # 17 断言（frontmatter/生成/迁移/变更影响）
+└── .github/workflows/ci.yml    # sh -n + ShellCheck + 两套测试
 ```
 
 ## License

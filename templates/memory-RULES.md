@@ -5,12 +5,13 @@
 
 ## 使用规则（对 Agent 同样生效）
 
-1. 动手修改代码前，先查 `README.md` 索引，命中相关条目必须先读全文。
-2. 状态为「待验证」的条目仅供了解，不得作为修改依据。
+1. 动手修改代码前，先查 `README.md` 索引（`memory-build` 自动生成），命中相关条目必须先读全文。
+2. 状态为「待验证」（unverified）的条目仅供了解，不得作为修改依据。
 3. Bug 修复经人工审核通过后，将原因、影响范围、修复方案整理为新条目入库（素材即审核通过的 bug 分析，零额外成本）。
-4. 条目过时后将其状态改为 `deprecated`，不删除，保留可追溯性。**唯一例外见下方「敏感信息误入库应急」**。
+4. 条目过时改为 `deprecated`；被新条目替代改为 `superseded`（并在新条目 frontmatter 的 `supersedes` 指回旧条目）。原则上不删除，保留可追溯。**唯一例外见「敏感信息误入库应急」**。
 5. 遵循安全要求：条目中禁止出现密钥、Token、真实 PII、内网地址。
 6. **功能验收通过后进行功能蒸馏**：按下方「功能蒸馏」清单将核心流程与环境信息沉淀为 playbook 条目。
+7. **任何条目增删改后必须运行 `memory-build`**（`.repo-memory-kit/bin/memory-build`）刷新 README 索引与锚点表——索引与锚点表是生成物，禁止手改。
 
 ## 触发与捕获（记忆怎么进来）
 
@@ -24,9 +25,9 @@
 捕获流程（Agent 执行，**确认环节不可省**）：
 
 1. **候选提取**：扫描当前会话，识别四类候选——坑（根因已明的缺陷/陷阱）、流程（跑通的操作步骤）、环境信息（路由/配置/关键 ID）、决定（重要取舍及理由）。
-2. **分类起草**：按条目模板生成草稿；坑 → pitfall（默认状态「待验证」，除非已有验证证据），流程/环境 → playbook，**决定 → decision**（背景/取舍/后果，禁止硬塞进 playbook）。不捕获凭证与内网地址（安全规则）、纯会话性内容。
+2. **分类起草**：按条目模板生成草稿（**frontmatter 必填**：type/status/created，playbook 还须 verified）；坑 → pitfall（默认 status: unverified，除非已有验证证据），流程/环境 → playbook，**决定 → decision**（背景/取舍/后果，禁止硬塞进 playbook）。不捕获凭证与内网地址（安全规则）、纯会话性内容。
 3. **呈现确认**：逐条列出（类型/标题/一句话），等用户确认或修改——**确认是入库的必要条件**。
-4. **入库**：确认后写入对应目录（`YYYY-MM-DD-<slug>.md`），更新 `README.md` 索引；达到 L3 门槛（条目 ≥ 10）时提示蒸馏 PROFILE。
+4. **入库**：确认后写入对应目录（`YYYY-MM-DD-<slug>.md`，frontmatter 的 anchors 填类型化定位符），**随即运行 `memory-build` 刷新索引与锚点表**；达到 L3 门槛（条目 ≥ 10）时提示蒸馏 PROFILE。
 5. **后续提示**：待验证条目给出验证方式；playbook 标注「最后有效」日期。
 
 ## 功能蒸馏清单
@@ -75,9 +76,9 @@ L0  权威文档与代码（记忆区外）   证据：接口文档、spec、源
 
 ### 时效规则
 
-- 每个条目必须带日期：pitfall 为定位日期，playbook 为「最后有效」日期。
-- **用后即校**：任何 Agent 或人引用条目时发现与现状不符，必须当场矫正内容并更新日期；无法确认的标记 `deprecated`。
-- **定期巡检**：每个迭代周期或大功能开工前执行一次全量巡检；改代码前执行增量巡检。
+- 日期在 frontmatter：`created` 为定位/创建日期，`verified` 为最近验证日期（playbook 必填，即"最后有效"）。
+- **用后即校**：任何 Agent 或人引用条目时发现与现状不符，必须当场矫正内容并更新 `verified`；无法确认的标记 `deprecated`。
+- **定期巡检**：每个迭代周期或大功能开工前执行一次全量巡检；改代码前执行增量巡检（`memory-build --changed` 或 `/memory-check <符号>`）。
 
 ### 前置依赖（默认强制）
 
@@ -89,19 +90,19 @@ L0  权威文档与代码（记忆区外）   证据：接口文档、spec、源
 2. 逐条读取条目，无「校验点」小节的从正文提取可核验事实（接口路由、类/方法名、文件路径、配置键）生成该小节。
 3. 对每个校验点比对当前代码库（符号定位用图工具；grep 仅用于字面量、配置文件与非代码文件）。核验路由是否仍存在、类/方法逻辑是否未变、文件是否还在。
 4. 失配条目：修正正文与校验点，更新日期；无法确认的列出待人工决定是否 `deprecated`。
-5. 超限条目按「大小约束」压缩，并同步 `README.md` 索引与锚点表（按「锚点表」规则解析全部校验点符号、重写 `.anchors.json`）；`PROFILE.md`（L3，存在时）核对下钻链仍闭合并更新「最后蒸馏」日期。
+5. 超限条目按「大小约束」压缩；符号锚点增删改在条目 frontmatter 的 `anchors` 中进行；**最后统一运行 `memory-build` 刷新 README 索引与 `.anchors.json`**；`PROFILE.md`（L3，存在时）核对下钻链仍闭合并更新「最后蒸馏」日期。
 6. 输出报告：本次矫正/压缩了什么、哪些存疑；巡检只改 `docs/memory/` 内文档，不改代码；`deprecated` 需人工确认。
 
 ### 增量巡检（事件驱动模式）
 
 输入变更范围，只核验受波及的条目——用于 bug 修复合入前、大功能开工前、或快速确认某次重构没打断记忆链：
 
-1. **查锚点表**：变更的类/方法/文件/路由 → 查 `.anchors.json`，表命中即精确波及条目；表缺失或未命中时回退结构化检索文本反查（如 codebase-memory `search_code(符号, path_filter="docs/memory")`）。
+1. **确定变更面**：只知道改了哪些文件时，运行 `memory-build --changed [ref]` / `--since <ref>`（文件名启发式匹配锚点）；知道符号时直接查 `.anchors.json`，表缺失或未命中时回退结构化检索文本反查（如 codebase-memory `search_code(符号, path_filter="docs/memory")`）。
 2. **命中条目**执行全量巡检的核验与矫正步骤；**无命中**则报告"本次变更不波及任何记忆条目"。
 
 ### 锚点表（符号 → 条目映射）
 
-`docs/memory/.anchors.json` 是"变更符号 → 受波及记忆条目"的精确映射，随仓库版本化。
+`docs/memory/.anchors.json` 是"变更符号 → 受波及记忆条目"的精确映射，**由 `memory-build` 从各条目 frontmatter 的 `anchors` 字段聚合生成**（旧表中 `unresolved` 与 `file`/`signature` 提示字段自动保留），随仓库版本化，禁止手改。
 
 **协议（所有写入方必须遵守，schema_version 兼容性依据）**：
 
@@ -115,7 +116,7 @@ L0  权威文档与代码（记忆区外）   证据：接口文档、spec、源
 - **跨仓库锚点**：键带 `repo@` 前缀标识目标仓库（如前端条目引用后端接口、平台条目引用 SDK 符号）。本仓库增量巡检只匹配无前缀的本地锚点；带 `repo@` 的锚点在巡检报告中列为"跨仓库待核验"，其核验在目标仓库进行。
 - `unresolved`：对象；键同上，值为 `{ "entries": [...], "reason": "<漂移待修 | 跨仓库>" }`。
 - 写入必须**原子**（先写临时文件再重命名），`anchors` 与 `unresolved` 各自按键升序排序。
-- 刷新时机：全量巡检时——解析全部条目「校验点」中的代码符号（经图谱解析为全限定名后拼键），成功的进 `anchors`，失败的进 `unresolved`；`unresolved` 不可静默丢弃（符号改名 → 更新条目校验点；跨仓库 → 标注原因保留）。
+- 刷新时机：条目 frontmatter 的 `anchors` 增删改后运行 `memory-build`。全量巡检时顺带核对：解析失败的符号从 `anchors` 移入 `unresolved`（或恢复）；`unresolved` 不可静默丢弃（符号改名 → 更新条目 frontmatter；跨仓库 → 用 `repo@` 前缀建正式跨仓库锚点或标注原因保留）。
 - 锚点表是"记忆→代码"边的数据形态；若撞到精度或联动天花板（如需 detect_changes 原生覆盖记忆），再考虑图谱工具原生边扩展。
 
 ## 敏感信息误入库应急（"不删除"原则的唯一例外）
@@ -127,10 +128,20 @@ L0  权威文档与代码（记忆区外）   证据：接口文档、spec、源
 3. **轮换泄露的凭证**（视为已泄露处理）；
 4. 另存一条 pitfall 记录事故根因与防范（不含敏感内容本身），保持可追溯。
 
-## 条目模板
+## 条目格式（v3：frontmatter 单一事实源）
 
-- pitfall 模板：`pitfalls/_TEMPLATE.md`（含「校验点」小节，必填）
-- decision 模板：`decisions/_TEMPLATE.md`（背景/决定/取舍/后果/校验点）
-- playbook 模板：`playbooks/_TEMPLATE.md`（适用范围/前置条件/操作步骤/验证/回滚/锚点/校验点，含「最后有效」日期）
-- L3 画像模板：`_PROFILE_TEMPLATE.md`
-- 命名：`YYYY-MM-DD-<slug>.md`，日期为问题定位日期；playbook 必须写「最后有效」日期（校验器检查）。
+每个条目以 YAML frontmatter 开头，README 索引与 `.anchors.json` 均由 `memory-build` 从 frontmatter 自动生成——**索引与锚点表是生成物，禁止手改**。
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| type | ✓ | pitfall / decision / playbook（须与所在目录一致） |
+| status | ✓ | confirmed / unverified / deprecated / superseded |
+| module | 建议 | 模块/服务 |
+| created | ✓ | 定位/创建日期（YYYY-MM-DD） |
+| verified | playbook 必填 | 最近验证日期（playbook 的"最后有效"） |
+| verified_commit / evidence | 可选 | 验证所在提交 / 证据指针 |
+| anchors | 可选 | 类型化定位符列表（见「锚点表」） |
+| summary | 可选 | 索引一句话（缺省用标题） |
+| supersedes / conflicts_with / related | 可选 | 替代/冲突/关联条目（相对路径）；status 为 superseded 的条目必须被某条的 supersedes 指向 |
+
+正文：一级标题 + 内容小节 + 「校验点」（巡检记录与补充事实）。状态与日期**不再写在正文**——单一事实源在 frontmatter。模板：`pitfalls/_TEMPLATE.md`、`decisions/_TEMPLATE.md`、`playbooks/_TEMPLATE.md`、`_PROFILE_TEMPLATE.md`；命名 `YYYY-MM-DD-<slug>.md`。

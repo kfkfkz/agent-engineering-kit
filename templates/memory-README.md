@@ -2,23 +2,10 @@
 
 供开发者与所有协作 AI Agent（Claude Code、Codex 等）共用。
 
-**全部规则见 [RULES.md](RULES.md)**（repo-memory-kit 管辖，自动升级）；本文件是**用户索引**，可自由编辑——条目登记、巡检记录都写在这里。
+**全部规则见 [RULES.md](RULES.md)**（repo-memory-kit 管辖，自动升级）；本文件的索引区块由 `memory-build` 自动生成，其余内容（巡检记录等）归用户所有。
 
 最近巡检：（首次巡检后回填日期与结果）
 
-## 索引
-
-### pitfalls
-
-| 条目 | 状态 | 一句话 |
-| --- | --- | --- |
-
-### decisions
-
-| 条目 | 状态 | 一句话 |
-| --- | --- | --- |
-
-### playbooks
-
-| 条目 | 说明 |
-| --- | --- |
+<!-- index:start -->
+## 索引（memory-build 自动生成，勿手改）
+<!-- index:end -->
