@@ -87,7 +87,8 @@ content_is_kit_artifact() { # $1=文件 $2=kit 内相对路径
 uninstall() {
     MANIFEST="$TARGET/.repo-memory-kit/manifest"
     if [ -f "$MANIFEST" ]; then
-        managed_spaced="$(echo $MANAGED_FILES)"
+        managed_spaced=""
+        for mf in $MANAGED_FILES; do managed_spaced="$managed_spaced $mf"; done
         while read -r line; do
             case "$line" in
                 *"  "*) h="${line%%  *}"; rel="${line#*  }" ;;
@@ -262,9 +263,11 @@ install_section() { # $1=目标文件名 $2=kit 模板名
             return
         fi
     fi
-    printf '\n%s\n' "$SEC_START" >> "$f"
-    cat "$tpl" >> "$f"
-    printf '%s\n' "$SEC_END" >> "$f"
+    {
+        printf '\n%s\n' "$SEC_START"
+        cat "$tpl"
+        printf '%s\n' "$SEC_END"
+    } >> "$f"
     echo "已安装/更新 $1「项目记忆」托管区块"
 }
 

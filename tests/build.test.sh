@@ -8,8 +8,8 @@ trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "✓ $1"; }
 bad() { fail=$((fail+1)); echo "✗ $1"; }
-assert_eq() { [ "$2" = "$3" ] && ok "$1" || bad "$1（期望=$3 实际=$2）"; }
-assert_grep() { grep -q "$2" "$3" && ok "$1" || bad "$1: 在 $3 中未找到 $2"; }
+assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望=$3 实际=$2）"; fi; }
+assert_grep() { if grep -q "$2" "$3"; then ok "$1"; else bad "$1: 在 $3 中未找到 $2"; fi; }
 MB() { python3 "$KIT/memory-build" "$@"; }
 
 P="$T/proj"; mkdir -p "$P"
@@ -125,7 +125,7 @@ EOF
 MB --migrate "$P" >/dev/null
 assert_grep "迁移合成 frontmatter status" "status: confirmed" "$P/docs/memory/pitfalls/2026-01-07-legacy.md"
 assert_grep "迁移合成 created（文件名日期）" "created: 2026-01-07" "$P/docs/memory/pitfalls/2026-01-07-legacy.md"
-grep -q "^- 状态: 已确认" "$P/docs/memory/pitfalls/2026-01-07-legacy.md" && bad "旧状态行未从正文移除" || ok "旧状态行已移入 frontmatter"
+if grep -q "^- 状态: 已确认" "$P/docs/memory/pitfalls/2026-01-07-legacy.md"; then bad "旧状态行未从正文移除"; else ok "旧状态行已移入 frontmatter"; fi
 
 # ── B8 --changed：git 变更 → 波及条目（文件名启发式）──
 git -C "$P" init -q
@@ -142,18 +142,18 @@ case "$OUT3" in *beta-flow*) ok "--files 命中 Beta 条目";; *) bad "--files �
 
 # ── B10 --report：Markdown 影响报告 ──
 printf 'src/AlphaService.java\n' | MB --files "$P" --report "$T/impact.md" >/dev/null
-[ -f "$T/impact.md" ] && ok "影响报告已生成" || bad "影响报告未生成"
+if [ -f "$T/impact.md" ]; then ok "影响报告已生成"; else bad "影响报告未生成"; fi
 assert_grep "报告含波及条目"      "2026-01-01-alpha"    "$T/impact.md"
 assert_grep "报告含变更来源"      "显式文件列表"        "$T/impact.md"
 assert_grep "报告含核验指引"      "重新验证"            "$T/impact.md"
 
 # ── B11 --strict：无波及退出 0，有波及退出 2 ──
-printf 'docs/x.md\n' | MB --files "$P" >/dev/null 2>&1 && ok "--strict 前置：无波及退出 0" || bad "无波及时异常退出"
+if printf 'docs/x.md\n' | MB --files "$P" >/dev/null 2>&1; then ok "--strict 前置：无波及退出 0"; else bad "无波及时异常退出"; fi
 if printf 'src/AlphaService.java\n' | MB --files "$P" --strict >/dev/null 2>&1; then
     bad "--strict 有波及时未退出 2"
 else
     rc=$?
-    [ "$rc" = "2" ] && ok "--strict 有波及时退出 2" || bad "--strict 退出码为 $rc（期望 2）"
+    if [ "$rc" = "2" ]; then ok "--strict 有波及时退出 2"; else bad "--strict 退出码为 $rc（期望 2）"; fi
 fi
 
 echo

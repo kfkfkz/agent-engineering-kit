@@ -11,13 +11,13 @@ fail=0
 err() { echo "✗ $1"; fail=1; }
 ok()   { echo "✓ $1"; }
 
-[ -f "$MEM/RULES.md" ] && ok "RULES.md（规则）存在" || err "缺 docs/memory/RULES.md（运行 install.sh）"
-[ -f "$MEM/README.md" ] && ok "README.md（索引宿主）存在" || err "缺 docs/memory/README.md"
+if [ -f "$MEM/RULES.md" ]; then ok "RULES.md（规则）存在"; else err "缺 docs/memory/RULES.md（运行 install.sh）"; fi
+if [ -f "$MEM/README.md" ]; then ok "README.md（索引宿主）存在"; else err "缺 docs/memory/README.md"; fi
 for f in pitfalls/_TEMPLATE.md decisions/_TEMPLATE.md playbooks/_TEMPLATE.md _PROFILE_TEMPLATE.md; do
-    [ -f "$MEM/$f" ] && ok "模板 $f 存在" || err "缺 docs/memory/$f"
+    if [ -f "$MEM/$f" ]; then ok "模板 $f 存在"; else err "缺 docs/memory/$f"; fi
 done
 for d in pitfalls decisions playbooks; do
-    [ -d "$MEM/$d" ] && ok "$d/ 目录存在" || err "缺 docs/memory/$d/"
+    if [ -d "$MEM/$d" ]; then ok "$d/ 目录存在"; else err "缺 docs/memory/$d/"; fi
 done
 
 MB="$TARGET/.repo-memory-kit/bin/memory-build"

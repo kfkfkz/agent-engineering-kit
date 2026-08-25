@@ -12,9 +12,9 @@ pass=0; fail=0
 
 ok()   { pass=$((pass+1)); echo "✓ $1"; }
 bad()  { fail=$((fail+1)); echo "✗ $1"; }
-assert_eq() { [ "$2" = "$3" ] && ok "$1" || bad "$1（期望=$3 实际=$2）"; }
-assert_exists() { [ -e "$2" ] && ok "$1" || bad "$1: $2 不存在"; }
-assert_gone() { [ ! -e "$2" ] && ok "$1" || bad "$1: $2 仍存在"; }
+assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望=$3 实际=$2）"; fi; }
+assert_exists() { if [ -e "$2" ]; then ok "$1"; else bad "$1: $2 不存在"; fi; }
+assert_gone() { if [ ! -e "$2" ]; then ok "$1"; else bad "$1: $2 仍存在"; fi; }
 
 # ── T1 首次安装 ──
 P="$T/proj1"; mkdir -p "$P"; printf '# T\n' > "$P/CLAUDE.md"
@@ -30,20 +30,20 @@ assert_exists "CLAUDE.md 托管区块"       "$P/CLAUDE.md"
 assert_eq "cbmignore 托管区块数=1" "$(grep -c 'repo-memory-kit:start' "$P/.cbmignore")" "1"
 assert_eq "CLAUDE.md 区块标记=1"  "$(grep -cF '<!-- repo-memory-kit:start -->' "$P/CLAUDE.md")" "1"
 assert_exists "安装清单"                  "$P/.repo-memory-kit/manifest"
-grep -q '^kit_version=' "$P/.repo-memory-kit/manifest" && ok "清单含 kit_version" || bad "清单缺 kit_version"
+if grep -q '^kit_version=' "$P/.repo-memory-kit/manifest"; then ok "清单含 kit_version"; else bad "清单缺 kit_version"; fi
 
 # ── T2 幂等：区块/段落不重复，用户文件不覆盖 ──
 echo "CUSTOM INDEX LINE" >> "$P/docs/memory/README.md"
 "$KIT/install.sh" "$P" >/dev/null
 assert_eq "二次安装 cbmignore 区块仍=1" "$(grep -c 'repo-memory-kit:start' "$P/.cbmignore")" "1"
 assert_eq "二次安装 CLAUDE.md 段落仍=1" "$(grep -c '^## 项目记忆（坑与流程）' "$P/CLAUDE.md")" "1"
-grep -q "CUSTOM INDEX LINE" "$P/docs/memory/README.md" && ok "README 用户内容保留" || bad "README 被覆盖"
+if grep -q "CUSTOM INDEX LINE" "$P/docs/memory/README.md"; then ok "README 用户内容保留"; else bad "README 被覆盖"; fi
 
 # ── T3 --update：kit 文件刷新、用户文件不动 ──
 echo "# local hack" >> "$P/docs/memory/RULES.md"
 "$KIT/install.sh" --update "$P" >/dev/null
-grep -q "local hack" "$P/docs/memory/RULES.md" && bad "RULES.md（kit 管辖）未被刷新" || ok "RULES.md 刷新为最新"
-grep -q "CUSTOM INDEX LINE" "$P/docs/memory/README.md" && ok "README（用户所有）未被覆盖" || bad "README 被覆盖"
+if grep -q "local hack" "$P/docs/memory/RULES.md"; then bad "RULES.md（kit 管辖）未被刷新"; else ok "RULES.md 刷新为最新"; fi
+if grep -q "CUSTOM INDEX LINE" "$P/docs/memory/README.md"; then ok "README（用户所有）未被覆盖"; else bad "README 被覆盖"; fi
 
 # ── T4 路径含空格 ──
 P2="$T/proj with space"; mkdir -p "$P2"
@@ -73,14 +73,14 @@ P5="$T/proj5"; mkdir -p "$P5"
 { printf '# P\n\n'; cat "$KIT/templates/claude-md-section.md"; } > "$P5/CLAUDE.md"
 "$KIT/install.sh" "$P5" >/dev/null
 assert_eq "旧段落迁移后段落=1" "$(grep -c '^## 项目记忆（坑与流程）' "$P5/CLAUDE.md")" "1"
-grep -qF '<!-- repo-memory-kit:start -->' "$P5/CLAUDE.md" && ok "旧段落已迁移为托管区块" || bad "旧段落未迁移"
+if grep -qF '<!-- repo-memory-kit:start -->' "$P5/CLAUDE.md"; then ok "旧段落已迁移为托管区块"; else bad "旧段落未迁移"; fi
 
 # ── T8 定制段落保护（内容与模板不一致 → 不动）──
 P6="$T/proj6"; mkdir -p "$P6"
 { printf '# P\n\n'; cat "$KIT/templates/claude-md-section.md"; echo "- 项目专属的定制行"; } > "$P6/CLAUDE.md"
 "$KIT/install.sh" "$P6" >/dev/null
-grep -q "项目专属的定制行" "$P6/CLAUDE.md" && ok "定制段落内容保留" || bad "定制段落被改动"
-grep -qF '<!-- repo-memory-kit:start -->' "$P6/CLAUDE.md" && bad "定制段落被追加新区块（应只提示）" || ok "定制段落未被追加新区块"
+if grep -q "项目专属的定制行" "$P6/CLAUDE.md"; then ok "定制段落内容保留"; else bad "定制段落被改动"; fi
+if grep -qF '<!-- repo-memory-kit:start -->' "$P6/CLAUDE.md"; then bad "定制段落被追加新区块（应只提示）"; else ok "定制段落未被追加新区块"; fi
 
 # ── T9 RULES.md 引用的文件均可达 ──
 for f in README.md pitfalls/_TEMPLATE.md _PROFILE_TEMPLATE.md; do
@@ -110,8 +110,8 @@ assert_gone     "卸载：RULES.md 移除"      "$P4/docs/memory/RULES.md"
 assert_gone     "卸载：技能移除"           "$P4/.claude/skills/memory-check"
 assert_gone     "卸载：清单移除"           "$P4/.repo-memory-kit"
 assert_gone     "卸载：_TEMPLATE.md（清单内）移除" "$P4/docs/memory/pitfalls/_TEMPLATE.md"
-grep -qF '<!-- repo-memory-kit:start -->' "$P4/CLAUDE.md" && bad "卸载后 CLAUDE.md 仍含区块" || ok "卸载：CLAUDE.md 区块移除"
-[ -f "$P4/CLAUDE.md" ] && ok "卸载：CLAUDE.md 本体保留" || bad "卸载误删 CLAUDE.md 本体"
+if grep -qF '<!-- repo-memory-kit:start -->' "$P4/CLAUDE.md"; then bad "卸载后 CLAUDE.md 仍含区块"; else ok "卸载：CLAUDE.md 区块移除"; fi
+if [ -f "$P4/CLAUDE.md" ]; then ok "卸载：CLAUDE.md 本体保留"; else bad "卸载误删 CLAUDE.md 本体"; fi
 assert_exists   "卸载：README 索引保留"    "$P4/docs/memory/README.md"
 assert_exists   "卸载：用户条目目录保留"   "$P4/docs/memory/pitfalls"
 
@@ -145,7 +145,7 @@ prev_rev="$(git -C "$KIT" log --all --format=%H -- templates/claude-md-section.m
 if [ -n "$prev_rev" ]; then
     { printf '# P\n\n'; git -C "$KIT" show "$prev_rev:templates/claude-md-section.md"; } > "$P10/CLAUDE.md"
     "$KIT/install.sh" "$P10" >/dev/null
-    grep -qF '<!-- repo-memory-kit:start -->' "$P10/CLAUDE.md" && ok "历史版本段落自动迁移" || bad "历史版本段落未迁移（被误判定制）"
+    if grep -qF '<!-- repo-memory-kit:start -->' "$P10/CLAUDE.md"; then ok "历史版本段落自动迁移"; else bad "历史版本段落未迁移（被误判定制）"; fi
     assert_eq "迁移后段落=1" "$(grep -c '^## 项目记忆（坑与流程）' "$P10/CLAUDE.md")" "1"
 else
     ok "（跳过：kit 无历史提交）历史版本段落自动迁移"
