@@ -85,6 +85,8 @@ def validate(entries):
             errs.append(f"{rel}: type 应为 {e['type']}")
         if fm.get("status") not in VALID_STATUS:
             errs.append(f"{rel}: 非法 status {fm.get('status')!r}（合法: {sorted(VALID_STATUS)}）")
+        if not fm.get("created"):
+            errs.append(f"{rel}: 缺 created（YYYY-MM-DD）")
         for dk in ("created", "verified"):
             v = fm.get(dk)
             if v and not DATE_RE.match(str(v)):
