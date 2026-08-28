@@ -19,6 +19,9 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 KEY_RE = re.compile(r"^(class|method|file|route|config):.+")
 INDEX_START = "<!-- index:start -->"
 INDEX_END = "<!-- index:end -->"
+PROFILE_THRESHOLD = 10
+PROFILE_REFRESH_THRESHOLD = 3
+LAST_DISTILL_RE = re.compile(r"最后蒸馏[：:]\s*(\d{4}-\d{2}-\d{2})")
 
 
 def die(msg):
@@ -136,6 +139,40 @@ def build_index(entries):
                 lines.append(f"| [{e['title']}]({e['rel']}) | {st} | {desc[:40]} |")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def profile_status(entries, mem):
+    """返回 L3 门槛/刷新提示；只统计仍有效的 confirmed 条目，不改变构建结果。"""
+    confirmed = [e for e in entries if e["fm"].get("status") == "confirmed"]
+    unverified = sum(e["fm"].get("status") == "unverified" for e in entries)
+    inactive = sum(e["fm"].get("status") in ("deprecated", "superseded") for e in entries)
+    count = len(confirmed)
+    counts = f"confirmed {count}/{PROFILE_THRESHOLD}（unverified {unverified}，inactive {inactive}）"
+    profile = os.path.join(mem, "PROFILE.md")
+
+    if count < PROFILE_THRESHOLD:
+        return f"ℹ L3 门槛：{counts}，尚未达到"
+    if not os.path.exists(profile):
+        return (f"⚠ L3 门槛：{counts}，已达到但缺少 PROFILE.md；"
+                "请从 _PROFILE_TEMPLATE.md 创建并蒸馏")
+
+    text = open(profile, encoding="utf-8").read()
+    match = LAST_DISTILL_RE.search(text)
+    if not match:
+        return (f"⚠ L3 门槛：{counts}；PROFILE.md 缺少有效的"
+                "「最后蒸馏：YYYY-MM-DD」，无法判断是否需要刷新")
+
+    last_distill = match.group(1)
+    newer = [e for e in confirmed if str(e["fm"].get("created", "")) > last_distill]
+    if len(newer) >= PROFILE_REFRESH_THRESHOLD:
+        return (f"⚠ L3 刷新：PROFILE 上次蒸馏 {last_distill}，其后新增 confirmed "
+                f"{len(newer)} 条（提醒阈值 {PROFILE_REFRESH_THRESHOLD}），建议重新蒸馏")
+    return (f"✓ L3 画像：{counts}；PROFILE 上次蒸馏 {last_distill}，"
+            f"其后新增 confirmed {len(newer)} 条")
+
+
+def print_profile_status(entries, mem):
+    print(profile_status(entries, mem))
 
 
 def render_readme(readme_path, index_text):
@@ -436,6 +473,7 @@ def main():
                 print(f"✗ {p}")
             sys.exit(1)
         print("✓ frontmatter 校验通过；索引与锚点表均为最新")
+        print_profile_status(entries, mem)
         return
 
     atomic_write(readme, render_readme(readme, index_text))
@@ -444,6 +482,7 @@ def main():
         atomic_write(os.path.join(mem, ".anchors.json"),
                      json.dumps(anchors, ensure_ascii=False, indent=2) + "\n")
         print(f"✓ .anchors.json 已生成/刷新（{len(anchors['anchors'])} 个锚点）")
+    print_profile_status(entries, mem)
 
 
 if __name__ == "__main__":

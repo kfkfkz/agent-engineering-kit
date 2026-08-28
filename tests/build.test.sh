@@ -1,6 +1,6 @@
 #!/bin/sh
 # memory-build v3 测试：frontmatter 校验、索引/锚点生成、--check 新鲜度、
-# --migrate 旧格式迁移、--changed 变更影响、supersedes 一致性。
+# --migrate 旧格式迁移、--changed 变更影响、supersedes 一致性、L3 自动门槛。
 set -e
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
@@ -155,6 +155,64 @@ else
     rc=$?
     if [ "$rc" = "2" ]; then ok "--strict 有波及时退出 2"; else bad "--strict 退出码为 $rc（期望 2）"; fi
 fi
+
+# ── B12 L3 门槛：只数 confirmed，并提示建档/重蒸馏 ──
+P2="$T/profile-status"; mkdir -p "$P2"
+"$KIT/install.sh" "$P2" >/dev/null
+i=1
+while [ "$i" -le 9 ]; do
+    day="$(printf '%02d' "$i")"
+    cat > "$P2/docs/memory/pitfalls/2026-02-$day-confirmed.md" <<EOF
+---
+type: pitfall
+status: confirmed
+created: 2026-02-$day
+---
+
+# Confirmed $i
+EOF
+    i=$((i+1))
+done
+cat > "$P2/docs/memory/pitfalls/2026-02-10-unverified.md" <<'EOF'
+---
+type: pitfall
+status: unverified
+created: 2026-02-10
+---
+
+# Unverified
+EOF
+cat > "$P2/docs/memory/pitfalls/2026-02-11-deprecated.md" <<'EOF'
+---
+type: pitfall
+status: deprecated
+created: 2026-02-11
+---
+
+# Deprecated
+EOF
+OUT4="$(MB "$P2")"
+case "$OUT4" in *"confirmed 9/10"*"尚未达到"*) ok "L3 门槛排除 unverified/inactive";; *) bad "L3 有效计数错误（输出: $OUT4）";; esac
+
+cat > "$P2/docs/memory/decisions/2026-02-10-tenth.md" <<'EOF'
+---
+type: decision
+status: confirmed
+created: 2026-02-10
+---
+
+# 第十条有效记忆
+EOF
+OUT5="$(MB "$P2")"
+case "$OUT5" in *"confirmed 10/10"*"缺少 PROFILE.md"*) ok "达到 L3 门槛时提示创建 PROFILE";; *) bad "L3 建档提示缺失（输出: $OUT5）";; esac
+
+cat > "$P2/docs/memory/PROFILE.md" <<'EOF'
+# 项目经验画像（L3）
+
+> 最后蒸馏：2026-02-05
+EOF
+OUT6="$(MB --check "$P2")"
+case "$OUT6" in *"其后新增 confirmed 5 条"*"建议重新蒸馏"*) ok "新增 confirmed 达阈值时提示重蒸馏";; *) bad "L3 重蒸馏提示缺失（输出: $OUT6）";; esac
 
 echo
 echo "通过 $pass / 失败 $fail"
