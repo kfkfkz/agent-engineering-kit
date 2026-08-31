@@ -159,6 +159,28 @@ printf '\n| [tpl](pitfalls/2026-01-01-tpl.md) | 已确认 | 测试 |\n' >> "$P11
 if sh "$KIT/validate-memory.sh" "$P11" >/dev/null 2>&1; then bad "校验器接受了未填写的模板条目"; else ok "校验器拒绝未填写的模板条目"; fi
 rm -f "$P11/docs/memory/pitfalls/2026-01-01-tpl.md"
 
+# ── T20 Codex 工作区与记忆仓库分离时，技能仍可被发现 ──
+W="$T/workspace"; P12="$W/backend"; mkdir -p "$P12"
+if "$KIT/install.sh" --codex-root "$W" "$P12" >/dev/null 2>&1; then
+    if [ -L "$W/.agents/skills/memory-capture" ] &&
+       [ "$(readlink "$W/.agents/skills/memory-capture")" = "$P12/.agents/skills/memory-capture" ]; then
+        ok "Codex workspace 可发现 target-bound capture 技能"
+    else
+        bad "Codex workspace 缺 capture 技能链接"
+    fi
+    if [ -L "$W/.agents/skills/memory-check" ] &&
+       [ "$(readlink "$W/.agents/skills/memory-check")" = "$P12/.agents/skills/memory-check" ]; then
+        ok "Codex workspace 可发现 target-bound check 技能"
+    else
+        bad "Codex workspace 缺 check 技能链接"
+    fi
+    "$KIT/install.sh" --uninstall "$P12" >/dev/null
+    if [ ! -L "$W/.agents/skills/memory-capture" ]; then ok "卸载清理 workspace capture 技能链接"; else bad "卸载遗留 workspace capture 技能链接"; fi
+    if [ ! -L "$W/.agents/skills/memory-check" ]; then ok "卸载清理 workspace check 技能链接"; else bad "卸载遗留 workspace check 技能链接"; fi
+else
+    bad "--codex-root 安装失败"
+fi
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

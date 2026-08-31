@@ -4,6 +4,8 @@
 #   ./install.sh /path/to/your-project            # 首次接入（幂等）
 #   ./install.sh --update /path/to/your-project    # 更新 kit 管辖文件
 #   ./install.sh --uninstall /path/to/your-project # 卸载 kit 管辖产物（不触碰用户数据）
+#   ./install.sh --codex-root /workspace /path/to/your-project
+#                                                  # Codex 从父级 workspace 启动时暴露仓库技能
 #
 # 文件所有权约定：
 #   kit 管辖（记录于 .repo-memory-kit/manifest，自动刷新）:
@@ -17,13 +19,49 @@
 set -e
 
 MODE=install
-case "$1" in
-    --update) MODE=update; shift ;;
-    --uninstall) MODE=uninstall; shift ;;
-esac
+CODEX_ROOT=""
+TARGET=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --update) MODE=update ;;
+        --uninstall) MODE=uninstall ;;
+        --codex-root)
+            shift
+            [ "$#" -gt 0 ] || { echo "错误: --codex-root 需要目录参数"; exit 1; }
+            CODEX_ROOT="$1"
+            ;;
+        -*) echo "错误: 未知选项 $1"; exit 1 ;;
+        *)
+            [ -z "$TARGET" ] || { echo "错误: 只能指定一个目标仓库"; exit 1; }
+            TARGET="$1"
+            ;;
+    esac
+    shift
+done
 
-TARGET="${1:?用法: ./install.sh [--update|--uninstall] /path/to/your-project}"
+[ -n "$TARGET" ] || { echo "用法: ./install.sh [--update|--uninstall] [--codex-root /workspace] /path/to/your-project"; exit 1; }
 [ -d "$TARGET" ] || { echo "错误: 目标目录不存在: $TARGET"; exit 1; }
+TARGET="$(cd "$TARGET" && pwd)"
+
+CODEX_ROOT_MARKER="$TARGET/.repo-memory-kit/codex-workspace-root"
+if [ -z "$CODEX_ROOT" ] && [ -f "$CODEX_ROOT_MARKER" ]; then
+    CODEX_ROOT="$(sed -n '1p' "$CODEX_ROOT_MARKER")"
+fi
+if [ -n "$CODEX_ROOT" ]; then
+    [ -d "$CODEX_ROOT" ] || { echo "错误: Codex workspace 不存在: $CODEX_ROOT"; exit 1; }
+    CODEX_ROOT="$(cd "$CODEX_ROOT" && pwd)"
+    if [ "$MODE" != "uninstall" ] && [ "$CODEX_ROOT" != "$TARGET" ]; then
+        if [ -d "$CODEX_ROOT/.agents" ]; then
+            [ -w "$CODEX_ROOT/.agents" ] || {
+                echo "错误: Codex workspace 的 .agents 不可写: $CODEX_ROOT/.agents"; exit 1;
+            }
+        else
+            [ -w "$CODEX_ROOT" ] || {
+                echo "错误: Codex workspace 不可写，无法创建 .agents: $CODEX_ROOT"; exit 1;
+            }
+        fi
+    fi
+fi
 
 KIT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -44,6 +82,7 @@ docs/memory/_PROFILE_TEMPLATE.md
 .agents/skills/memory-capture/SKILL.md
 .repo-memory-kit/bin/validate-memory.sh
 .repo-memory-kit/bin/memory-build
+.repo-memory-kit/codex-workspace-root
 "
 
 # 哈希命令探测（Linux: sha256sum / macOS: shasum -a 256）
@@ -85,6 +124,25 @@ content_is_kit_artifact() { # $1=文件 $2=kit 内相对路径
 
 # ── 卸载 ────────────────────────────────────────────────────────────
 uninstall() {
+    # 仅清理由本目标仓库创建、且仍指回本目标的 workspace 技能链接。
+    if [ -f "$CODEX_ROOT_MARKER" ]; then
+        saved_codex_root="$(sed -n '1p' "$CODEX_ROOT_MARKER")"
+        case "$saved_codex_root" in
+            /*)
+                for tool in memory-check memory-capture; do
+                    link="$saved_codex_root/.agents/skills/$tool"
+                    expected="$TARGET/.agents/skills/$tool"
+                    if [ -L "$link" ] && [ "$(readlink "$link")" = "$expected" ]; then
+                        rm -f "$link"
+                        echo "已移除 Codex workspace 技能链接 $link"
+                    elif [ -L "$link" ]; then
+                        echo "漂移保护: $link 已改指其他目标，保留不删"
+                    fi
+                done
+                ;;
+            *) echo "拒绝处理可疑 Codex workspace 路径: $saved_codex_root" ;;
+        esac
+    fi
     MANIFEST="$TARGET/.repo-memory-kit/manifest"
     if [ -f "$MANIFEST" ]; then
         managed_spaced=""
@@ -178,6 +236,27 @@ for tool in memory-check memory-capture; do
     cp "$KIT_DIR/skills/$tool/SKILL.md" "$TARGET/.agents/skills/$tool/SKILL.md"
 done
 echo "已安装/更新双端技能（.claude/skills + .agents/skills，仓库级）"
+
+# Codex 只从当前工作目录向上扫描 .agents/skills。若实际 workspace 在目标仓库父级，
+# 通过 target-bound 符号链接暴露同一份受管技能，避免复制后版本漂移。
+if [ -n "$CODEX_ROOT" ] && [ "$CODEX_ROOT" != "$TARGET" ]; then
+    mkdir -p "$CODEX_ROOT/.agents/skills" "$TARGET/.repo-memory-kit"
+    for tool in memory-check memory-capture; do
+        src="$TARGET/.agents/skills/$tool"
+        link="$CODEX_ROOT/.agents/skills/$tool"
+        if [ -L "$link" ]; then
+            [ "$(readlink "$link")" = "$src" ] || {
+                echo "错误: $link 已指向其他目标，拒绝覆盖"; exit 1;
+            }
+        elif [ -e "$link" ]; then
+            echo "错误: $link 已存在且不是符号链接，拒绝覆盖"; exit 1
+        else
+            ln -s "$src" "$link"
+        fi
+    done
+    printf '%s\n' "$CODEX_ROOT" > "$CODEX_ROOT_MARKER"
+    echo "已向 Codex workspace 暴露技能：$CODEX_ROOT/.agents/skills/{memory-check,memory-capture}"
+fi
 
 # 旧版全局 Codex 技能：仅当内容指纹匹配 kit 当前/历史版本才清理
 for tool in memory-check memory-capture; do

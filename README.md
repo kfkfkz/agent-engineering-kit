@@ -35,9 +35,13 @@
 ```bash
 git clone <this-repo> && cd repo-memory-kit
 ./install.sh /path/to/your-project    # 幂等；--update 升级；--uninstall 卸载
+# 若 Codex 从项目父级 workspace 启动：
+./install.sh --codex-root /path/to/workspace /path/to/your-project
 ```
 
 一条命令完成：创建记忆区（`docs/memory/{pitfalls,decisions,playbooks}/`）、安装双端技能到仓库级目录（`.claude/skills/` + `.agents/skills/`）、向 `CLAUDE.md`/`AGENTS.md`/`.cbmignore` 写入托管区块、安装校验器与生成器到 `.repo-memory-kit/`。**所有清理与卸载只删内容指纹匹配 kit 产物的文件——用户数据（条目、索引、锚点表）绝不触碰。**
+
+Codex 只扫描当前工作目录及其父级的 `.agents/skills`。目标项目是 workspace 子目录时，`--codex-root` 会在 workspace 建立指回目标项目技能的受管符号链接；技能仍以目标项目为路径基准，更新与卸载会同步维护链接。
 
 **前置依赖**：巡检强制依赖结构化代码检索工具（代码知识图谱类，参考实现 [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)）。grep 有三个结构性盲区不能兜底：路由前缀配置在 context-path、符号改名后静默失效、无索引覆盖信号。工具不可用默认终止巡检。
 
