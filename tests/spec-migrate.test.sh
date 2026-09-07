@@ -10,7 +10,6 @@ ok()  { pass=$((pass+1)); echo "✓ $1"; }
 bad() { fail=$((fail+1)); echo "✗ $1"; }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望=$3 实际=$2）"; fi; }
 assert_grep() { if grep -q "$2" "$3"; then ok "$1"; else bad "$1: 在 $3 中未找到 $2"; fi; }
-
 P="$T/project"
 F="$P/.specify/specs/001-export"
 TPL="$P/.specify/templates"
@@ -103,6 +102,55 @@ else
     ok "迁移器拒绝非 UTF-8 文档"
 fi
 assert_eq "编码阻断后原文未变" "$(sha256sum "$F4/plan.md" | cut -d' ' -f1)" "$before4"
+
+# S9 子目录同名文件不遮蔽核心文档：apply 两次不重复追加，check 如实报告待核验。
+P5="$T/subdir-collision"; F5="$P5/.specify/specs/005-collide"
+mkdir -p "$F5/contracts"
+for name in spec plan tasks; do printf '# %s 原文\n' "$name" > "$F5/$name.md"; done
+printf '# 契约补充\n\n这是 contracts 子目录里的 plan.md，不是交付主文档。\n' > "$F5/contracts/plan.md"
+python3 "$KIT/spec-migrate" --apply "$P5" >/dev/null
+python3 "$KIT/spec-migrate" --apply "$P5" >/dev/null
+assert_eq "子目录同名文件下章节不重复" "$(grep -c '^## 当前证据与复用依据' "$F5/plan.md")" "1"
+OUT5="$(python3 "$KIT/spec-migrate" --check "$P5")"
+case "$OUT5" in *"待补字段: 0"*) ok "碰撞场景下 apply 后无待补字段";; *) bad "碰撞场景下误报待补: $OUT5";; esac
+case "$OUT5" in *"待人工核验: 9"*) ok "碰撞场景下待核验计数完整";; *) bad "碰撞场景下待核验计数异常: $OUT5";; esac
+
+# S10 辅助文档不误判字段：quickstart.md 满足交付验证，但其中「日志安全」不算威胁模型。
+P6="$T/aux-files"; F6="$P6/.specify/specs/006-aux"
+mkdir -p "$F6"
+printf '# spec\n' > "$F6/spec.md"
+printf '# plan\n\n## Technical Context\n\n既有证据。\n' > "$F6/plan.md"
+printf '# tasks\n\n### Tests for User Story 1\n\n- 用例\n' > "$F6/tasks.md"
+printf '# 验证指南\n\n## 9. 回退策略\n\n内容。\n' > "$F6/quickstart.md"
+OUT6="$(python3 "$KIT/spec-migrate" --check "$P6")"
+case "$OUT6" in *待补=*安全与威胁模型*) ok "quickstart 的日志安全不满足威胁模型";; *) bad "安全字段判定未收紧: $OUT6";; esac
+case "$OUT6" in
+    *待补=*交付验证*) bad "quickstart.md 存在时仍判定交付验证缺失" ;;
+    *) ok "quickstart.md 视为交付验证已覆盖" ;;
+esac
+python3 "$KIT/spec-migrate" --apply "$P6" >/dev/null
+if grep -q '^## 交付验证' "$F6/plan.md"; then
+    bad "quickstart.md 存在时仍追加了交付验证小节"
+else
+    ok "quickstart.md 存在时不追加交付验证小节"
+fi
+assert_grep "证据类字段仍由核心文档判定" '^## Technical Context' "$F6/plan.md"
+
+# S11 --feature 过滤：只迁移指定 feature，未知名称报错。
+P7="$T/feature-filter"
+FA="$P7/.specify/specs/007-alpha"; FB="$P7/.specify/specs/008-beta"
+mkdir -p "$FA" "$FB" "$P7/.specify/templates"
+for d in "$FA" "$FB"; do
+    for name in spec plan tasks; do printf '# %s\n' "$name" > "$d/$name.md"; done
+done
+python3 "$KIT/spec-migrate" --apply --feature 007-alpha "$P7" >/dev/null
+if grep -q 'migration-pending' "$FA/plan.md"; then ok "--feature 命中的 feature 被迁移"; else bad "--feature 命中的 feature 未迁移"; fi
+if grep -q 'migration-pending' "$FB/plan.md"; then bad "--feature 未命中的 feature 被误迁移"; else ok "--feature 未命中的 feature 保持原样"; fi
+if python3 "$KIT/spec-migrate" --apply --feature 009-nope "$P7" >/dev/null 2>&1; then
+    bad "未知 feature 名称未报错"
+else
+    ok "未知 feature 名称报错退出"
+fi
 
 echo
 echo "通过 $pass / 失败 $fail"

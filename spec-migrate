@@ -60,7 +60,7 @@ FIELDS = {
     "test": {
         "label": "测试接缝与用例",
         "target": "plan.md",
-        "pattern": r"测试|test(?:ing)? strategy|test seams?",
+        "pattern": r"测试|\btest(?:ing)? strategy\b|\btest seams?\b|\btests?\b",
         "prompt": "请确定稳定测试接缝，并覆盖正常、边界、失败及必要的安全场景；确认后删除本提示。",
     },
     "tasks": {
@@ -73,12 +73,14 @@ FIELDS = {
         "label": "交付验证",
         "target": "plan.md",
         "pattern": r"交付验证|验证结果|validation|verification|success metrics|quickstart",
+        # quickstart.md 是 Spec Kit 的独立验证指南：存在即视为已覆盖，避免追加平行小节。
+        "file_hint": "quickstart.md",
         "prompt": "请记录实际执行的构建、静态检查、测试、安全检查和结果；未执行项不得标记通过。",
     },
     "docs_memory": {
         "label": "文档与记忆影响",
         "target": "plan.md",
-        "pattern": r"文档与记忆|文档影响|记忆影响|documentation|memory impact",
+        "pattern": r"文档与记忆|文档影响|记忆影响|documentation\s+(?:impact|updates?)|memory impact",
         "prompt": "请列出需回写的权威文档、失效口径和项目记忆候选；确认后删除本提示。",
     },
 }
@@ -166,19 +168,28 @@ def headings(text: str) -> list[str]:
 
 
 def inspect_feature(feature: Path) -> dict:
+    # key 用相对路径而不是 basename，避免 contracts/plan.md 之类子目录同名文件
+    # 覆盖核心文档，导致 pending 标记失明并无限重复追加。
     files = {
-        path.name: read_text(path)
+        path.relative_to(feature).as_posix(): read_text(path)
         for path in feature.rglob("*.md")
         if path.is_file()
     }
-    all_headings = "\n".join(
-        heading for content in files.values() for heading in headings(content)
+    # 字段判定只看核心三文件（spec/plan/tasks）的标题：辅助文档（research、
+    # contracts、checklists 等）是证据来源，不是统一字段的载体，跨文件聚合
+    # 会让 quickstart 的「日志安全」之类标题误判 security 已覆盖。
+    core_headings = "\n".join(
+        heading
+        for name in CORE_FILES
+        for heading in headings(files.get(name, ""))
     )
     field_status = {}
     for field_id, field in FIELDS.items():
         target_text = files.get(field["target"], "")
         pending = f"{PENDING_PREFIX}{field_id}" in target_text
-        present = bool(re.search(field["pattern"], all_headings, re.IGNORECASE))
+        present = bool(re.search(field["pattern"], core_headings, re.IGNORECASE))
+        if not present and field.get("file_hint"):
+            present = (feature / field["file_hint"]).is_file()
         field_status[field_id] = "pending_review" if pending else (
             "present" if present else "missing"
         )
@@ -192,15 +203,22 @@ def inspect_feature(feature: Path) -> dict:
     }
 
 
-def discover(target: Path) -> tuple[Path, list[dict]]:
+def discover(target: Path, wanted: list[str] | None = None) -> tuple[Path, list[dict]]:
     specs = target / ".specify" / "specs"
     if not specs.is_dir():
         return specs, []
-    features = [
-        inspect_feature(path)
-        for path in sorted(specs.iterdir())
-        if path.is_dir()
-    ]
+    names = sorted(path.name for path in specs.iterdir() if path.is_dir())
+    if wanted:
+        unknown = [name for name in wanted if name not in names]
+        if unknown:
+            raise ValueError(
+                "未找到 feature: " + ", ".join(unknown)
+                + "（可用: " + ", ".join(names) + "）"
+            )
+        selected = [name for name in names if name in set(wanted)]
+    else:
+        selected = names
+    features = [inspect_feature(specs / name) for name in selected]
     return specs, features
 
 
@@ -277,7 +295,8 @@ def apply_operations(target: Path, features: list[dict], operations: list[dict])
         addition = (
             f"## {field['label']}\n\n"
             f"{marker}\n"
-            f"> 迁移待核验：{field['prompt']}\n"
+            f"> 状态：待核验（结构迁移占位，未含项目事实）\n"
+            f"> {field['prompt']}\n"
         )
         append_text(path, addition)
 
@@ -339,6 +358,10 @@ def parse_args() -> argparse.Namespace:
     modes.add_argument("--check", action="store_true", help="只检查，不写文件（默认）")
     modes.add_argument("--dry-run", action="store_true", help="显示结构迁移计划，不写文件")
     modes.add_argument("--apply", action="store_true", help="应用结构迁移并标记待人工核验")
+    parser.add_argument(
+        "--feature", action="append", default=[], metavar="NAME",
+        help="只处理指定的 feature 目录名（可重复传入）",
+    )
     parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     parser.add_argument("target", nargs="?", default=".", help="目标项目目录")
     return parser.parse_args()
@@ -358,9 +381,12 @@ def main() -> int:
         return 2
 
     try:
-        specs, features = discover(target)
+        specs, features = discover(target, args.feature)
     except (OSError, UnicodeError) as exc:
         print(f"错误: 无法安全读取 Spec Kit 文档: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"错误: {exc}", file=sys.stderr)
         return 2
     mode = "apply" if args.apply else ("dry-run" if args.dry_run else "check")
     if not specs.is_dir():
@@ -387,7 +413,7 @@ def main() -> int:
     before = payload(target, specs, features, operations)
     if mode == "apply":
         apply_operations(target, features, operations)
-        _, updated_features = discover(target)
+        _, updated_features = discover(target, args.feature)
         data = payload(target, specs, updated_features, operations)
     else:
         data = before

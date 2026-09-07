@@ -15,17 +15,19 @@ description: "检查并迁移已有 Spec Kit 文档到统一交付字段，保�
 .repo-memory-kit/bin/spec-migrate --check .
 .repo-memory-kit/bin/spec-migrate --dry-run .
 .repo-memory-kit/bin/spec-migrate --apply .
+.repo-memory-kit/bin/spec-migrate --apply --feature 001-demo .
 ```
 
 - 默认或 `--check`：只检查字段覆盖、缺失核心文档和待核验项；
 - `--dry-run`：展示会修改哪些 feature 与模板，不写文件；
-- `--apply`：只有用户明确要求迁移时使用。它先全局预检，任一 feature 缺 `spec.md`、`plan.md` 或 `tasks.md` 都阻断，避免半迁移。
+- `--apply`：只有用户明确要求迁移时使用。它先全局预检，任一 feature 缺 `spec.md`、`plan.md` 或 `tasks.md` 都阻断，避免半迁移；
+- `--feature <目录名>`：只处理指定 feature（可重复传入）；`install.sh --migrate-specify=名字1,名字2` 与之等价。用户只要求迁移部分 feature 时必须使用，不要全仓 apply；
 
 执行前查看版本控制状态，保护用户未提交修改。二进制附件、图片、表格、原型和非 Markdown 设计不自动变更，只在报告中列为人工核验范围。
 
 ## 迁移后的语义核验
 
-迁移器会保留旧正文并添加 `agent-engineering-kit:migration-pending:*` 标记。逐 feature 读取当前文档、权威设计、代码和测试，把已有事实归并到这些字段：
+迁移器会保留旧正文并添加 `agent-engineering-kit:migration-pending:*` 标记（附 `> 状态：待核验` 行，与项目文档的状态头约定一致）。字段判定只认核心三文件的标题和 `quickstart.md` 的存在性；research、contracts、checklists 等辅助文档是证据来源，不作为字段已覆盖的依据。逐 feature 读取当前文档、权威设计、代码和测试，把已有事实归并到这些字段：
 
 `目标与范围 | 当前证据/根因与复用依据 | 行为与验收 | 设计/契约/数据流 | 兼容性与风险 | 安全与威胁模型 | 测试接缝与用例 | 实施任务 | 验证结果 | 文档与记忆影响`
 
