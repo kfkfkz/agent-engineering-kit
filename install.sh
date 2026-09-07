@@ -3,6 +3,11 @@
 # 用法:
 #   ./install.sh /path/to/your-project            # 首次接入（幂等）
 #   ./install.sh --update /path/to/your-project    # 更新 kit 管辖文件
+#   ./install.sh --repair /path/to/your-project    # 修复缺失/漂移的 kit 管辖文件
+#   ./install.sh --doctor /path/to/your-project    # 只读检查安装健康度
+#   ./install.sh --dry-run /path/to/your-project   # 只展示计划，不写入
+#   ./install.sh --migrate-specify /path/to/your-project
+#                                                  # 显式增量迁移已有 Spec Kit 文档
 #   ./install.sh --uninstall /path/to/your-project # 卸载 kit 管辖产物（不触碰用户数据）
 #   ./install.sh --with-codebase-memory /path/to/your-project
 #                                                  # 同时安装/配置代码图谱 MCP
@@ -21,13 +26,26 @@
 set -e
 
 MODE=install
+DRY_RUN=0
+MIGRATE_SPECIFY=0
 INSTALL_CODEBASE_MEMORY=0
 CODEX_ROOT=""
 TARGET=""
+set_mode() {
+    requested="$1"
+    if [ "$MODE" != "install" ] && [ "$MODE" != "$requested" ]; then
+        echo "错误: --$requested 不能与 --$MODE 同时使用"; exit 1
+    fi
+    MODE="$requested"
+}
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --update) MODE=update ;;
-        --uninstall) MODE=uninstall ;;
+        --update) set_mode update ;;
+        --repair) set_mode repair ;;
+        --doctor) set_mode doctor ;;
+        --uninstall) set_mode uninstall ;;
+        --dry-run) DRY_RUN=1 ;;
+        --migrate-specify) MIGRATE_SPECIFY=1 ;;
         --with-codebase-memory) INSTALL_CODEBASE_MEMORY=1 ;;
         --codex-root)
             shift
@@ -43,10 +61,19 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-[ -n "$TARGET" ] || { echo "用法: ./install.sh [--update|--uninstall] [--with-codebase-memory] [--codex-root /workspace] /path/to/your-project"; exit 1; }
+[ -n "$TARGET" ] || { echo "用法: ./install.sh [--update|--repair|--doctor|--uninstall] [--dry-run] [--migrate-specify] [--with-codebase-memory] [--codex-root /workspace] /path/to/your-project"; exit 1; }
 [ -d "$TARGET" ] || { echo "错误: 目标目录不存在: $TARGET"; exit 1; }
 [ "$MODE" != "uninstall" ] || [ "$INSTALL_CODEBASE_MEMORY" = "0" ] || {
     echo "错误: --with-codebase-memory 不能与 --uninstall 同时使用"; exit 1;
+}
+[ "$MODE" != "doctor" ] || [ "$INSTALL_CODEBASE_MEMORY" = "0" ] || {
+    echo "错误: --with-codebase-memory 不能与 --doctor 同时使用"; exit 1;
+}
+[ "$MODE" != "uninstall" ] || [ "$MIGRATE_SPECIFY" = "0" ] || {
+    echo "错误: --migrate-specify 不能与 --uninstall 同时使用"; exit 1;
+}
+[ "$MODE" != "doctor" ] || [ "$MIGRATE_SPECIFY" = "0" ] || {
+    echo "错误: --migrate-specify 不能与 --doctor 同时使用"; exit 1;
 }
 TARGET="$(cd "$TARGET" && pwd)"
 
@@ -57,7 +84,7 @@ fi
 if [ -n "$CODEX_ROOT" ]; then
     [ -d "$CODEX_ROOT" ] || { echo "错误: Codex workspace 不存在: $CODEX_ROOT"; exit 1; }
     CODEX_ROOT="$(cd "$CODEX_ROOT" && pwd)"
-    if [ "$MODE" != "uninstall" ] && [ "$CODEX_ROOT" != "$TARGET" ]; then
+    if [ "$MODE" != "uninstall" ] && [ "$MODE" != "doctor" ] && [ "$DRY_RUN" != "1" ] && [ "$CODEX_ROOT" != "$TARGET" ]; then
         if [ -d "$CODEX_ROOT/.agents" ]; then
             [ -w "$CODEX_ROOT/.agents" ] || {
                 echo "错误: Codex workspace 的 .agents 不可写: $CODEX_ROOT/.agents"; exit 1;
@@ -77,7 +104,7 @@ SEC_END="<!-- repo-memory-kit:end -->"
 BLOCK_START="# repo-memory-kit:start"
 BLOCK_END="# repo-memory-kit:end"
 
-KIT_SKILLS="memory-check memory-capture repo-delivery codebase-memory systematic-debugging tdd"
+KIT_SKILLS="memory-check memory-capture repo-delivery codebase-memory systematic-debugging tdd reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff"
 
 MANAGED_FILES="
 docs/memory/RULES.md
@@ -91,14 +118,27 @@ docs/memory/_PROFILE_TEMPLATE.md
 .claude/skills/codebase-memory/SKILL.md
 .claude/skills/systematic-debugging/SKILL.md
 .claude/skills/tdd/SKILL.md
+.claude/skills/reuse-research/SKILL.md
+.claude/skills/security-review/SKILL.md
+.claude/skills/delivery-review/SKILL.md
+.claude/skills/delivery-verify/SKILL.md
+.claude/skills/spec-migrate/SKILL.md
+.claude/skills/task-handoff/SKILL.md
 .agents/skills/memory-check/SKILL.md
 .agents/skills/memory-capture/SKILL.md
 .agents/skills/repo-delivery/SKILL.md
 .agents/skills/codebase-memory/SKILL.md
 .agents/skills/systematic-debugging/SKILL.md
 .agents/skills/tdd/SKILL.md
+.agents/skills/reuse-research/SKILL.md
+.agents/skills/security-review/SKILL.md
+.agents/skills/delivery-review/SKILL.md
+.agents/skills/delivery-verify/SKILL.md
+.agents/skills/spec-migrate/SKILL.md
+.agents/skills/task-handoff/SKILL.md
 .repo-memory-kit/bin/validate-memory.sh
 .repo-memory-kit/bin/memory-build
+.repo-memory-kit/bin/spec-migrate
 .repo-memory-kit/codex-workspace-root
 "
 
@@ -165,6 +205,138 @@ content_is_kit_artifact() { # $1=文件 $2=kit 内相对路径
     h="$(file_hash "$1")"
     if [ -f "$KIT_DIR/$2" ] && [ "$(hash_of < "$KIT_DIR/$2")" = "$h" ]; then return 0; fi
     kit_path_hashes "$2" | grep -q "^$h$"
+}
+
+assert_no_symlink_components() { # $1=基准目录 $2=相对路径
+    safe_base="$1"
+    safe_rel="$2"
+    safe_current="$safe_base"
+    safe_rest="$safe_rel"
+    while [ -n "$safe_rest" ]; do
+        case "$safe_rest" in
+            */*) safe_part="${safe_rest%%/*}"; safe_rest="${safe_rest#*/}" ;;
+            *) safe_part="$safe_rest"; safe_rest="" ;;
+        esac
+        [ -n "$safe_part" ] || continue
+        safe_current="$safe_current/$safe_part"
+        if [ -L "$safe_current" ]; then
+            echo "错误: 受管路径包含符号链接，拒绝写入: $safe_current" >&2
+            return 1
+        fi
+    done
+}
+
+preflight_managed_paths() {
+    for safe_rel in docs/memory .claude/skills .agents/skills .repo-memory-kit .cbmignore CLAUDE.md AGENTS.md; do
+        assert_no_symlink_components "$TARGET" "$safe_rel" || return 1
+    done
+    if [ -n "$CODEX_ROOT" ] && [ "$CODEX_ROOT" != "$TARGET" ]; then
+        assert_no_symlink_components "$CODEX_ROOT" ".agents/skills" || return 1
+    fi
+}
+
+# ── 只读生命周期命令 ────────────────────────────────────────────────
+doctor() {
+    manifest="$TARGET/.repo-memory-kit/manifest"
+    doctor_errors=0
+    echo "DOCTOR: $TARGET"
+    if [ ! -f "$manifest" ]; then
+        echo "错误: 缺少安装清单 .repo-memory-kit/manifest"
+        return 1
+    fi
+
+    for rel in $MANAGED_FILES; do
+        [ "$rel" = ".repo-memory-kit/codex-workspace-root" ] && continue
+        if [ ! -f "$TARGET/$rel" ]; then
+            echo "错误: 缺失当前 kit 必备文件 $rel"
+            doctor_errors=$((doctor_errors+1))
+        elif ! grep -qF "  $rel" "$manifest"; then
+            echo "错误: 受管文件未登记在清单 $rel"
+            doctor_errors=$((doctor_errors+1))
+        fi
+    done
+
+    installed_ver="$(sed -n 's/^kit_version=//p' "$manifest" | sed -n '1p')"
+    current_ver="$(git -C "$KIT_DIR" describe --tags --always 2>/dev/null || echo unknown)"
+    if [ -z "$installed_ver" ] || [ "$installed_ver" != "$current_ver" ]; then
+        echo "错误: kit 版本不一致（已安装=${installed_ver:-未知}，当前=$current_ver）"
+        doctor_errors=$((doctor_errors+1))
+    fi
+
+    managed_spaced=""
+    for mf in $MANAGED_FILES; do managed_spaced="$managed_spaced $mf"; done
+    while read -r line; do
+        case "$line" in
+            *"  "*) expected_hash="${line%%  *}"; rel="${line#*  }" ;;
+            *) continue ;;
+        esac
+        case "$rel" in
+            /*|*..*) echo "错误: 清单含可疑路径 $rel"; doctor_errors=$((doctor_errors+1)); continue ;;
+        esac
+        case " $managed_spaced " in
+            *" $rel "*) ;;
+            *) echo "错误: 清单含非受管路径 $rel"; doctor_errors=$((doctor_errors+1)); continue ;;
+        esac
+        if [ ! -f "$TARGET/$rel" ]; then
+            echo "错误: 缺失受管文件 $rel"
+            doctor_errors=$((doctor_errors+1))
+        elif [ "$(file_hash "$TARGET/$rel")" != "$expected_hash" ]; then
+            echo "错误: 受管文件漂移 $rel"
+            doctor_errors=$((doctor_errors+1))
+        fi
+    done < "$manifest"
+
+    for f in CLAUDE.md AGENTS.md; do
+        if [ -f "$TARGET/$f" ] && ! grep -qF "$SEC_START" "$TARGET/$f"; then
+            echo "警告: $f 存在但未安装托管区块（可能是受保护的定制旧段落）"
+        fi
+    done
+    if [ -f "$CODEX_ROOT_MARKER" ]; then
+        saved_codex_root="$(sed -n '1p' "$CODEX_ROOT_MARKER")"
+        case "$saved_codex_root" in
+            /*)
+                for tool in $KIT_SKILLS; do
+                    link="$saved_codex_root/.agents/skills/$tool"
+                    expected="$TARGET/.agents/skills/$tool"
+                    if [ ! -L "$link" ] || [ "$(readlink "$link" 2>/dev/null || true)" != "$expected" ]; then
+                        echo "错误: Codex workspace 技能链接异常 $link"
+                        doctor_errors=$((doctor_errors+1))
+                    fi
+                done
+                ;;
+            *) echo "错误: Codex workspace 记录路径可疑"; doctor_errors=$((doctor_errors+1)) ;;
+        esac
+    fi
+    if [ "$doctor_errors" -gt 0 ]; then
+        echo "DOCTOR: 发现 $doctor_errors 个错误；可运行 --repair 修复受管产物"
+        return 1
+    fi
+    echo "DOCTOR: 健康"
+}
+
+dry_run() {
+    echo "DRY-RUN: 不会写入文件或执行联网安装"
+    echo "目标: $TARGET"
+    echo "模式: $MODE"
+    case "$MODE" in
+        uninstall) echo "计划: 校验指纹后移除 kit 受管文件、托管区块和 workspace 技能链接" ;;
+        update|repair|install)
+            echo "计划: 安装/刷新技能: $KIT_SKILLS"
+            echo "计划: 刷新记忆规则、模板、校验器、生成器和 Spec 迁移器"
+            echo "计划: 更新 CLAUDE.md、AGENTS.md 与 .cbmignore 托管区块（存在时）"
+            [ -n "$CODEX_ROOT" ] && [ "$CODEX_ROOT" != "$TARGET" ] && echo "计划: 在 $CODEX_ROOT 暴露 target-bound Codex 技能链接"
+            [ "$INSTALL_CODEBASE_MEMORY" = "0" ] || echo "计划: 配置 codebase-memory-mcp（实际执行时可能联网）"
+            if [ -d "$TARGET/.specify/specs" ]; then
+                echo "发现 Spec Kit: $TARGET/.specify/specs"
+                if [ "$MIGRATE_SPECIFY" = "1" ]; then
+                    python3 "$KIT_DIR/spec-migrate" --dry-run "$TARGET"
+                else
+                    python3 "$KIT_DIR/spec-migrate" --check "$TARGET"
+                    echo "计划: 仅报告；添加 --migrate-specify 才会迁移"
+                fi
+            fi
+            ;;
+    esac
 }
 
 # ── 卸载 ────────────────────────────────────────────────────────────
@@ -240,7 +412,13 @@ uninstall() {
     echo "卸载完成。用户数据（README.md 索引、记忆条目、.anchors.json）未触碰。"
 }
 
+[ "$MODE" = "doctor" ] && { doctor; exit $?; }
+[ "$MIGRATE_SPECIFY" = "0" ] || [ -d "$TARGET/.specify/specs" ] || {
+    echo "错误: --migrate-specify 要求目标存在 .specify/specs" >&2; exit 1;
+}
+[ "$DRY_RUN" = "1" ] && { dry_run; exit 0; }
 [ "$MODE" = "uninstall" ] && { uninstall; exit 0; }
+preflight_managed_paths
 
 [ "$INSTALL_CODEBASE_MEMORY" = "0" ] || install_codebase_memory_runtime
 
@@ -338,8 +516,20 @@ done
 mkdir -p "$TARGET/.repo-memory-kit/bin"
 cp "$KIT_DIR/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/validate-memory.sh"
 cp "$KIT_DIR/memory-build" "$TARGET/.repo-memory-kit/bin/memory-build"
-chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh"
-echo "已安装校验器与生成器 .repo-memory-kit/bin/{validate-memory.sh,memory-build}"
+cp "$KIT_DIR/spec-migrate" "$TARGET/.repo-memory-kit/bin/spec-migrate"
+chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/memory-build" "$TARGET/.repo-memory-kit/bin/spec-migrate"
+echo "已安装校验器、生成器与 Spec 迁移器 .repo-memory-kit/bin/{validate-memory.sh,memory-build,spec-migrate}"
+
+# 默认只发现和报告已有 Spec Kit 文档；显式选项才执行保留原文的增量迁移。
+if [ -d "$TARGET/.specify/specs" ]; then
+    echo "发现 Spec Kit: $TARGET/.specify/specs"
+    if [ "$MIGRATE_SPECIFY" = "1" ]; then
+        python3 "$TARGET/.repo-memory-kit/bin/spec-migrate" --apply "$TARGET"
+    else
+        python3 "$TARGET/.repo-memory-kit/bin/spec-migrate" --check "$TARGET"
+        echo "提示: 当前仅检查未修改文档；确认后可使用 --migrate-specify 增量迁移"
+    fi
+fi
 
 # ── 4. .cbmignore 托管区块（整体校验与替换）───────────────────────────
 CBM="$TARGET/.cbmignore"
@@ -417,6 +607,8 @@ echo "已写入安装清单 .repo-memory-kit/manifest（kit_version=$KIT_VER）"
 echo
 if [ "$MODE" = "update" ]; then
     echo "更新完成。kit 管辖文件已刷新；README 如有旧版规则请按迁移提示手动清理。"
+elif [ "$MODE" = "repair" ]; then
+    echo "修复完成。kit 受管文件、托管区块和技能链接已恢复为当前版本。"
 else
     echo "完成。下一步：把最近一个 bug 写成第一条 pitfall（复制 _TEMPLATE.md，按日期命名），并在 README.md 索引表中登记。"
 fi

@@ -15,6 +15,7 @@ bad()  { fail=$((fail+1)); echo "✗ $1"; }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望=$3 实际=$2）"; fi; }
 assert_exists() { if [ -e "$2" ]; then ok "$1"; else bad "$1: $2 不存在"; fi; }
 assert_gone() { if [ ! -e "$2" ]; then ok "$1"; else bad "$1: $2 仍存在"; fi; }
+assert_grep() { if grep -q "$2" "$3"; then ok "$1"; else bad "$1: 在 $3 中未找到 $2"; fi; }
 
 # ── T1 首次安装 ──
 P="$T/proj1"; mkdir -p "$P"; printf '# T\n' > "$P/CLAUDE.md"
@@ -31,6 +32,10 @@ assert_exists "Codex 技能（delivery）"   "$P/.agents/skills/repo-delivery/SK
 assert_exists "Claude 技能（graph）"     "$P/.claude/skills/codebase-memory/SKILL.md"
 assert_exists "Codex 技能（debugging）"  "$P/.agents/skills/systematic-debugging/SKILL.md"
 assert_exists "Codex 技能（tdd）"        "$P/.agents/skills/tdd/SKILL.md"
+for tool in reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff; do
+    assert_exists "新增工程技能（$tool）" "$P/.agents/skills/$tool/SKILL.md"
+done
+assert_exists "Spec Kit 迁移器随仓库安装" "$P/.repo-memory-kit/bin/spec-migrate"
 assert_exists "CLAUDE.md 托管区块"       "$P/CLAUDE.md"
 assert_eq "cbmignore 托管区块数=1" "$(grep -c 'repo-memory-kit:start' "$P/.cbmignore")" "1"
 assert_eq "CLAUDE.md 区块标记=1"  "$(grep -cF '<!-- repo-memory-kit:start -->' "$P/CLAUDE.md")" "1"
@@ -119,6 +124,9 @@ assert_gone     "卸载：delivery 技能移除"  "$P4/.agents/skills/repo-deliv
 assert_gone     "卸载：graph 技能移除"     "$P4/.agents/skills/codebase-memory"
 assert_gone     "卸载：debugging 技能移除" "$P4/.agents/skills/systematic-debugging"
 assert_gone     "卸载：tdd 技能移除"       "$P4/.agents/skills/tdd"
+for tool in reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff; do
+    assert_gone "卸载：$tool 技能移除" "$P4/.agents/skills/$tool"
+done
 assert_gone     "卸载：清单移除"           "$P4/.repo-memory-kit"
 assert_gone     "卸载：_TEMPLATE.md（清单内）移除" "$P4/docs/memory/pitfalls/_TEMPLATE.md"
 if grep -qF '<!-- repo-memory-kit:start -->' "$P4/CLAUDE.md"; then bad "卸载后 CLAUDE.md 仍含区块"; else ok "卸载：CLAUDE.md 区块移除"; fi
@@ -191,7 +199,7 @@ if "$KIT/install.sh" --codex-root "$W" "$P12" >/dev/null 2>&1; then
     else
         bad "Codex workspace 缺 delivery 技能链接"
     fi
-    for tool in codebase-memory systematic-debugging tdd; do
+    for tool in codebase-memory systematic-debugging tdd reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff; do
         if [ -L "$W/.agents/skills/$tool" ] &&
            [ "$(readlink "$W/.agents/skills/$tool")" = "$P12/.agents/skills/$tool" ]; then
             ok "Codex workspace 可发现 target-bound $tool 技能"
@@ -203,7 +211,7 @@ if "$KIT/install.sh" --codex-root "$W" "$P12" >/dev/null 2>&1; then
     if [ ! -L "$W/.agents/skills/memory-capture" ]; then ok "卸载清理 workspace capture 技能链接"; else bad "卸载遗留 workspace capture 技能链接"; fi
     if [ ! -L "$W/.agents/skills/memory-check" ]; then ok "卸载清理 workspace check 技能链接"; else bad "卸载遗留 workspace check 技能链接"; fi
     if [ ! -L "$W/.agents/skills/repo-delivery" ]; then ok "卸载清理 workspace delivery 技能链接"; else bad "卸载遗留 workspace delivery 技能链接"; fi
-    for tool in codebase-memory systematic-debugging tdd; do
+    for tool in codebase-memory systematic-debugging tdd reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff; do
         if [ ! -L "$W/.agents/skills/$tool" ]; then ok "卸载清理 workspace $tool 技能链接"; else bad "卸载遗留 workspace $tool 技能链接"; fi
     done
 else
@@ -218,6 +226,48 @@ chmod +x "$FAKE_BIN/codebase-memory-mcp"
 CBM_TEST_MARKER="$T/cbm-invoked" PATH="$FAKE_BIN:$PATH" "$KIT/install.sh" --with-codebase-memory "$P13" >/dev/null
 assert_eq "--with-codebase-memory 调用官方配置入口" "$(cat "$T/cbm-invoked")" "install"
 assert_exists "带图谱安装仍安装项目技能" "$P13/.agents/skills/codebase-memory/SKILL.md"
+
+# ── T22 --dry-run：展示计划但不写目标 ──
+P14="$T/proj14"; mkdir -p "$P14"; printf '# P\n' > "$P14/CLAUDE.md"
+OUT14="$("$KIT/install.sh" --dry-run "$P14")"
+case "$OUT14" in *"DRY-RUN"*"repo-delivery"*) ok "--dry-run 输出安装计划";; *) bad "--dry-run 输出不完整";; esac
+assert_gone "--dry-run 不创建安装目录" "$P14/.repo-memory-kit"
+assert_eq "--dry-run 不修改 CLAUDE.md" "$(cat "$P14/CLAUDE.md")" "# P"
+
+# ── T23 doctor 发现漂移，repair 恢复受管文件 ──
+P15="$T/proj15"; mkdir -p "$P15"; printf '# P\n' > "$P15/CLAUDE.md"
+"$KIT/install.sh" "$P15" >/dev/null
+if "$KIT/install.sh" --doctor "$P15" >/dev/null 2>&1; then ok "doctor 对健康安装通过"; else bad "doctor 对健康安装失败"; fi
+rm "$P15/.agents/skills/tdd/SKILL.md"
+# 即使清单中的对应行也被删，doctor 仍应按当前 kit 必备集合发现缺失。
+sed -i '\|\.agents/skills/tdd/SKILL.md$|d' "$P15/.repo-memory-kit/manifest"
+if "$KIT/install.sh" --doctor "$P15" >/dev/null 2>&1; then bad "doctor 未发现缺失文件"; else ok "doctor 发现缺失受管文件（不盲信清单）"; fi
+"$KIT/install.sh" --repair "$P15" >/dev/null
+assert_exists "repair 恢复缺失文件" "$P15/.agents/skills/tdd/SKILL.md"
+if "$KIT/install.sh" --doctor "$P15" >/dev/null 2>&1; then ok "repair 后 doctor 通过"; else bad "repair 后 doctor 仍失败"; fi
+
+# ── T24 普通安装只发现 Spec Kit；显式迁移才写入 ──
+P16="$T/proj16"; F16="$P16/.specify/specs/001-demo"
+mkdir -p "$F16" "$P16/.specify/templates"
+for name in spec plan tasks; do
+    printf '# %s\n' "$name" > "$F16/$name.md"
+    printf '# %s template\n' "$name" > "$P16/.specify/templates/$name-template.md"
+done
+"$KIT/install.sh" "$P16" > "$T/spec-install.out"
+if grep -q '发现 Spec Kit' "$T/spec-install.out"; then ok "普通安装发现 Spec Kit"; else bad "普通安装未报告 Spec Kit"; fi
+if grep -q 'migration-pending' "$F16/plan.md"; then bad "普通安装静默迁移 Spec 文档"; else ok "普通安装不改 Spec 文档"; fi
+"$KIT/install.sh" --migrate-specify "$P16" >/dev/null
+assert_grep "显式选项迁移 Spec 文档" 'agent-engineering-kit:migration-pending' "$F16/plan.md"
+
+# ── T25 安装前拒绝会把受管文件写出仓库的符号链接 ──
+P17="$T/proj17"; ESC17="$T/outside-agents"; mkdir -p "$P17" "$ESC17"
+ln -s "$ESC17" "$P17/.agents"
+if "$KIT/install.sh" "$P17" >/dev/null 2>&1; then
+    bad "安装器接受了逃逸仓库的 .agents 符号链接"
+else
+    ok "安装器拒绝逃逸仓库的 .agents 符号链接"
+fi
+assert_gone "符号链接阻断后未向仓库外安装技能" "$ESC17/skills"
 
 echo
 echo "通过 $pass / 失败 $fail"

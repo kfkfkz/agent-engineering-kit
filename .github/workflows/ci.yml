@@ -7,14 +7,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: 语法检查（sh -n / py_compile）
         run: |
-          sh -n install.sh validate-memory.sh tests/install.test.sh tests/build.test.sh
-          python3 -m py_compile memory-build
+          sh -n install.sh validate-memory.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh
+          python3 -m py_compile memory-build spec-migrate
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck >/dev/null
-          shellcheck install.sh validate-memory.sh tests/install.test.sh tests/build.test.sh
+          shellcheck install.sh validate-memory.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh
       - name: 安装器测试
         run: sh tests/install.test.sh
       - name: 生成器测试
         run: sh tests/build.test.sh
+      - name: Spec Kit 迁移测试
+        run: sh tests/spec-migrate.test.sh

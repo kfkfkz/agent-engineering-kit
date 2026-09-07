@@ -2,19 +2,25 @@
 
 给 Claude Code、Codex 和其他仓库级 AI Agent 使用的一体化工程工作流包。
 
-安装一次后，团队成员会使用同一套项目宪章、代码取证、系统调试、TDD、设计交付和项目记忆规则，减少“不同 Agent 各写一套设计、各走一套流程”的偏差。
+安装一次后，团队成员会使用同一套项目宪章、复用调研、代码取证、系统调试、TDD、安全审查、交付验证、Spec Kit 迁移和项目记忆规则，减少“不同 Agent 各写一套设计、各走一套流程”的偏差。基础包不依赖外部 review 或安全扫描 CLI。
 
 ## 三分钟接入
 
 ### 1. 安装到项目
 
 ```bash
-git clone https://github.com/timelawyer/agent-engineering-kit.git
+git clone https://github.com/kfkfkz/agent-engineering-kit.git
 cd agent-engineering-kit
 ./install.sh /path/to/your-project
 ```
 
 安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。
+
+先预览、不写入：
+
+```bash
+./install.sh --dry-run /path/to/your-project
+```
 
 如果希望同时安装或配置代码图谱 MCP：
 
@@ -68,6 +74,12 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 | 理解结构、调用链、影响面 | `/codebase-memory 问题` | `$codebase-memory 问题` | 用代码图谱取证并核验源码与索引覆盖 |
 | Bug、测试失败、异常行为 | `/systematic-debugging 问题` | `$systematic-debugging 问题` | 先复现和定位根因，再决定修复 |
 | 测试先行实现 | `/tdd 行为` | `$tdd 行为` | 按纵向切片执行 RED → GREEN → REFACTOR |
+| 新依赖、集成或技术选型 | `/reuse-research 需求` | `$reuse-research 需求` | 比较采用、扩展、组合和自建，记录证据 |
+| 漏洞与配置风险 | `/security-review 范围` | `$security-review 范围` | 检查应用数据流与 Agent 配置攻击面 |
+| 最终 diff 审查 | `/delivery-review` | `$delivery-review` | 基于证据找阻塞问题并对抗式复核高危项 |
+| 最终验证 | `/delivery-verify` | `$delivery-verify` | 执行项目真实门禁并给出交付结论 |
+| Spec Kit 迁移 | `/spec-migrate` | `$spec-migrate` | 先检查/预览，再增量迁移已有规范 |
+| 跨会话或 Agent 交接 | `/task-handoff` | `$task-handoff` | 留下可复核、可恢复的任务状态 |
 | 巡检项目记忆 | `/memory-check` | `$memory-check` | 检查记忆与当前代码是否一致 |
 | 沉淀经验 | `/memory-capture` | `$memory-capture` | 提取候选，经人确认后写入项目记忆 |
 
@@ -93,8 +105,8 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 工作流会按以下顺序执行：
 
 1. 读取项目指令、constitution 和相关记忆，提取安全、依赖、测试、文档及人工确认门禁。
-2. 使用 `codebase-memory` 找到订单查询入口、权限过滤、导出能力、调用链和受影响测试。
-3. 复用项目已有的 spec、SDD 或版本设计文档，补齐行为验收、导出契约、数据流、容量限制和失败场景。
+2. 使用 `codebase-memory` 找到订单查询入口、权限过滤、导出能力、调用链和受影响测试；需要新 CSV 组件时用 `reuse-research` 比较现有依赖、扩展点和新库。
+3. 复用项目已有的 spec、SDD 或版本设计文档，补齐行为验收、导出契约、数据流、容量限制、威胁模型和失败场景。
 4. 如果导出方式、异步任务或文件存储会改变公共契约，编码前请求确认；普通实现细节直接继续。
 5. 使用 `tdd` 按纵向切片推进，例如：
    - RED：有权限的筛选结果应导出指定字段；
@@ -102,8 +114,9 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
    - RED：超过 5 万条时返回已确认的限制行为；
    - GREEN：补齐容量保护；
    - REFACTOR：在测试保持绿色时整理重复代码。
-6. 运行相关测试、完整门禁和静态检查，检查最终 diff，并把真实实现回写原设计文档。
-7. 如果形成了可复用经验，调用 `memory-capture` 展示候选，等待人确认后再写入。
+6. 对导出权限、公式注入、敏感字段和临时文件执行 `security-review`，再运行相关测试和静态检查。
+7. 执行 `delivery-review` 与 `delivery-verify`，处理阻塞发现，并把真实实现和验证结果回写原设计文档。
+8. 如果形成了可复用经验，调用 `memory-capture` 展示候选，等待人确认后再写入。
 
 一次合格的最终汇报应类似：
 
@@ -140,7 +153,8 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 systematic-debugging 根因定位
 → tdd 回归测试
 → 最小根因修复
-→ 并发与相关回归验证
+→ security-review（支付/幂等风险）
+→ delivery-review + delivery-verify
 → 设计、故障记录和记忆收口
 ```
 
@@ -201,9 +215,11 @@ repo-delivery
   ├─ 读取项目指令、宪章和相关记忆
   ├─ 判定：直接修改 / 缺陷修复 / 既有变更 / 新功能
   ├─ codebase-memory：定位结构、调用链和影响范围
+  ├─ reuse-research：新依赖/集成/选型的复用门禁
   ├─ systematic-debugging：故障任务建立根因链
   ├─ tdd：按可观察行为完成纵向切片
-  ├─ 对照验收、风险和最终 diff 自审
+  ├─ security-review：按风险检查漏洞与 Agent 配置
+  ├─ delivery-review → delivery-verify：审查、复核、最终验证
   └─ 回写既有设计文档，并提出记忆候选
 ```
 
@@ -220,10 +236,11 @@ repo-delivery
 
 ```text
 目标与范围
-当前证据 / 根因
+当前证据 / 根因与复用依据
 行为与验收
 设计 / 契约 / 数据流
 兼容性与风险
+安全与威胁模型
 测试接缝与用例
 实施任务
 验证结果
@@ -260,6 +277,22 @@ repo-delivery
 围绕调用者可观察行为选择稳定接缝，逐个纵向切片执行 RED、GREEN 和小型 REFACTOR。
 
 除了测试先行，它还会把过度 mock、测试专用浅抽象、散弹修改和复杂测试接口识别为架构反馈。本技能参考并改编自 [mattpocock/skills 的 TDD](https://github.com/mattpocock/skills/tree/main/skills/engineering/tdd) 与 [improve-codebase-architecture](https://github.com/mattpocock/skills/blob/main/skills/engineering/improve-codebase-architecture/SKILL.md)，上游按 MIT License 使用。
+
+### reuse-research
+
+在增加依赖、集成、通用能力或关键技术方案前先查项目内复用点和一手来源，明确采用、扩展、组合或自建，避免没有证据的重复建设。
+
+### security-review
+
+覆盖两类风险：应用代码中的认证授权、注入、SSRF、路径/文件、敏感数据、支付回调和供应链；以及 Agent 指令、skills、MCP、hooks、安装脚本中的提示注入、过宽权限、秘密泄露和危险执行。HIGH/CRITICAL 必须给出可达路径，并由 `delivery-review` 逆向验证。
+
+### delivery-review 与 delivery-verify
+
+`delivery-review` 对最终 diff 做正确性、宪章、兼容性、测试、维护性和安全自审；`delivery-verify` 从项目自身的 CI、构建文件和宪章提取实际门禁。最终结论只有 `READY`、`NOT READY` 或 `NEEDS HUMAN REVIEW`，未运行的检查不会被写成通过。
+
+### spec-migrate 与 task-handoff
+
+`spec-migrate` 把已有 Spec Kit 文档安全映射到统一字段，保留原文并显式标记待核验内容；`task-handoff` 在中断或跨 Agent/会话时记录目标、证据、修改、验证、风险和唯一下一步。
 
 ### memory-check 与 memory-capture
 
@@ -308,6 +341,24 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 
 为兼容已经接入的项目，内部状态目录 `.repo-memory-kit` 以及托管区块标记继续使用旧命名。它们只是稳定的安装协议，不代表当前项目名称；请勿在业务仓库中手工改名。
 
+## 已有 Spec Kit 文档怎么接入
+
+普通安装只发现并报告 `.specify/specs`，不会修改现有文档：
+
+```bash
+./install.sh /path/to/your-project
+.repo-memory-kit/bin/spec-migrate --check /path/to/your-project
+```
+
+确认后先预览，再显式迁移：
+
+```bash
+./install.sh --dry-run --migrate-specify /path/to/your-project
+./install.sh --migrate-specify /path/to/your-project
+```
+
+迁移是增量的：先确保每个 feature 都有 `spec.md`、`plan.md`、`tasks.md`，然后保留原文、补缺失结构，并给新增段落打 `migration-pending` 标记；同时给 `.specify/templates` 增加受管覆盖层，统一未来文档。Agent 仍需结合代码、测试和业务决定完成语义整理，待核验标记不能当作设计已确认。图片、Word、表格、原型等附件不会自动改写。
+
 ## 更新与卸载
 
 拉取最新版后更新项目：
@@ -315,6 +366,13 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 ```bash
 git pull
 ./install.sh --update /path/to/your-project
+```
+
+检查安装漂移或缺失，并恢复受管产物：
+
+```bash
+./install.sh --doctor /path/to/your-project
+./install.sh --repair /path/to/your-project
 ```
 
 使用 workspace 符号链接的项目不必再次填写 `--codex-root`，安装器会读取已记录的位置；也可以显式传入以便复核。
@@ -329,7 +387,7 @@ git pull
 
 ## 依赖边界
 
-- 基础安装：POSIX shell，以及 `sha256sum` 或 `shasum`。
+- 基础安装：POSIX shell、Python 3，以及 `sha256sum` 或 `shasum`。
 - 代码图谱增强：仅在使用 `--with-codebase-memory` 时需要网络和 `curl`。
 - `open-code-review` 不包含在基础包中，因为它还依赖独立 `ocr` CLI 和 LLM 凭证。团队需要时可自行安装；基础工作流已经包含基于规范、风险、调用影响和最终 diff 的自审。
 - git 不是目标项目的硬要求；SVN 或纯本地项目也可以使用记忆系统和显式文件清单检查。
@@ -339,9 +397,10 @@ git pull
 ```bash
 ./tests/install.test.sh
 ./tests/build.test.sh
-shellcheck install.sh tests/install.test.sh tests/build.test.sh
+./tests/spec-migrate.test.sh
+shellcheck install.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh
 ```
 
 ## License
 
-MIT
+MIT。第三方思想来源与许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""Audit and structurally migrate existing Spec Kit artifacts.
+
+The tool never invents project facts.  Apply mode adds missing canonical
+sections with explicit migration-pending markers; an Agent and human reviewer
+must then integrate evidence and remove those markers.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+
+CORE_FILES = ("spec.md", "plan.md", "tasks.md")
+PENDING_PREFIX = "agent-engineering-kit:migration-pending:"
+TEMPLATE_START = "<!-- agent-engineering-kit:template-overlay:start -->"
+TEMPLATE_END = "<!-- agent-engineering-kit:template-overlay:end -->"
+
+FIELDS = {
+    "target_scope": {
+        "label": "目标与范围",
+        "target": "spec.md",
+        "pattern": r"目标与范围|范围与非目标|scope(?:\s*&\s*non[- ]?goals)?",
+        "prompt": "请从现有需求整合目标、范围内与范围外事项；确认后删除本提示。",
+    },
+    "evidence": {
+        "label": "当前证据与复用依据",
+        "target": "plan.md",
+        "pattern": r"当前证据|复用依据|根因|research|technical context",
+        "prompt": "请补充当前实现、相似模式、外部方案或缺陷根因的可核验证据；确认后删除本提示。",
+    },
+    "acceptance": {
+        "label": "行为与验收",
+        "target": "spec.md",
+        "pattern": r"行为与验收|验收|success criteria|acceptance|user scenarios",
+        "prompt": "请补充调用者可观察行为、失败场景和可测量验收条件；确认后删除本提示。",
+    },
+    "design": {
+        "label": "设计、契约与数据流",
+        "target": "plan.md",
+        "pattern": r"设计|契约|数据流|architecture|contract|data flow|technical design|module design",
+        "prompt": "请整合设计、接口契约、数据流及相关 data-model/contracts 引用；确认后删除本提示。",
+    },
+    "compatibility_risk": {
+        "label": "兼容性与风险",
+        "target": "plan.md",
+        "pattern": r"兼容|风险|compatibility|risks?",
+        "prompt": "请补充兼容、迁移、回滚、性能和运行风险及缓解措施；确认后删除本提示。",
+    },
+    "security": {
+        "label": "安全与威胁模型",
+        "target": "plan.md",
+        "pattern": r"安全|威胁|security|threat model",
+        "prompt": "请识别资产、入口、信任边界、攻击路径、安全控制和残余风险；不适用时说明依据。",
+    },
+    "test": {
+        "label": "测试接缝与用例",
+        "target": "plan.md",
+        "pattern": r"测试|test(?:ing)? strategy|test seams?",
+        "prompt": "请确定稳定测试接缝，并覆盖正常、边界、失败及必要的安全场景；确认后删除本提示。",
+    },
+    "tasks": {
+        "label": "实施任务",
+        "target": "tasks.md",
+        "pattern": r"任务|tasks?|implementation steps|phases?",
+        "prompt": "请把设计拆成可独立验证的纵向任务，并为每项写明验证方式；确认后删除本提示。",
+    },
+    "verification": {
+        "label": "交付验证",
+        "target": "plan.md",
+        "pattern": r"交付验证|验证结果|validation|verification|success metrics|quickstart",
+        "prompt": "请记录实际执行的构建、静态检查、测试、安全检查和结果；未执行项不得标记通过。",
+    },
+    "docs_memory": {
+        "label": "文档与记忆影响",
+        "target": "plan.md",
+        "pattern": r"文档与记忆|文档影响|记忆影响|documentation|memory impact",
+        "prompt": "请列出需回写的权威文档、失效口径和项目记忆候选；确认后删除本提示。",
+    },
+}
+
+TEMPLATE_OVERLAYS = {
+    "spec-template.md": """## 目标与范围
+
+- **目标**: [可测量目标]
+- **范围内**: [本次包含的行为]
+- **范围外**: [明确不做事项]
+""",
+    "plan-template.md": """## 当前证据与复用依据
+
+| 类别 | 来源 | 结论 |
+| --- | --- | --- |
+| 现有实现/相似模式/根因 | [路径、符号或权威链接] | [对设计的约束] |
+
+## 兼容性与风险
+
+| 风险 | 触发条件 | 缓解/回滚 | 验证 |
+| --- | --- | --- | --- |
+| [风险] | [条件] | [措施] | [命令或用例] |
+
+## 安全与威胁模型
+
+- **资产与敏感数据**: [内容或不适用依据]
+- **入口与信任边界**: [外部输入、权限边界、跨服务边界]
+- **攻击路径与控制**: [风险、控制、验证]
+- **残余风险**: [需人工接受的风险]
+
+## 测试接缝与用例
+
+- **稳定接缝**: [公共接口/契约]
+- **正常与边界**: [用例]
+- **失败与安全场景**: [用例]
+
+## 交付验证
+
+| 检查 | 命令/证据 | 结果 |
+| --- | --- | --- |
+| 构建、静态检查、测试、安全、diff | [实际执行] | [PASS/FAIL/未执行] |
+
+## 文档与记忆影响
+
+- **权威文档回写**: [文件及章节]
+- **失效口径清理**: [内容]
+- **记忆候选**: [候选或无]
+""",
+    "tasks-template.md": """## 交付收口
+
+- [ ] 运行项目宪章要求的构建、静态检查和测试
+- [ ] 对高风险变更完成安全审查并处理阻断项
+- [ ] 检查最终 diff，记录实际验证结果
+- [ ] 回写权威设计文档并清除失效口径
+- [ ] 评估项目记忆影响；候选经人确认后再入库
+""",
+}
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def assert_safe_spec_tree(target: Path) -> None:
+    """Refuse symlinked Spec Kit paths so reads/writes cannot escape target."""
+    specify = target / ".specify"
+    if not specify.exists() and not specify.is_symlink():
+        return
+    if specify.is_symlink():
+        raise ValueError(f"Spec Kit 路径包含符号链接: {specify}")
+    for path in specify.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(f"Spec Kit 路径包含符号链接: {path}")
+        try:
+            path.resolve().relative_to(target)
+        except ValueError as exc:
+            raise ValueError(f"Spec Kit 路径逃逸目标仓库: {path}") from exc
+
+
+def headings(text: str) -> list[str]:
+    return [
+        match.group(1).strip()
+        for match in re.finditer(r"(?m)^#{1,4}\s+(.+?)\s*$", text)
+    ]
+
+
+def inspect_feature(feature: Path) -> dict:
+    files = {
+        path.name: read_text(path)
+        for path in feature.rglob("*.md")
+        if path.is_file()
+    }
+    all_headings = "\n".join(
+        heading for content in files.values() for heading in headings(content)
+    )
+    field_status = {}
+    for field_id, field in FIELDS.items():
+        target_text = files.get(field["target"], "")
+        pending = f"{PENDING_PREFIX}{field_id}" in target_text
+        present = bool(re.search(field["pattern"], all_headings, re.IGNORECASE))
+        field_status[field_id] = "pending_review" if pending else (
+            "present" if present else "missing"
+        )
+
+    missing_core = [name for name in CORE_FILES if name not in files]
+    return {
+        "name": feature.name,
+        "path": str(feature),
+        "missing_core": missing_core,
+        "fields": field_status,
+    }
+
+
+def discover(target: Path) -> tuple[Path, list[dict]]:
+    specs = target / ".specify" / "specs"
+    if not specs.is_dir():
+        return specs, []
+    features = [
+        inspect_feature(path)
+        for path in sorted(specs.iterdir())
+        if path.is_dir()
+    ]
+    return specs, features
+
+
+def summarize(features: list[dict]) -> dict:
+    missing = sum(
+        status == "missing"
+        for feature in features
+        for status in feature["fields"].values()
+    )
+    pending = sum(
+        status == "pending_review"
+        for feature in features
+        for status in feature["fields"].values()
+    )
+    blocked = sum(bool(feature["missing_core"]) for feature in features)
+    ready = sum(
+        not feature["missing_core"]
+        and all(status == "present" for status in feature["fields"].values())
+        for feature in features
+    )
+    return {
+        "features": len(features),
+        "ready": ready,
+        "blocked": blocked,
+        "missing_fields": missing,
+        "pending_review": pending,
+    }
+
+
+def planned_operations(target: Path, features: list[dict]) -> list[dict]:
+    operations = []
+    template_root = target / ".specify" / "templates"
+    for name in TEMPLATE_OVERLAYS:
+        path = template_root / name
+        if path.is_file() and TEMPLATE_START not in read_text(path):
+            operations.append({
+                "kind": "template_overlay",
+                "path": str(path.relative_to(target)),
+            })
+    for feature in features:
+        feature_root = Path(feature["path"])
+        for field_id, status in feature["fields"].items():
+            if status != "missing":
+                continue
+            operations.append({
+                "kind": "add_pending_section",
+                "feature": feature["name"],
+                "field": field_id,
+                "label": FIELDS[field_id]["label"],
+                "path": str((feature_root / FIELDS[field_id]["target"]).relative_to(target)),
+            })
+    return operations
+
+
+def append_text(path: Path, addition: str) -> None:
+    current = read_text(path)
+    separator = "" if current.endswith("\n\n") else ("\n" if current.endswith("\n") else "\n\n")
+    path.write_text(current + separator + addition.rstrip() + "\n", encoding="utf-8")
+
+
+def apply_operations(target: Path, features: list[dict], operations: list[dict]) -> None:
+    feature_by_name = {feature["name"]: Path(feature["path"]) for feature in features}
+    for operation in operations:
+        path = target / operation["path"]
+        if operation["kind"] == "template_overlay":
+            overlay = TEMPLATE_OVERLAYS[path.name]
+            append_text(path, f"{TEMPLATE_START}\n{overlay.rstrip()}\n{TEMPLATE_END}")
+            continue
+        field_id = operation["field"]
+        field = FIELDS[field_id]
+        feature_root = feature_by_name[operation["feature"]]
+        path = feature_root / field["target"]
+        marker = f"<!-- {PENDING_PREFIX}{field_id} -->"
+        addition = (
+            f"## {field['label']}\n\n"
+            f"{marker}\n"
+            f"> 迁移待核验：{field['prompt']}\n"
+        )
+        append_text(path, addition)
+
+
+def payload(target: Path, specs: Path, features: list[dict], operations: list[dict]) -> dict:
+    return {
+        "schema_version": "agent-engineering.spec-migration.v1",
+        "target": str(target),
+        "specs_root": str(specs),
+        "summary": summarize(features),
+        "features": features,
+        "operations": operations,
+    }
+
+
+def print_human(mode: str, data: dict) -> None:
+    summary = data["summary"]
+    title = "Spec Kit 迁移检查"
+    if mode == "dry-run":
+        title = "Spec Kit 迁移 DRY-RUN"
+    elif mode == "apply":
+        title = "Spec Kit 结构迁移完成"
+    print(title)
+    print(f"功能目录: {summary['features']}")
+    print(f"就绪: {summary['ready']}")
+    print(f"阻断: {summary['blocked']}")
+    print(f"待补字段: {summary['missing_fields']}")
+    print(f"待人工核验: {summary['pending_review']}")
+    if mode in {"dry-run", "apply"}:
+        print(f"计划操作: {len(data['operations'])}")
+        for operation in data["operations"]:
+            detail = operation.get("feature", "template")
+            field = operation.get("label", operation["kind"])
+            print(f"- {detail}: {field} -> {operation['path']}")
+    if summary["features"] and mode != "apply":
+        for feature in data["features"]:
+            missing = [
+                FIELDS[field_id]["label"]
+                for field_id, status in feature["fields"].items()
+                if status == "missing"
+            ]
+            pending = [
+                FIELDS[field_id]["label"]
+                for field_id, status in feature["fields"].items()
+                if status == "pending_review"
+            ]
+            if feature["missing_core"] or missing or pending:
+                print(
+                    f"- {feature['name']}: "
+                    f"缺核心={','.join(feature['missing_core']) or '无'}; "
+                    f"待补={','.join(missing) or '无'}; "
+                    f"待核验={','.join(pending) or '无'}"
+                )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="审计并迁移已有 Spec Kit 文档")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--check", action="store_true", help="只检查，不写文件（默认）")
+    modes.add_argument("--dry-run", action="store_true", help="显示结构迁移计划，不写文件")
+    modes.add_argument("--apply", action="store_true", help="应用结构迁移并标记待人工核验")
+    parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    parser.add_argument("target", nargs="?", default=".", help="目标项目目录")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    target = Path(args.target).expanduser().resolve()
+    if not target.is_dir():
+        print(f"错误: 目标目录不存在: {target}", file=sys.stderr)
+        return 2
+
+    try:
+        assert_safe_spec_tree(target)
+    except (OSError, ValueError) as exc:
+        print(f"错误: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        specs, features = discover(target)
+    except (OSError, UnicodeError) as exc:
+        print(f"错误: 无法安全读取 Spec Kit 文档: {exc}", file=sys.stderr)
+        return 2
+    mode = "apply" if args.apply else ("dry-run" if args.dry_run else "check")
+    if not specs.is_dir():
+        data = payload(target, specs, [], [])
+        if args.json:
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+        else:
+            print("未发现 .specify/specs，跳过 Spec Kit 迁移。")
+        return 0
+
+    blocked = [feature for feature in features if feature["missing_core"]]
+    if mode == "apply" and blocked:
+        for feature in blocked:
+            missing = ", ".join(feature["missing_core"])
+            print(f"错误: {feature['name']} 缺少核心文件: {missing}", file=sys.stderr)
+        print("迁移已整体阻断，未写入任何文件。", file=sys.stderr)
+        return 2
+
+    try:
+        operations = planned_operations(target, features)
+    except (OSError, UnicodeError) as exc:
+        print(f"错误: 无法安全读取 Spec Kit 模板: {exc}", file=sys.stderr)
+        return 2
+    before = payload(target, specs, features, operations)
+    if mode == "apply":
+        apply_operations(target, features, operations)
+        _, updated_features = discover(target)
+        data = payload(target, specs, updated_features, operations)
+    else:
+        data = before
+
+    if args.json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    else:
+        print_human(mode, data)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
