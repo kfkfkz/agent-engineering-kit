@@ -77,7 +77,7 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 | 新依赖、集成或技术选型 | `/reuse-research 需求` | `$reuse-research 需求` | 比较采用、扩展、组合和自建，记录证据 |
 | 漏洞与配置风险 | `/security-review 范围` | `$security-review 范围` | 检查应用数据流与 Agent 配置攻击面 |
 | 交付收口门禁 | `/delivery-gate` | `$delivery-gate` | diff 审查、对抗复核与验证闭环，结论以验证回执为证 |
-| Spec Kit 迁移 | `/spec-migrate` | `$spec-migrate` | 先检查/预览，再增量迁移已有规范 |
+| Spec Kit 迁移 | `/spec-migrate` | `$spec-migrate` | 检查/预览，增量迁移或转 SDD 目录结构 |
 | 跨会话或 Agent 交接 | `/task-handoff` | `$task-handoff` | 留下可复核、可恢复的任务状态 |
 | 巡检项目记忆 | `/memory-check` | `$memory-check` | 检查记忆与当前代码是否一致 |
 | 沉淀经验 | `/memory-capture` | `$memory-capture` | 提取候选，经人确认后写入项目记忆 |
@@ -349,11 +349,11 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 
 ## 已有 Spec Kit 文档怎么接入
 
-普通安装只发现并报告 `.specify/specs`，不会修改现有文档：
+普通安装只发现并报告 `.specify/specs`，不会修改现有文档（安装时已自动执行一次检查）：
 
 ```bash
 ./install.sh /path/to/your-project
-.repo-memory-kit/bin/spec-migrate --check /path/to/your-project
+cd /path/to/your-project && .repo-memory-kit/bin/spec-migrate --check .
 ```
 
 确认后先预览，再显式迁移：
@@ -371,7 +371,7 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 ./install.sh --migrate-specify=001-demo --sdd-layout --sdd-version V1.0 /path/to/your-project
 ```
 
-此时 feature 目录整体移动到 `docs/03-SDD/V<版本>/` 并按团队命名规范重排（`02-需求`、`03-架构设计`、`04-详细设计/N-功能名`、`06-实现计划`、`07-原始需求材料`），`01-索引` 自动登记，原 `.specify/specs` 目录随之移除。`--apply` 必须显式指定 feature 名，防止整仓移动。
+此时 feature 目录整体移动到 `docs/03-SDD/V<版本>/` 并按团队命名规范重排（`02-需求`、`03-架构设计`、`04-详细设计/N-功能名`、`06-实现计划`、`07-原始需求材料`），`01-索引` 自动登记，原 feature 目录随之移除（`.specify/specs` 下不保留副本）。安装器入口必须用 `--migrate-specify=feature名` 显式指定（等价于迁移器的 `--apply --feature`），防止整仓移动。
 
 ## 更新与卸载
 
@@ -401,7 +401,7 @@ git pull
 
 ## 依赖边界
 
-- 基础安装：POSIX shell、Python 3，以及 `sha256sum` 或 `shasum`。
+- 基础安装：POSIX shell 以及 `sha256sum` 或 `shasum`；仓库存在 `.specify/specs` 或需要记忆构建/Spec 迁移时另需 Python 3。
 - 代码图谱增强：仅在使用 `--with-codebase-memory` 时需要网络和 `curl`。
 - `open-code-review` 不包含在基础包中，因为它还依赖独立 `ocr` CLI 和 LLM 凭证。团队需要时可自行安装；基础工作流已经包含基于规范、风险、调用影响和最终 diff 的自审。
 - git 不是目标项目的硬要求；SVN 或纯本地项目也可以使用记忆系统和显式文件清单检查。
