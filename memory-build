@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""repo-memory-kit v3: 条目 frontmatter 是唯一事实源，本工具自动生成 README 索引与 .anchors.json。
+"""agent-engineering-kit memory v3: 条目 frontmatter 是唯一事实源，本工具自动生成 README 索引与 .anchors.json。
 
 用法:
   memory-build [目标仓库]                # 校验 frontmatter + 重新生成索引与锚点表
@@ -408,7 +408,7 @@ def main():
 
     mem = os.path.join(target, "docs", "memory")
     if not os.path.isdir(mem):
-        die(f"未找到 {mem}（目标仓库装过 repo-memory-kit 吗？）")
+        die(f"未找到 {mem}（目标仓库安装过 agent-engineering-kit 吗？）")
 
     if mode in ("changed", "files"):
         entries = load_entries(mem)

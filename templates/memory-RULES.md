@@ -1,6 +1,6 @@
 # 项目记忆规则（RULES）
 
-> **本文件由 repo-memory-kit 管辖**，`install.sh --update` 会自动刷新——请勿手工编辑（改动会被覆盖）。如需改规则，改 kit 仓库的 `templates/memory-RULES.md`。
+> **本文件由 agent-engineering-kit 管辖**，`install.sh --update` 会自动刷新——请勿手工编辑（改动会被覆盖）。如需改规则，改 kit 仓库的 `templates/memory-RULES.md`。
 > 用户数据（索引、巡检记录、条目、锚点表）在 `README.md`、各条目文件与 `.anchors.json` 中，可自由编辑。
 
 ## 使用规则（对 Agent 同样生效）

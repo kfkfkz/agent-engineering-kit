@@ -1,5 +1,5 @@
 #!/bin/sh
-# repo-memory-kit 接入/更新/卸载：把项目记忆系统安装到目标仓库
+# agent-engineering-kit 接入/更新/卸载：把统一 AI Agent 工程工作流安装到目标仓库
 # 用法:
 #   ./install.sh /path/to/your-project            # 首次接入（幂等）
 #   ./install.sh --update /path/to/your-project    # 更新 kit 管辖文件
@@ -9,7 +9,7 @@
 #   ./install.sh --codex-root /workspace /path/to/your-project
 #                                                  # Codex 从父级 workspace 启动时暴露仓库技能
 #
-# 文件所有权约定：
+# 文件所有权约定（.repo-memory-kit 为向后兼容的内部状态目录）：
 #   kit 管辖（记录于 .repo-memory-kit/manifest，自动刷新）:
 #     RULES.md、双端技能、条目/画像模板、校验器、CLAUDE/AGENTS 托管区块、.cbmignore 托管区块
 #   用户所有（绝不覆盖/删除）:

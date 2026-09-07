@@ -1,4 +1,4 @@
-# repo-memory-kit
+# agent-engineering-kit
 
 给 Claude Code、Codex 和其他仓库级 AI Agent 使用的一体化工程工作流包。
 
@@ -9,8 +9,8 @@
 ### 1. 安装到项目
 
 ```bash
-git clone https://github.com/timelawyer/repo-memory-kit.git
-cd repo-memory-kit
+git clone https://github.com/timelawyer/agent-engineering-kit.git
+cd agent-engineering-kit
 ./install.sh /path/to/your-project
 ```
 
@@ -300,11 +300,13 @@ PROFILE 在有效 `confirmed` 条目达到 10 条时创建；后续积累达到�
 .repo-memory-kit/manifest       版本与受管文件指纹
 docs/memory/RULES.md            记忆规则
 docs/memory/*/_TEMPLATE.md      条目模板
-CLAUDE.md / AGENTS.md           repo-memory-kit 托管区块
+CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 .cbmignore                      代码图谱索引托管区块
 ```
 
 所有记忆条目、`docs/memory/README.md` 索引和 `.anchors.json` 属于项目用户。更新和卸载不会删除它们。受管文件被手工修改时，安装器会报告漂移；卸载只删除路径和内容指纹都匹配的 kit 产物。
+
+为兼容已经接入的项目，内部状态目录 `.repo-memory-kit` 以及托管区块标记继续使用旧命名。它们只是稳定的安装协议，不代表当前项目名称；请勿在业务仓库中手工改名。
 
 ## 更新与卸载
 
