@@ -302,9 +302,9 @@ repo-delivery
 
 ```text
 L3  docs/memory/PROFILE.md              会话开始先读的项目画像
-L2  docs/memory/playbooks/              可重复执行的场景流程
+L2  docs/memory/playbooks/              场景化操作（环境访问/测试数据/执行套路/构建）
 L1  docs/memory/pitfalls/ + decisions/  原子坑点与技术决定
-L0  权威文档、测试和代码               最终证据
+L0  代码（第一事实源）、业务域地图、spec/SDD、接口文档
 ```
 
 规则位于 `docs/memory/RULES.md`。条目 frontmatter 是唯一事实源，`memory-build` 自动维护 README 索引和 `.anchors.json`：
@@ -318,7 +318,14 @@ L0  权威文档、测试和代码               最终证据
 
 # 检查当前 git/svn 变更影响了哪些记忆
 .repo-memory-kit/bin/memory-build --changed .
+
+# 存量英文命名条目按标题批量转为中文名
+.repo-memory-kit/bin/memory-build --rename-by-title .
 ```
+
+条目命名 `YYYY-MM-DD-<中文标题>.md`，纯代码符号名可保留英文。
+
+**业务域地图是业务流的登记处**：项目建立业务域地图（如 `docs/02-业务域地图/`）后，开发完/测试完的业务流总结（含跨域端到端链路）、能力入口、调用链登记为域地图条目，不在 playbook 里复制；playbook 只保留场景化操作并以指针链接域地图。事实以代码为准，域地图与代码冲突时修正域地图。
 
 PROFILE 在有效 `confirmed` 条目达到 10 条时创建；后续积累达到提醒阈值时，`memory-build` 会提示重新蒸馏。
 
@@ -329,7 +336,7 @@ PROFILE 在有效 `confirmed` 条目达到 10 条时创建；后续积累达到�
 ```text
 .claude/skills/                 Claude Code 项目技能
 .agents/skills/                 Codex 项目技能
-.repo-memory-kit/bin/           校验器和生成器
+.repo-memory-kit/bin/           校验器、生成器和 Spec 迁移器
 .repo-memory-kit/manifest       版本与受管文件指纹
 docs/memory/RULES.md            记忆规则
 docs/memory/*/_TEMPLATE.md      条目模板
@@ -358,6 +365,14 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 ```
 
 迁移是增量的：先确保每个 feature 都有 `spec.md`、`plan.md`、`tasks.md`，然后保留原文、补缺失结构，并给新增段落打 `migration-pending` 标记；同时给 `.specify/templates` 增加受管覆盖层，统一未来文档。Agent 仍需结合代码、测试和业务决定完成语义整理，待核验标记不能当作设计已确认。图片、Word、表格、原型等附件不会自动改写。
+
+也可以把单个 feature 迁移为团队 SDD 目录结构：
+
+```bash
+./install.sh --migrate-specify=001-demo --sdd-layout --sdd-version V1.0 /path/to/your-project
+```
+
+此时 feature 目录整体移动到 `docs/03-SDD/V<版本>/` 并按团队命名规范重排（`02-需求`、`03-架构设计`、`04-详细设计/N-功能名`、`06-实现计划`、`07-原始需求材料`），`01-索引` 自动登记，原 `.specify/specs` 目录随之移除。`--apply` 必须显式指定 feature 名，防止整仓移动。
 
 ## 更新与卸载
 
