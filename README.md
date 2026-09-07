@@ -283,7 +283,7 @@ repo-delivery
 
 ### security-review
 
-覆盖两类风险：应用代码中的认证授权、注入、SSRF、路径/文件、敏感数据、支付回调和供应链；以及 Agent 指令、skills、MCP、hooks、安装脚本中的提示注入、过宽权限、秘密泄露和危险执行。HIGH/CRITICAL 必须给出可达路径，并由 `delivery-review` 逆向验证。
+覆盖两类风险：应用代码中的认证授权、注入、SSRF、路径/文件、敏感数据、支付回调和供应链；以及 Agent 指令、skills、MCP、hooks、安装脚本中的提示注入、过宽权限、秘密泄露和危险执行。HIGH/CRITICAL 必须给出可达路径，并由 `delivery-gate` 逆向验证。
 
 ### delivery-gate
 
