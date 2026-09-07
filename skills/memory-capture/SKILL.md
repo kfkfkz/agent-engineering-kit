@@ -12,6 +12,7 @@ description: "记忆捕获与蒸馏：从当前会话提取候选记忆，起草
 **流程与规则的唯一来源：`docs/memory/RULES.md`「触发与捕获」与「条目格式」两节**——按候选提取 → 分类起草 → 呈现确认 → 入库 → 后续提示逐步执行。要点：
 
 - 草稿必须带 **frontmatter**（type/status/created 必填，playbook 还须 verified；符号锚点写进 `anchors`，索引一句话写进 `summary`）——状态与日期不再写在正文。
+- **系统状态知识优先归业务域地图**：项目已有业务域地图（或 SDD 等交付体系）时，能力入口、调用链、域职责与「不负责」边界类的候选，路由为对应域地图条目的更新建议（同样待人确认），不在 playbook 里复制口径；playbook 只保留场景化操作流程（环境访问、跨域操作、临时任务）并以指针链接域地图。
 - 入库后**必须运行** `.repo-memory-kit/bin/memory-build` 刷新 README 索引与 `.anchors.json`（生成物，禁止手改）。
 
 ## 边界（固定约束）

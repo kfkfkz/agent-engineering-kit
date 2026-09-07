@@ -27,7 +27,7 @@
 1. **候选提取**：扫描当前会话，识别四类候选——坑（根因已明的缺陷/陷阱）、流程（跑通的操作步骤）、环境信息（路由/配置/关键 ID）、决定（重要取舍及理由）。
 2. **分类起草**：按条目模板生成草稿（**frontmatter 必填**：type/status/created，playbook 还须 verified）；坑 → pitfall（默认 status: unverified，除非已有验证证据），流程/环境 → playbook，**决定 → decision**（背景/取舍/后果，禁止硬塞进 playbook）。不捕获凭证与内网地址（安全规则）、纯会话性内容。
 3. **呈现确认**：逐条列出（类型/标题/一句话），等用户确认或修改——**确认是入库的必要条件**。
-4. **入库**：确认后写入对应目录（`YYYY-MM-DD-<slug>.md`，frontmatter 的 anchors 填类型化定位符），**随即运行 `memory-build` 刷新索引与锚点表**；达到 L3 门槛（有效 `confirmed` 条目 ≥ 10，由 `memory-build` 自动判断）时提示蒸馏 PROFILE。
+4. **入库**：确认后写入对应目录（`YYYY-MM-DD-<中文标题>.md`，标题与正文一级标题一致，纯代码符号名可保留英文；frontmatter 的 anchors 填类型化定位符），**随即运行 `memory-build` 刷新索引与锚点表**；达到 L3 门槛（有效 `confirmed` 条目 ≥ 10，由 `memory-build` 自动判断）时提示蒸馏 PROFILE。
 5. **后续提示**：待验证条目给出验证方式；playbook 标注「最后有效」日期。
 
 ## 功能蒸馏清单
@@ -44,6 +44,8 @@
 
 原则：记忆区存"怎么跑通"和"去哪查详情"，不复制权威文档内容（单一口径）。
 
+**系统状态知识的权威载体**：项目已有业务域地图（或 SDD 等交付体系）时，能力入口、调用链、域职责与「不负责」边界以业务域地图为权威载体——功能蒸馏中属于常驻能力描述的核心流程，路由为对应域地图条目的更新（同样经人确认后写入），不在 playbook 里复制；playbook 只保留场景化操作流程（环境访问、跨域操作、临时任务）并以指针链接域地图。域地图条目同样遵守证据规则：从代码形成的结论必须带文件、类、方法或数据表证据。
+
 ## 分层与下钻
 
 记忆区是三层结构 + 一个外部证据层，上层只存结论与指针，细节必须可下钻：
@@ -52,7 +54,7 @@
 L3  PROFILE.md（项目经验画像）   宏观引导：风险域地图/稳定约定/反模式，会话开始优先读
 L2  playbooks/                  场景流程：某功能/环境怎么跑通
 L1  pitfalls/ + decisions/      原子经验：坑（缺陷/陷阱）与决定（背景/取舍/后果）
-L0  权威文档与代码（记忆区外）   证据：接口文档、spec、源码
+L0  权威文档与代码（记忆区外）   证据：业务域地图、spec/SDD、接口文档、源码
 ```
 
 **L3 消费规则（写入 Agent 指引）**：`PROFILE.md` 存在时，Agent 会话开始必须先读它，再查 README 索引——没有消费规则的生产规则是死代码。
@@ -145,4 +147,4 @@ L0  权威文档与代码（记忆区外）   证据：接口文档、spec、源
 | summary | 可选 | 索引一句话（缺省用标题） |
 | supersedes / conflicts_with / related | 可选 | 替代/冲突/关联条目（相对路径）；status 为 superseded 的条目必须被某条的 supersedes 指向 |
 
-正文：一级标题 + 内容小节 + 「校验点」（巡检记录与补充事实）。状态与日期**不再写在正文**——单一事实源在 frontmatter。模板：`pitfalls/_TEMPLATE.md`、`decisions/_TEMPLATE.md`、`playbooks/_TEMPLATE.md`、`_PROFILE_TEMPLATE.md`；命名 `YYYY-MM-DD-<slug>.md`。
+正文：一级标题 + 内容小节 + 「校验点」（巡检记录与补充事实）。状态与日期**不再写在正文**——单一事实源在 frontmatter。模板：`pitfalls/_TEMPLATE.md`、`decisions/_TEMPLATE.md`、`playbooks/_TEMPLATE.md`、`_PROFILE_TEMPLATE.md`；命名 `YYYY-MM-DD-<中文标题>.md`（纯代码符号名可保留英文）。存量英文命名的条目可运行 `memory-build --rename-by-title` 按标题批量重命名，交叉引用与索引自动联动。

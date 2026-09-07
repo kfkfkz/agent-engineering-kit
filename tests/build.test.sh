@@ -10,6 +10,8 @@ ok()  { pass=$((pass+1)); echo "✓ $1"; }
 bad() { fail=$((fail+1)); echo "✗ $1"; }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望=$3 实际=$2）"; fi; }
 assert_grep() { if grep -q "$2" "$3"; then ok "$1"; else bad "$1: 在 $3 中未找到 $2"; fi; }
+assert_exists() { if [ -e "$2" ]; then ok "$1"; else bad "$1: $2 不存在"; fi; }
+assert_gone() { if [ ! -e "$2" ]; then ok "$1"; else bad "$1: $2 仍存在"; fi; }
 MB() { python3 "$KIT/memory-build" "$@"; }
 
 P="$T/proj"; mkdir -p "$P"
@@ -213,6 +215,50 @@ cat > "$P2/docs/memory/PROFILE.md" <<'EOF'
 EOF
 OUT6="$(MB --check "$P2")"
 case "$OUT6" in *"其后新增 confirmed 5 条"*"建议重新蒸馏"*) ok "新增 confirmed 达阈值时提示重蒸馏";; *) bad "L3 重蒸馏提示缺失（输出: $OUT6）";; esac
+
+# ── T7 条目按标题中文重命名：文件、交叉引用、索引、锚点联动 ──
+P3="$T/rename"; mkdir -p "$P3"
+"$KIT/install.sh" "$P3" >/dev/null
+cat > "$P3/docs/memory/pitfalls/2026-03-01-zip-format-mismatch.md" <<'EOF'
+---
+type: pitfall
+status: confirmed
+module: arch
+created: 2026-03-01
+summary: 压缩包格式误判
+anchors:
+  - class:com.example.ZipRouter
+---
+
+# 压缩包格式误判
+
+## 现象
+坏了
+EOF
+cat > "$P3/docs/memory/pitfalls/2026-03-02-related-issue.md" <<'EOF'
+---
+type: pitfall
+status: unverified
+module: arch
+created: 2026-03-02
+related:
+  - pitfalls/2026-03-01-zip-format-mismatch.md
+---
+
+# 相邻问题
+
+## 现象
+有关联
+EOF
+MB --rename-by-title "$P3" >/dev/null
+assert_exists "条目按中文标题重命名" "$P3/docs/memory/pitfalls/2026-03-01-压缩包格式误判.md"
+assert_gone "旧英文文件名移除" "$P3/docs/memory/pitfalls/2026-03-01-zip-format-mismatch.md"
+assert_grep "交叉引用联动改写" 'pitfalls/2026-03-01-压缩包格式误判.md' "$P3/docs/memory/pitfalls/2026-03-02-相邻问题.md"
+assert_grep "README 索引指向新文件名" '2026-03-01-压缩包格式误判.md' "$P3/docs/memory/README.md"
+assert_grep "锚点表条目路径更新" '2026-03-01-压缩包格式误判.md' "$P3/docs/memory/.anchors.json"
+OUT7="$(MB --rename-by-title "$P3")"
+case "$OUT7" in *"无需重命名"*) ok "重命名幂等";; *) bad "重命名不幂等: $OUT7";; esac
+if MB --check "$P3" >/dev/null 2>&1; then ok "重命名后 --check 一致"; else bad "重命名后 --check 失败"; fi
 
 echo
 echo "通过 $pass / 失败 $fail"

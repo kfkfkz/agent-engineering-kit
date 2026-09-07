@@ -5,6 +5,7 @@
   memory-build [目标仓库]                # 校验 frontmatter + 重新生成索引与锚点表
   memory-build --check [目标仓库]        # 只校验不写文件（CI/校验器用）；索引或锚点过期则报错
   memory-build --migrate [目标仓库]      # 旧格式条目自动合成 frontmatter（状态行/最后有效/文件名日期/旧锚点表反填）
+  memory-build --rename-by-title [目标仓库]  # 条目文件按标题重命名为 YYYY-MM-DD-<标题>.md（中文项目即中文文件名），联动交叉引用
   memory-build --changed [目标仓库]      # 工作区变更（自动探测 git/svn）→ 受影响记忆条目
   memory-build --since <ref> [目标仓库]  # git ref..HEAD 或 svn -r ref:HEAD 的变更 → 受影响条目
   <变更命令> | memory-build --files [目标仓库]  # 任意来源的文件清单（stdin，VCS 无关）→ 受影响条目
@@ -275,6 +276,92 @@ def migrate(entries, mem):
     print("提示: 检查各条目 frontmatter（补 summary/module/verified），然后运行 memory-build 重新生成索引与锚点表")
 
 
+def sanitize_title(title):
+    """条目标题 → 文件名片段：去非法字符与日期括注，空白转连字符，40 字内在自然边界收口。"""
+    t = re.sub(r"[\\/:*?\"<>|]", "", str(title))
+    # 去日期括注（如「（2026-08-25，示例批次）」）——与文件名日期前缀重复。
+    t = re.sub(r"[（(]\s*\d{4}-\d{2}-\d{2}[^（）()]*[)）]\s*", "", t)
+    t = re.sub(r"\s+", "-", t.strip())
+    if len(t) > 40:
+        cut = t[:40]
+        best = max((cut.rfind(s) for s in ("——", "-", "，", ",", "、", "；", ";", "：", ":")), default=-1)
+        if best >= 20:
+            cut = cut[:best]
+        cut = re.sub(r"[（(][^（）()]*$", "", cut)  # 去悬空的半个括注
+        t = cut
+    return t.strip("-—，,、；;：: +").strip("-")
+
+
+def rename_by_title(entries, mem, target):
+    """按条目标题把文件重命名为 `YYYY-MM-DD-<标题>.md`（中文项目即中文文件名）。
+
+    联动改写其他条目 frontmatter/正文中的旧文件名引用，然后交回正常构建
+    流程重建索引与锚点表。created 缺失且文件名无日期前缀的条目跳过。
+    """
+    kind = vcs_kind(target)
+    used = {os.path.basename(e["rel"]) for e in entries}
+    plan = []  # (entry, old_basename, new_basename)
+    skipped = []
+    for e in entries:
+        if not e["has_fm"]:
+            skipped.append(f"{e['rel']}（缺 frontmatter，先 --migrate）")
+            continue
+        created = str(e["fm"].get("created") or "")
+        if not DATE_RE.match(created):
+            dm = re.match(r"^(\d{4}-\d{2}-\d{2})", os.path.basename(e["rel"]))
+            created = dm.group(1) if dm else ""
+        h1 = re.search(r"^# (.+)$", e["body"], re.M)
+        # summary 是人工整理的索引一句话，优先；缺省回退正文一级标题。
+        title = str(e["fm"].get("summary") or "").strip() or (h1.group(1).strip() if h1 else "")
+        stem = sanitize_title(title)
+        if not created or not stem:
+            skipped.append(f"{e['rel']}（无法定位 created 或标题）")
+            continue
+        old_name = os.path.basename(e["rel"])
+        base = f"{created}-{stem}"
+        new_name = base + ".md"
+        n = 2
+        while new_name in used and new_name != old_name:
+            new_name = f"{base}-{n}.md"
+            n += 1
+        if new_name == old_name:
+            continue
+        used.discard(old_name)
+        used.add(new_name)
+        plan.append((e, old_name, new_name))
+    if not plan:
+        print("所有条目文件名已符合 `YYYY-MM-DD-<标题>.md`，无需重命名")
+        for s in skipped:
+            print(f"  - 跳过 {s}")
+        return
+    # 先改写引用（旧路径仍在），再移动文件。
+    for e in entries:
+        text = open(e["path"], encoding="utf-8").read()
+        new_text = text
+        for _, old_name, new_name in plan:
+            new_text = new_text.replace(old_name, new_name)
+        if new_text != text:
+            atomic_write(e["path"], new_text)
+    for e, old_name, new_name in plan:
+        src = e["path"]
+        dst = os.path.join(os.path.dirname(src), new_name)
+        moved = False
+        if kind == "git":
+            r = subprocess.run(["git", "-C", target, "mv", src, dst],
+                               capture_output=True, text=True)
+            moved = r.returncode == 0
+        elif kind == "svn":
+            r = subprocess.run(["svn", "mv", src, dst], cwd=target,
+                               capture_output=True, text=True)
+            moved = r.returncode == 0
+        if not moved:
+            os.rename(src, dst)
+        print(f"重命名 {e['rel']} → {os.path.basename(os.path.dirname(e['rel']))}/{new_name}")
+    print(f"共重命名 {len(plan)} 个条目；索引与锚点表随本次构建刷新")
+    for s in skipped:
+        print(f"  - 跳过 {s}")
+
+
 def vcs_kind(target):
     """功能探测而非目录探测：空 .git 残留目录不会误判为 git。"""
     r = subprocess.run(["git", "-C", target, "rev-parse", "--git-dir"],
@@ -385,6 +472,8 @@ def main():
             mode = "check"
         elif a == "--migrate":
             mode = "migrate"
+        elif a == "--rename-by-title":
+            mode = "rename"
         elif a == "--changed":
             mode = "changed"
         elif a == "--files":
@@ -444,6 +533,10 @@ def main():
     if mode == "migrate":
         migrate(entries, mem)
         return
+
+    if mode == "rename":
+        rename_by_title(entries, mem, target)
+        entries = load_entries(mem)  # 重命名后按新路径重建
 
     errs = validate(entries)
     if errs:
