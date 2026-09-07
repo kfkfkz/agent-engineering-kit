@@ -4,6 +4,8 @@
 #   ./install.sh /path/to/your-project            # 首次接入（幂等）
 #   ./install.sh --update /path/to/your-project    # 更新 kit 管辖文件
 #   ./install.sh --uninstall /path/to/your-project # 卸载 kit 管辖产物（不触碰用户数据）
+#   ./install.sh --with-codebase-memory /path/to/your-project
+#                                                  # 同时安装/配置代码图谱 MCP
 #   ./install.sh --codex-root /workspace /path/to/your-project
 #                                                  # Codex 从父级 workspace 启动时暴露仓库技能
 #
@@ -19,12 +21,14 @@
 set -e
 
 MODE=install
+INSTALL_CODEBASE_MEMORY=0
 CODEX_ROOT=""
 TARGET=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --update) MODE=update ;;
         --uninstall) MODE=uninstall ;;
+        --with-codebase-memory) INSTALL_CODEBASE_MEMORY=1 ;;
         --codex-root)
             shift
             [ "$#" -gt 0 ] || { echo "错误: --codex-root 需要目录参数"; exit 1; }
@@ -39,8 +43,11 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-[ -n "$TARGET" ] || { echo "用法: ./install.sh [--update|--uninstall] [--codex-root /workspace] /path/to/your-project"; exit 1; }
+[ -n "$TARGET" ] || { echo "用法: ./install.sh [--update|--uninstall] [--with-codebase-memory] [--codex-root /workspace] /path/to/your-project"; exit 1; }
 [ -d "$TARGET" ] || { echo "错误: 目标目录不存在: $TARGET"; exit 1; }
+[ "$MODE" != "uninstall" ] || [ "$INSTALL_CODEBASE_MEMORY" = "0" ] || {
+    echo "错误: --with-codebase-memory 不能与 --uninstall 同时使用"; exit 1;
+}
 TARGET="$(cd "$TARGET" && pwd)"
 
 CODEX_ROOT_MARKER="$TARGET/.repo-memory-kit/codex-workspace-root"
@@ -70,6 +77,8 @@ SEC_END="<!-- repo-memory-kit:end -->"
 BLOCK_START="# repo-memory-kit:start"
 BLOCK_END="# repo-memory-kit:end"
 
+KIT_SKILLS="memory-check memory-capture repo-delivery codebase-memory systematic-debugging tdd"
+
 MANAGED_FILES="
 docs/memory/RULES.md
 docs/memory/pitfalls/_TEMPLATE.md
@@ -78,8 +87,16 @@ docs/memory/playbooks/_TEMPLATE.md
 docs/memory/_PROFILE_TEMPLATE.md
 .claude/skills/memory-check/SKILL.md
 .claude/skills/memory-capture/SKILL.md
+.claude/skills/repo-delivery/SKILL.md
+.claude/skills/codebase-memory/SKILL.md
+.claude/skills/systematic-debugging/SKILL.md
+.claude/skills/tdd/SKILL.md
 .agents/skills/memory-check/SKILL.md
 .agents/skills/memory-capture/SKILL.md
+.agents/skills/repo-delivery/SKILL.md
+.agents/skills/codebase-memory/SKILL.md
+.agents/skills/systematic-debugging/SKILL.md
+.agents/skills/tdd/SKILL.md
 .repo-memory-kit/bin/validate-memory.sh
 .repo-memory-kit/bin/memory-build
 .repo-memory-kit/codex-workspace-root
@@ -95,6 +112,34 @@ else
     exit 1
 fi
 file_hash() { hash_of < "$1"; }
+
+install_codebase_memory_runtime() {
+    if command -v codebase-memory-mcp >/dev/null 2>&1; then
+        echo "正在使用已安装的 codebase-memory-mcp 配置当前 Agent 环境..."
+        codebase-memory-mcp install
+        return
+    fi
+
+    command -v curl >/dev/null 2>&1 || {
+        echo "错误: --with-codebase-memory 需要 curl 下载官方安装器" >&2; return 1;
+    }
+    cbm_tmp_dir="$(mktemp -d)"
+    cbm_installer="$cbm_tmp_dir/install.sh"
+    echo "正在下载并执行 DeusData/codebase-memory-mcp 官方安装器..."
+    if ! curl -fsSL "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh" -o "$cbm_installer"; then
+        rmdir "$cbm_tmp_dir" 2>/dev/null || true
+        echo "错误: codebase-memory-mcp 安装器下载失败" >&2
+        return 1
+    fi
+    if ! sh "$cbm_installer"; then
+        rm -f "$cbm_installer"
+        rmdir "$cbm_tmp_dir" 2>/dev/null || true
+        echo "错误: codebase-memory-mcp 官方安装器执行失败" >&2
+        return 1
+    fi
+    rm -f "$cbm_installer"
+    rmdir "$cbm_tmp_dir" 2>/dev/null || true
+}
 
 # kit 内某路径在 git 历史中所有版本的内容指纹。
 # norm=1 时先去空行再哈希（用于段落匹配——目标文件中的段落与模板原文的空行口径不同）。
@@ -129,7 +174,7 @@ uninstall() {
         saved_codex_root="$(sed -n '1p' "$CODEX_ROOT_MARKER")"
         case "$saved_codex_root" in
             /*)
-                for tool in memory-check memory-capture; do
+                for tool in $KIT_SKILLS; do
                     link="$saved_codex_root/.agents/skills/$tool"
                     expected="$TARGET/.agents/skills/$tool"
                     if [ -L "$link" ] && [ "$(readlink "$link")" = "$expected" ]; then
@@ -186,14 +231,18 @@ uninstall() {
         echo "已移除 .cbmignore 托管区块"
     fi
     rm -rf "$TARGET/.repo-memory-kit"
-    for d in .claude/skills/memory-check .claude/skills/memory-capture \
-             .agents/skills/memory-check .agents/skills/memory-capture; do
-        rmdir "$TARGET/$d" 2>/dev/null && echo "已移除空目录 $d"
+    for skill_root in .claude/skills .agents/skills; do
+        for tool in $KIT_SKILLS; do
+            d="$skill_root/$tool"
+            rmdir "$TARGET/$d" 2>/dev/null && echo "已移除空目录 $d"
+        done
     done
     echo "卸载完成。用户数据（README.md 索引、记忆条目、.anchors.json）未触碰。"
 }
 
 [ "$MODE" = "uninstall" ] && { uninstall; exit 0; }
+
+[ "$INSTALL_CODEBASE_MEMORY" = "0" ] || install_codebase_memory_runtime
 
 # ── 漂移检测（覆盖前提示）────────────────────────────────────────────
 if [ -f "$TARGET/.repo-memory-kit/manifest" ]; then
@@ -230,7 +279,7 @@ cp "$KIT_DIR/templates/profile.md" "$TARGET/docs/memory/_PROFILE_TEMPLATE.md"
 echo "已刷新条目/决定/流程/画像模板"
 
 # ── 2. 双端技能（仓库级，两端同一份 SKILL.md）────────────────────────
-for tool in memory-check memory-capture; do
+for tool in $KIT_SKILLS; do
     mkdir -p "$TARGET/.claude/skills/$tool" "$TARGET/.agents/skills/$tool"
     cp "$KIT_DIR/skills/$tool/SKILL.md" "$TARGET/.claude/skills/$tool/SKILL.md"
     cp "$KIT_DIR/skills/$tool/SKILL.md" "$TARGET/.agents/skills/$tool/SKILL.md"
@@ -241,7 +290,7 @@ echo "已安装/更新双端技能（.claude/skills + .agents/skills，仓库级
 # 通过 target-bound 符号链接暴露同一份受管技能，避免复制后版本漂移。
 if [ -n "$CODEX_ROOT" ] && [ "$CODEX_ROOT" != "$TARGET" ]; then
     mkdir -p "$CODEX_ROOT/.agents/skills" "$TARGET/.repo-memory-kit"
-    for tool in memory-check memory-capture; do
+    for tool in $KIT_SKILLS; do
         src="$TARGET/.agents/skills/$tool"
         link="$CODEX_ROOT/.agents/skills/$tool"
         if [ -L "$link" ]; then
@@ -255,11 +304,11 @@ if [ -n "$CODEX_ROOT" ] && [ "$CODEX_ROOT" != "$TARGET" ]; then
         fi
     done
     printf '%s\n' "$CODEX_ROOT" > "$CODEX_ROOT_MARKER"
-    echo "已向 Codex workspace 暴露技能：$CODEX_ROOT/.agents/skills/{memory-check,memory-capture}"
+    echo "已向 Codex workspace 暴露技能：$KIT_SKILLS"
 fi
 
 # 旧版全局 Codex 技能：仅当内容指纹匹配 kit 当前/历史版本才清理
-for tool in memory-check memory-capture; do
+for tool in memory-check memory-capture repo-delivery; do
     d="$HOME/.codex/skills/$tool"; old="$d/SKILL.md"
     if [ -e "$d" ]; then
         if content_is_kit_artifact "$old" "skills/$tool/SKILL.md" \

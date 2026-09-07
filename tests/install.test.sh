@@ -26,9 +26,16 @@ assert_exists "PROFILE 模板安装"         "$P/docs/memory/_PROFILE_TEMPLATE.m
 assert_exists "校验器随仓库安装"          "$P/.repo-memory-kit/bin/validate-memory.sh"
 assert_exists "Claude 技能（check）"     "$P/.claude/skills/memory-check/SKILL.md"
 assert_exists "Codex 技能（capture）"    "$P/.agents/skills/memory-capture/SKILL.md"
+assert_exists "Claude 技能（delivery）"  "$P/.claude/skills/repo-delivery/SKILL.md"
+assert_exists "Codex 技能（delivery）"   "$P/.agents/skills/repo-delivery/SKILL.md"
+assert_exists "Claude 技能（graph）"     "$P/.claude/skills/codebase-memory/SKILL.md"
+assert_exists "Codex 技能（debugging）"  "$P/.agents/skills/systematic-debugging/SKILL.md"
+assert_exists "Codex 技能（tdd）"        "$P/.agents/skills/tdd/SKILL.md"
 assert_exists "CLAUDE.md 托管区块"       "$P/CLAUDE.md"
 assert_eq "cbmignore 托管区块数=1" "$(grep -c 'repo-memory-kit:start' "$P/.cbmignore")" "1"
 assert_eq "CLAUDE.md 区块标记=1"  "$(grep -cF '<!-- repo-memory-kit:start -->' "$P/CLAUDE.md")" "1"
+if grep -q '/repo-delivery' "$P/CLAUDE.md"; then ok "CLAUDE.md 含 slash 工作流入口"; else bad "CLAUDE.md 缺 slash 工作流入口"; fi
+if grep -qF "\$repo-delivery" "$P/CLAUDE.md"; then ok "CLAUDE.md 含 Codex 工作流入口"; else bad "CLAUDE.md 缺 Codex 工作流入口"; fi
 assert_exists "安装清单"                  "$P/.repo-memory-kit/manifest"
 if grep -q '^kit_version=' "$P/.repo-memory-kit/manifest"; then ok "清单含 kit_version"; else bad "清单缺 kit_version"; fi
 
@@ -108,6 +115,10 @@ rm -f "$P4/docs/memory/pitfalls/2099-01-01-not-in-index.md"
 "$KIT/install.sh" --uninstall "$P4" >/dev/null
 assert_gone     "卸载：RULES.md 移除"      "$P4/docs/memory/RULES.md"
 assert_gone     "卸载：技能移除"           "$P4/.claude/skills/memory-check"
+assert_gone     "卸载：delivery 技能移除"  "$P4/.agents/skills/repo-delivery"
+assert_gone     "卸载：graph 技能移除"     "$P4/.agents/skills/codebase-memory"
+assert_gone     "卸载：debugging 技能移除" "$P4/.agents/skills/systematic-debugging"
+assert_gone     "卸载：tdd 技能移除"       "$P4/.agents/skills/tdd"
 assert_gone     "卸载：清单移除"           "$P4/.repo-memory-kit"
 assert_gone     "卸载：_TEMPLATE.md（清单内）移除" "$P4/docs/memory/pitfalls/_TEMPLATE.md"
 if grep -qF '<!-- repo-memory-kit:start -->' "$P4/CLAUDE.md"; then bad "卸载后 CLAUDE.md 仍含区块"; else ok "卸载：CLAUDE.md 区块移除"; fi
@@ -174,12 +185,39 @@ if "$KIT/install.sh" --codex-root "$W" "$P12" >/dev/null 2>&1; then
     else
         bad "Codex workspace 缺 check 技能链接"
     fi
+    if [ -L "$W/.agents/skills/repo-delivery" ] &&
+       [ "$(readlink "$W/.agents/skills/repo-delivery")" = "$P12/.agents/skills/repo-delivery" ]; then
+        ok "Codex workspace 可发现 target-bound delivery 技能"
+    else
+        bad "Codex workspace 缺 delivery 技能链接"
+    fi
+    for tool in codebase-memory systematic-debugging tdd; do
+        if [ -L "$W/.agents/skills/$tool" ] &&
+           [ "$(readlink "$W/.agents/skills/$tool")" = "$P12/.agents/skills/$tool" ]; then
+            ok "Codex workspace 可发现 target-bound $tool 技能"
+        else
+            bad "Codex workspace 缺 $tool 技能链接"
+        fi
+    done
     "$KIT/install.sh" --uninstall "$P12" >/dev/null
     if [ ! -L "$W/.agents/skills/memory-capture" ]; then ok "卸载清理 workspace capture 技能链接"; else bad "卸载遗留 workspace capture 技能链接"; fi
     if [ ! -L "$W/.agents/skills/memory-check" ]; then ok "卸载清理 workspace check 技能链接"; else bad "卸载遗留 workspace check 技能链接"; fi
+    if [ ! -L "$W/.agents/skills/repo-delivery" ]; then ok "卸载清理 workspace delivery 技能链接"; else bad "卸载遗留 workspace delivery 技能链接"; fi
+    for tool in codebase-memory systematic-debugging tdd; do
+        if [ ! -L "$W/.agents/skills/$tool" ]; then ok "卸载清理 workspace $tool 技能链接"; else bad "卸载遗留 workspace $tool 技能链接"; fi
+    done
 else
     bad "--codex-root 安装失败"
 fi
+
+# ── T21 显式选项复用已安装的 codebase-memory-mcp，不触发网络下载 ──
+P13="$T/proj13"; mkdir -p "$P13"
+FAKE_BIN="$T/fake-bin"; mkdir -p "$FAKE_BIN"
+printf '%s\n' '#!/bin/sh' "printf \"%s\\n\" \"\$*\" > \"\$CBM_TEST_MARKER\"" > "$FAKE_BIN/codebase-memory-mcp"
+chmod +x "$FAKE_BIN/codebase-memory-mcp"
+CBM_TEST_MARKER="$T/cbm-invoked" PATH="$FAKE_BIN:$PATH" "$KIT/install.sh" --with-codebase-memory "$P13" >/dev/null
+assert_eq "--with-codebase-memory 调用官方配置入口" "$(cat "$T/cbm-invoked")" "install"
+assert_exists "带图谱安装仍安装项目技能" "$P13/.agents/skills/codebase-memory/SKILL.md"
 
 echo
 echo "通过 $pass / 失败 $fail"
