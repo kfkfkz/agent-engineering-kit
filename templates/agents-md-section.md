@@ -9,7 +9,7 @@
 - 可观察行为默认使用 `tdd` 逐个纵向切片实现；难测、过度 mock 或散弹修改应作为架构信号回到设计链。
 - 新依赖、外部集成、通用组件或关键选型先用 `reuse-research`，形成采用/扩展/组合/自建的证据化决策。
 - 认证授权、外部输入、敏感操作、依赖或 Agent 配置变更使用 `security-review`；高危结论必须有利用路径并做对抗式复核。
-- 交付前依次执行 `delivery-review` 与 `delivery-verify`，任何未完成门禁都不得被描述为通过。
+- 交付收口用 `delivery-gate`：diff 审查、对抗复核与验证闭环；验证结论以 `docs/delivery-receipts/` 回执为唯一证据，无回执不得声称验证通过。
 - 已有 `.specify/specs` 先用 `spec-migrate` 检查；只有明确要求时才增量迁移，待核验标记不等于设计完成。
 - 任务中断或跨 Agent/会话移交时使用 `task-handoff`，以当前源码和权威 spec 复核交接内容。
 - 会话开始先读 `docs/memory/PROFILE.md`（L3 画像，存在时），再查 `README.md` 索引。

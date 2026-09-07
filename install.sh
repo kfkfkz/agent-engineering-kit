@@ -131,7 +131,7 @@ SEC_END="<!-- repo-memory-kit:end -->"
 BLOCK_START="# repo-memory-kit:start"
 BLOCK_END="# repo-memory-kit:end"
 
-KIT_SKILLS="memory-check memory-capture repo-delivery codebase-memory systematic-debugging tdd reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff"
+KIT_SKILLS="memory-check memory-capture repo-delivery codebase-memory systematic-debugging tdd reuse-research security-review delivery-gate spec-migrate task-handoff"
 
 MANAGED_FILES="
 docs/memory/RULES.md
@@ -147,8 +147,7 @@ docs/memory/_PROFILE_TEMPLATE.md
 .claude/skills/tdd/SKILL.md
 .claude/skills/reuse-research/SKILL.md
 .claude/skills/security-review/SKILL.md
-.claude/skills/delivery-review/SKILL.md
-.claude/skills/delivery-verify/SKILL.md
+.claude/skills/delivery-gate/SKILL.md
 .claude/skills/spec-migrate/SKILL.md
 .claude/skills/task-handoff/SKILL.md
 .agents/skills/memory-check/SKILL.md
@@ -159,8 +158,7 @@ docs/memory/_PROFILE_TEMPLATE.md
 .agents/skills/tdd/SKILL.md
 .agents/skills/reuse-research/SKILL.md
 .agents/skills/security-review/SKILL.md
-.agents/skills/delivery-review/SKILL.md
-.agents/skills/delivery-verify/SKILL.md
+.agents/skills/delivery-gate/SKILL.md
 .agents/skills/spec-migrate/SKILL.md
 .agents/skills/task-handoff/SKILL.md
 .repo-memory-kit/bin/validate-memory.sh
@@ -499,6 +497,51 @@ cp "$KIT_DIR/templates/profile.md" "$TARGET/docs/memory/_PROFILE_TEMPLATE.md"
 echo "已刷新条目/决定/流程/画像模板"
 
 # ── 2. 双端技能（仓库级，两端同一份 SKILL.md）────────────────────────
+# 先清理已从 kit 退役的受管技能（如技能合并改名）：从旧安装清单推导
+# "清单里有、当前技能清单没有"的目录，仅当内容指纹匹配 kit 当前/历史
+# 版本才删除；被手工改过的保留并提示。
+if [ -f "$TARGET/.repo-memory-kit/manifest" ]; then
+    retired_skills=""
+    while read -r manifest_line; do
+        case "$manifest_line" in
+            *"  "*) rel="${manifest_line#*  }" ;;
+            *) continue ;;
+        esac
+        case "$rel" in
+            .claude/skills/*/SKILL.md) retired_tool="${rel#.claude/skills/}" ;;
+            .agents/skills/*/SKILL.md) retired_tool="${rel#.agents/skills/}" ;;
+            *) continue ;;
+        esac
+        retired_tool="${retired_tool%/SKILL.md}"
+        case " $KIT_SKILLS " in
+            *" $retired_tool "*) continue ;;
+        esac
+        case " $retired_skills " in
+            *" $retired_tool "*) continue ;;
+        esac
+        retired_skills="$retired_skills $retired_tool"
+    done < "$TARGET/.repo-memory-kit/manifest"
+    for retired_tool in $retired_skills; do
+        for skill_base in .claude .agents; do
+            retired_dir="$TARGET/$skill_base/skills/$retired_tool"
+            [ -e "$retired_dir" ] || continue
+            if content_is_kit_artifact "$retired_dir/SKILL.md" "skills/$retired_tool/SKILL.md"; then
+                rm -rf "$retired_dir"
+                echo "已清理退役技能 $skill_base/skills/$retired_tool（kit 已合并/移除该技能）"
+            else
+                echo "提示: $skill_base/skills/$retired_tool 已不在 kit 技能清单且内容与 kit 历史版本不一致（疑似手工定制），保留不动"
+            fi
+        done
+        if [ -n "$CODEX_ROOT" ] && [ "$CODEX_ROOT" != "$TARGET" ]; then
+            retired_link="$CODEX_ROOT/.agents/skills/$retired_tool"
+            if [ -L "$retired_link" ] && [ "$(readlink "$retired_link" 2>/dev/null || true)" = "$TARGET/.agents/skills/$retired_tool" ]; then
+                rm -f "$retired_link"
+                echo "已清理 Codex workspace 退役技能链接 $retired_link"
+            fi
+        fi
+    done
+fi
+
 for tool in $KIT_SKILLS; do
     mkdir -p "$TARGET/.claude/skills/$tool" "$TARGET/.agents/skills/$tool"
     cp "$KIT_DIR/skills/$tool/SKILL.md" "$TARGET/.claude/skills/$tool/SKILL.md"

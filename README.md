@@ -76,8 +76,7 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 | 测试先行实现 | `/tdd 行为` | `$tdd 行为` | 按纵向切片执行 RED → GREEN → REFACTOR |
 | 新依赖、集成或技术选型 | `/reuse-research 需求` | `$reuse-research 需求` | 比较采用、扩展、组合和自建，记录证据 |
 | 漏洞与配置风险 | `/security-review 范围` | `$security-review 范围` | 检查应用数据流与 Agent 配置攻击面 |
-| 最终 diff 审查 | `/delivery-review` | `$delivery-review` | 基于证据找阻塞问题并对抗式复核高危项 |
-| 最终验证 | `/delivery-verify` | `$delivery-verify` | 执行项目真实门禁并给出交付结论 |
+| 交付收口门禁 | `/delivery-gate` | `$delivery-gate` | diff 审查、对抗复核与验证闭环，结论以验证回执为证 |
 | Spec Kit 迁移 | `/spec-migrate` | `$spec-migrate` | 先检查/预览，再增量迁移已有规范 |
 | 跨会话或 Agent 交接 | `/task-handoff` | `$task-handoff` | 留下可复核、可恢复的任务状态 |
 | 巡检项目记忆 | `/memory-check` | `$memory-check` | 检查记忆与当前代码是否一致 |
@@ -115,7 +114,7 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
    - GREEN：补齐容量保护；
    - REFACTOR：在测试保持绿色时整理重复代码。
 6. 对导出权限、公式注入、敏感字段和临时文件执行 `security-review`，再运行相关测试和静态检查。
-7. 执行 `delivery-review` 与 `delivery-verify`，处理阻塞发现，并把真实实现和验证结果回写原设计文档。
+7. 执行 `delivery-gate`，处理阻塞发现、落验证回执，并把真实实现和验证结果回写原设计文档。
 8. 如果形成了可复用经验，调用 `memory-capture` 展示候选，等待人确认后再写入。
 
 一次合格的最终汇报应类似：
@@ -154,7 +153,7 @@ systematic-debugging 根因定位
 → tdd 回归测试
 → 最小根因修复
 → security-review（支付/幂等风险）
-→ delivery-review + delivery-verify
+→ delivery-gate（审查 + 验证回执）
 → 设计、故障记录和记忆收口
 ```
 
@@ -219,7 +218,7 @@ repo-delivery
   ├─ systematic-debugging：故障任务建立根因链
   ├─ tdd：按可观察行为完成纵向切片
   ├─ security-review：按风险检查漏洞与 Agent 配置
-  ├─ delivery-review → delivery-verify：审查、复核、最终验证
+  ├─ delivery-gate：diff 审查、对抗复核与验证回执
   └─ 回写既有设计文档，并提出记忆候选
 ```
 
@@ -286,9 +285,9 @@ repo-delivery
 
 覆盖两类风险：应用代码中的认证授权、注入、SSRF、路径/文件、敏感数据、支付回调和供应链；以及 Agent 指令、skills、MCP、hooks、安装脚本中的提示注入、过宽权限、秘密泄露和危险执行。HIGH/CRITICAL 必须给出可达路径，并由 `delivery-review` 逆向验证。
 
-### delivery-review 与 delivery-verify
+### delivery-gate
 
-`delivery-review` 对最终 diff 做正确性、宪章、兼容性、测试、维护性和安全自审；`delivery-verify` 从项目自身的 CI、构建文件和宪章提取实际门禁。最终结论只有 `READY`、`NOT READY` 或 `NEEDS HUMAN REVIEW`，未运行的检查不会被写成通过。
+收口门禁：阶段一对最终 diff 做正确性、宪章、兼容性、测试、维护性和安全自审，高危发现做对抗式复核（运行环境提供子 Agent 时交给未参与实现的独立审查者）；阶段二从项目自身的 CI、构建文件和宪章提取实际门禁执行验证闭环。结论只有 `READY`、`NOT READY` 或 `NEEDS HUMAN REVIEW`，未运行的检查不会被写成通过；验证回执（`docs/delivery-receipts/`）是声称验证通过的唯一证据形态。
 
 ### spec-migrate 与 task-handoff
 

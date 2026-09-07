@@ -32,7 +32,7 @@ assert_exists "Codex 技能（delivery）"   "$P/.agents/skills/repo-delivery/SK
 assert_exists "Claude 技能（graph）"     "$P/.claude/skills/codebase-memory/SKILL.md"
 assert_exists "Codex 技能（debugging）"  "$P/.agents/skills/systematic-debugging/SKILL.md"
 assert_exists "Codex 技能（tdd）"        "$P/.agents/skills/tdd/SKILL.md"
-for tool in reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff; do
+for tool in reuse-research security-review delivery-gate spec-migrate task-handoff; do
     assert_exists "新增工程技能（$tool）" "$P/.agents/skills/$tool/SKILL.md"
 done
 assert_exists "Spec Kit 迁移器随仓库安装" "$P/.repo-memory-kit/bin/spec-migrate"
@@ -124,7 +124,7 @@ assert_gone     "卸载：delivery 技能移除"  "$P4/.agents/skills/repo-deliv
 assert_gone     "卸载：graph 技能移除"     "$P4/.agents/skills/codebase-memory"
 assert_gone     "卸载：debugging 技能移除" "$P4/.agents/skills/systematic-debugging"
 assert_gone     "卸载：tdd 技能移除"       "$P4/.agents/skills/tdd"
-for tool in reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff; do
+for tool in reuse-research security-review delivery-gate spec-migrate task-handoff; do
     assert_gone "卸载：$tool 技能移除" "$P4/.agents/skills/$tool"
 done
 assert_gone     "卸载：清单移除"           "$P4/.repo-memory-kit"
@@ -199,7 +199,7 @@ if "$KIT/install.sh" --codex-root "$W" "$P12" >/dev/null 2>&1; then
     else
         bad "Codex workspace 缺 delivery 技能链接"
     fi
-    for tool in codebase-memory systematic-debugging tdd reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff; do
+    for tool in codebase-memory systematic-debugging tdd reuse-research security-review delivery-gate spec-migrate task-handoff; do
         if [ -L "$W/.agents/skills/$tool" ] &&
            [ "$(readlink "$W/.agents/skills/$tool")" = "$P12/.agents/skills/$tool" ]; then
             ok "Codex workspace 可发现 target-bound $tool 技能"
@@ -211,7 +211,7 @@ if "$KIT/install.sh" --codex-root "$W" "$P12" >/dev/null 2>&1; then
     if [ ! -L "$W/.agents/skills/memory-capture" ]; then ok "卸载清理 workspace capture 技能链接"; else bad "卸载遗留 workspace capture 技能链接"; fi
     if [ ! -L "$W/.agents/skills/memory-check" ]; then ok "卸载清理 workspace check 技能链接"; else bad "卸载遗留 workspace check 技能链接"; fi
     if [ ! -L "$W/.agents/skills/repo-delivery" ]; then ok "卸载清理 workspace delivery 技能链接"; else bad "卸载遗留 workspace delivery 技能链接"; fi
-    for tool in codebase-memory systematic-debugging tdd reuse-research security-review delivery-review delivery-verify spec-migrate task-handoff; do
+    for tool in codebase-memory systematic-debugging tdd reuse-research security-review delivery-gate spec-migrate task-handoff; do
         if [ ! -L "$W/.agents/skills/$tool" ]; then ok "卸载清理 workspace $tool 技能链接"; else bad "卸载遗留 workspace $tool 技能链接"; fi
     done
 else
@@ -286,6 +286,35 @@ else
 fi
 assert_gone "符号链接阻断后未向仓库外安装技能" "$ESC17/skills"
 
+
+# ── T26 退役技能清理：update 移除 kit 已合并的旧技能，非 kit 内容保留 ──
+P19="$T/proj19"; mkdir -p "$P19"
+"$KIT/install.sh" "$P19" >/dev/null
+old_rev=""
+for rev_candidate in $(git -C "$KIT" log --all --format=%H -- skills/delivery-review/SKILL.md); do
+    if git -C "$KIT" show "$rev_candidate:skills/delivery-review/SKILL.md" >/dev/null 2>&1; then
+        old_rev="$rev_candidate"
+        break
+    fi
+done
+[ -n "$old_rev" ] || { bad "找不到历史版本 delivery-review"; }
+if [ -n "$old_rev" ]; then
+    mkdir -p "$P19/.claude/skills/delivery-review" "$P19/.agents/skills/delivery-review"
+    git -C "$KIT" show "$old_rev:skills/delivery-review/SKILL.md" > "$P19/.claude/skills/delivery-review/SKILL.md"
+    cp "$P19/.claude/skills/delivery-review/SKILL.md" "$P19/.agents/skills/delivery-review/SKILL.md"
+    old_hash="$(sha256sum "$P19/.claude/skills/delivery-review/SKILL.md" | cut -d' ' -f1)"
+    printf '%s  %s\n' "$old_hash" ".claude/skills/delivery-review/SKILL.md" >> "$P19/.repo-memory-kit/manifest"
+    printf '%s  %s\n' "$old_hash" ".agents/skills/delivery-review/SKILL.md" >> "$P19/.repo-memory-kit/manifest"
+    mkdir -p "$P19/.claude/skills/custom-skill"
+    echo "user custom" > "$P19/.claude/skills/custom-skill/SKILL.md"
+    printf '%s  %s\n' "0000" ".claude/skills/custom-skill/SKILL.md" >> "$P19/.repo-memory-kit/manifest"
+    "$KIT/install.sh" --update "$P19" >/dev/null
+    assert_gone "update 清理退役技能（.claude）" "$P19/.claude/skills/delivery-review"
+    assert_gone "update 清理退役技能（.agents）" "$P19/.agents/skills/delivery-review"
+    assert_exists "新技能 delivery-gate 在位" "$P19/.claude/skills/delivery-gate/SKILL.md"
+    assert_exists "非 kit 内容的技能目录保留" "$P19/.claude/skills/custom-skill/SKILL.md"
+    if "$KIT/install.sh" --doctor "$P19" >/dev/null 2>&1; then ok "清理后 doctor 健康"; else bad "清理后 doctor 失败"; fi
+fi
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]
