@@ -10,6 +10,9 @@ ok()  { pass=$((pass+1)); echo "✓ $1"; }
 bad() { fail=$((fail+1)); echo "✗ $1"; }
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望=$3 实际=$2）"; fi; }
 assert_grep() { if grep -q "$2" "$3"; then ok "$1"; else bad "$1: 在 $3 中未找到 $2"; fi; }
+assert_exists() { if [ -e "$2" ]; then ok "$1"; else bad "$1: $2 不存在"; fi; }
+assert_gone() { if [ ! -e "$2" ]; then ok "$1"; else bad "$1: $2 仍存在"; fi; }
+
 P="$T/project"
 F="$P/.specify/specs/001-export"
 TPL="$P/.specify/templates"
@@ -151,6 +154,71 @@ if python3 "$KIT/spec-migrate" --apply --feature 009-nope "$P7" >/dev/null 2>&1;
 else
     ok "未知 feature 名称报错退出"
 fi
+
+# S12 SDD 结构迁移：dry-run 不写、参数校验、落位改名、源目录移除、check 报告。
+P8="$T/sdd-project"; F8="$P8/.specify/specs/020-demo"
+mkdir -p "$F8/contracts" "$F8/checklists"
+printf '# Feature Specification: 演示功能\n\n## Success Criteria\n\n- 可验收\n' > "$F8/spec.md"
+printf '# Implementation Plan\n\n## Technical Context\n\n已有证据。\n' > "$F8/plan.md"
+printf '# Tasks\n\n### Tests for User Story 1\n\n- 用例\n' > "$F8/tasks.md"
+printf '# 数据模型\n' > "$F8/data-model.md"
+printf '# 验证指南\n' > "$F8/quickstart.md"
+printf '# 契约\n' > "$F8/contracts/api.md"
+printf '# 检查\n' > "$F8/checklists/requirements.md"
+printf 'PNG' > "$F8/arch.png"
+SDD="$P8/docs/03-SDD/V测试一期"
+if python3 "$KIT/spec-migrate" --dry-run --layout sdd --sdd-version V测试一期 --feature 020-demo "$P8" | grep -q "02-需求/020-演示功能.md"; then
+    ok "SDD dry-run 输出映射计划"
+else
+    bad "SDD dry-run 计划缺失"
+fi
+assert_gone "SDD dry-run 不写文件" "$P8/docs"
+if python3 "$KIT/spec-migrate" --apply --layout sdd --feature 020-demo "$P8" >/dev/null 2>&1; then
+    bad "缺 --sdd-version 未报错"
+else
+    ok "缺 --sdd-version 报错"
+fi
+if python3 "$KIT/spec-migrate" --apply --layout sdd --sdd-version V测试一期 "$P8" >/dev/null 2>&1; then
+    bad "SDD apply 未要求 --feature"
+else
+    ok "SDD apply 强制 --feature"
+fi
+python3 "$KIT/spec-migrate" --apply --layout sdd --sdd-version V测试一期 --feature 020-demo "$P8" >/dev/null
+assert_exists "需求迁移落位并改名" "$SDD/02-需求/020-演示功能.md"
+assert_exists "架构设计迁移落位" "$SDD/03-架构设计/020-演示功能.md"
+assert_exists "实现计划迁移落位" "$SDD/06-实现计划/020-演示功能.md"
+assert_exists "详细设计目录（去零序号）" "$SDD/04-详细设计/20-演示功能"
+assert_exists "数据库设计改名落位" "$SDD/04-详细设计/20-演示功能/03-数据库设计.md"
+assert_exists "契约目录落位" "$SDD/04-详细设计/20-演示功能/02-API设计-契约/api.md"
+assert_exists "验证指南落位" "$SDD/04-详细设计/20-演示功能/07-验证指南.md"
+assert_exists "检查单落位" "$SDD/07-原始需求材料/020-检查单/requirements.md"
+assert_exists "流程设计结构占位" "$SDD/04-详细设计/20-演示功能/04-流程设计.md"
+assert_exists "验收标准结构占位" "$SDD/04-详细设计/20-演示功能/05-验收标准.md"
+assert_exists "功能设计结构占位" "$SDD/04-详细设计/20-演示功能/01-功能设计.md"
+assert_exists "图片进 images 目录" "$SDD/04-详细设计/20-演示功能/images/arch.png"
+assert_exists "索引生成" "$SDD/01-索引/README.md"
+assert_grep "索引登记序号与功能名" '020 | 需求 | 演示功能' "$SDD/01-索引/README.md"
+assert_gone "源 feature 目录移除" "$F8"
+assert_grep "安全待核验进架构设计" 'migration-pending:security' "$SDD/03-架构设计/020-演示功能.md"
+assert_grep "目标范围待核验进需求" 'migration-pending:target_scope' "$SDD/02-需求/020-演示功能.md"
+OUT8="$(python3 "$KIT/spec-migrate" --check "$P8")"
+case "$OUT8" in
+    *"SDD 待核验"*) ok "check 报告 SDD 待核验标记" ;;
+    *) bad "check 未报告 SDD 待核验: $OUT8" ;;
+esac
+# 目标已存在时拒绝覆盖，不产生半迁移。
+F9="$P8/.specify/specs/021-collide"
+mkdir -p "$F9"
+printf '# Feature Specification: 演示功能\n' > "$F9/spec.md"
+printf '# Plan\n' > "$F9/plan.md"
+printf '# Tasks\n' > "$F9/tasks.md"
+touch "$SDD/02-需求/021-演示功能.md"
+if python3 "$KIT/spec-migrate" --apply --layout sdd --sdd-version V测试一期 --feature 021-collide "$P8" >/dev/null 2>&1; then
+    bad "SDD 目标冲突未拒绝"
+else
+    ok "SDD 目标冲突拒绝覆盖"
+fi
+assert_exists "冲突时源 feature 保留" "$F9/spec.md"
 
 echo
 echo "通过 $pass / 失败 $fail"

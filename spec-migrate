@@ -3,14 +3,21 @@
 
 The tool never invents project facts.  Apply mode adds missing canonical
 sections with explicit migration-pending markers; an Agent and human reviewer
-must then integrate evidence and remove those markers.
+must then integrate evidence and remove those markers.  ``--layout sdd``
+additionally moves a feature into the team's SDD directory structure
+(01-索引/02-需求/03-架构设计/04-详细设计/05-变更/06-实现计划/07-原始需求材料)
+with SDD-style file naming, so the delivery docs stop living in two
+parallel systems.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -140,6 +147,61 @@ TEMPLATE_OVERLAYS = {
 }
 
 
+# ── SDD 结构迁移（--layout sdd）──────────────────────────────────────
+# 源条目 → SDD 落点。{nn}=feature 序号（保留补零，如 012），{n}=去零序号，
+# {name}=功能中文名（取自 spec.md 一级标题，回退目录名）。
+SDD_ROOT_DEFAULT = "docs/03-SDD"
+
+SDD_FILE_MAP = {
+    "spec.md": ("02-需求", "{nn}-{name}.md"),
+    "plan.md": ("03-架构设计", "{nn}-{name}.md"),
+    "tasks.md": ("06-实现计划", "{nn}-{name}.md"),
+    "research.md": ("07-原始需求材料", "{nn}-研究结论.md"),
+    "baseline.md": ("07-原始需求材料", "{nn}-实施基线.md"),
+    "data-model.md": ("04-详细设计/{n}-{name}", "03-数据库设计.md"),
+    "quickstart.md": ("04-详细设计/{n}-{name}", "07-验证指南.md"),
+    "frontend-api-contract.md": ("04-详细设计/{n}-{name}", "02-API设计-前端对接.md"),
+    "frontend-api-operator.md": ("04-详细设计/{n}-{name}", "02-API设计-接口管理.md"),
+    "frontend-api-reference.md": ("04-详细设计/{n}-{name}", "02-API设计-接口手册.md"),
+    "frontend-mapping.md": ("04-详细设计/{n}-{name}", "06-前端落位.md"),
+    "contracts": ("04-详细设计/{n}-{name}", "02-API设计-契约"),
+    "checklists": ("07-原始需求材料", "{nn}-检查单"),
+}
+
+# SDD 详细设计固定件中源结构没有独立文件的，落结构占位（Agent 负责语义整合）。
+# 提示语软引用项目的详细设计模板（如 项目详细设计模板 技能），不复制模板正文——单一权威来源。
+SDD_DESIGN_PLACEHOLDERS = (
+    (
+        "01-功能设计.md", "sdd_functional_design",
+        "请从 02-需求 整理功能设计，或由产品功能设计技能产出后放入；确认后删除本提示。",
+    ),
+    (
+        "04-流程设计.md", "sdd_flow_design",
+        "请按项目详细设计模板（如 项目详细设计模板 的 templates/flow-design.md）骨架，从 02-需求/03-架构设计 及源码调用链整合流程设计；确认后删除本提示。",
+    ),
+    (
+        "05-验收标准.md", "sdd_acceptance",
+        "请按项目详细设计模板（如 项目详细设计模板 的 templates/acceptance-criteria.md）骨架，从 02-需求 的用户场景与成功标准整合可测量验收标准和失败场景；确认后删除本提示。",
+    ),
+)
+
+# 图片与图源文件统一进详细设计区的 images/（项目详细设计模板 约定）。
+SDD_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".puml", ".drawio"}
+
+# 缺失字段的待核验小节在 SDD 结构中的归宿（acceptance 由 05-验收标准 占位承担）。
+SDD_FIELD_HOME = {
+    "target_scope": "02-需求/{nn}-{name}.md",
+    "evidence": "03-架构设计/{nn}-{name}.md",
+    "design": "03-架构设计/{nn}-{name}.md",
+    "compatibility_risk": "03-架构设计/{nn}-{name}.md",
+    "security": "03-架构设计/{nn}-{name}.md",
+    "test": "03-架构设计/{nn}-{name}.md",
+    "verification": "03-架构设计/{nn}-{name}.md",
+    "docs_memory": "03-架构设计/{nn}-{name}.md",
+    "tasks": "06-实现计划/{nn}-{name}.md",
+}
+
+
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -220,6 +282,211 @@ def discover(target: Path, wanted: list[str] | None = None) -> tuple[Path, list[
         selected = names
     features = [inspect_feature(specs / name) for name in selected]
     return specs, features
+
+
+# ── SDD 结构迁移实现 ─────────────────────────────────────────────────
+def sdd_feature_meta(feature: Path) -> tuple[str, str, str]:
+    files = {}
+    for p in feature.rglob("*.md"):
+        if p.is_file():
+            files[p.relative_to(feature).as_posix()] = read_text(p)
+    num = re.match(r"^(\d+)", feature.name)
+    nn = num.group(1) if num else feature.name
+    n = str(int(nn)) if num else feature.name
+    title = ""
+    h1 = re.search(r"(?m)^#\s+(.+?)\s*$", files.get("spec.md", ""))
+    if h1:
+        title = h1.group(1)
+        if ":" in title:
+            title = title.split(":", 1)[1].strip()
+        title = re.sub(r'[\\/:*?"<>|\s]+', "-", title).strip("-")
+    return nn, n, (title or feature.name)
+
+
+def build_sdd_plan(feature: Path) -> dict:
+    """结构计划：每个源文件的去向、结构占位与缺失字段归宿。不做语义判断。"""
+    nn, n, name = sdd_feature_meta(feature)
+    moves: list[tuple[str, str]] = []
+    for entry in sorted(feature.iterdir()):
+        mapped = SDD_FILE_MAP.get(entry.name)
+        if mapped:
+            section, tmpl = mapped
+            section = section.format(nn=nn, n=n, name=name)
+            dst = tmpl.format(nn=nn, n=n, name=name)
+            if entry.is_dir():
+                for f in sorted(p for p in entry.rglob("*") if p.is_file()):
+                    moves.append((
+                        f.relative_to(feature).as_posix(),
+                        f"{section}/{dst}/{f.relative_to(entry).as_posix()}",
+                    ))
+            else:
+                moves.append((entry.name, f"{section}/{dst}"))
+        elif entry.is_dir():
+            for f in sorted(p for p in entry.rglob("*") if p.is_file()):
+                moves.append((
+                    f.relative_to(feature).as_posix(),
+                    f"04-详细设计/{n}-{name}/{f.relative_to(entry).as_posix()}",
+                ))
+        elif entry.suffix.lower() in SDD_IMAGE_SUFFIXES:
+            moves.append((entry.name, f"04-详细设计/{n}-{name}/images/{entry.name}"))
+        else:
+            moves.append((entry.name, f"04-详细设计/{n}-{name}/{entry.name}"))
+    placeholders = [
+        {"path": f"04-详细设计/{n}-{name}/{fname}", "marker": marker, "prompt": prompt}
+        for fname, marker, prompt in SDD_DESIGN_PLACEHOLDERS
+    ]
+    fields = inspect_feature(feature)["fields"]
+    # acceptance 不在 SDD_FIELD_HOME：行为与验收由 05-验收标准 结构占位承担。
+    pendings = [
+        {
+            "field": fid,
+            "label": FIELDS[fid]["label"],
+            "prompt": FIELDS[fid]["prompt"],
+            "path": SDD_FIELD_HOME[fid].format(nn=nn, n=n, name=name),
+        }
+        for fid, status in fields.items()
+        if status == "missing" and fid in SDD_FIELD_HOME
+    ]
+    return {
+        "feature": feature.name,
+        "nn": nn,
+        "n": n,
+        "name": name,
+        "moves": moves,
+        "placeholders": placeholders,
+        "pendings": pendings,
+    }
+
+
+def vcs_move(repo: Path, src: Path, dst: Path) -> None:
+    """优先用 VCS 重命名（保留历史），失败则退回普通移动。"""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if (repo / ".git").is_dir():
+        try:
+            subprocess.run(
+                ["git", "-C", str(repo), "mv", str(src), str(dst)],
+                check=True, capture_output=True,
+            )
+            return
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    if (repo / ".svn").is_dir():
+        try:
+            subprocess.run(
+                ["svn", "mv", str(src), str(dst)],
+                check=True, capture_output=True, cwd=str(repo),
+            )
+            return
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    shutil.move(str(src), str(dst))
+
+
+def sdd_index_rows(plan: dict) -> list[str]:
+    nn, n, name = plan["nn"], plan["n"], plan["name"]
+    return [
+        f"| {nn} | 需求 | {name} | 待定 | 待核验 | [02-需求/{nn}-{name}.md](../02-需求/{nn}-{name}.md) |",
+        f"| {nn} | 架构设计 | 同上 | 待定 | 待核验 | [03-架构设计/{nn}-{name}.md](../03-架构设计/{nn}-{name}.md) |",
+        f"| {nn} | 详细设计 | 同上（API/数据库/流程/验收） | 待定 | 待核验 | [04-详细设计/{n}-{name}/](../04-详细设计/{n}-{name}/) |",
+        f"| {nn} | 实现计划 | 同上 | 待定 | 待核验 | [06-实现计划/{nn}-{name}.md](../06-实现计划/{nn}-{name}.md) |",
+        f"| {nn} | 原始需求材料 | 研究结论/实施基线/检查单 | 待定 | 已迁移 | [07-原始需求材料/](../07-原始需求材料/) |",
+    ]
+
+
+def update_sdd_index(version_root: Path, plan: dict) -> None:
+    idx_dir = version_root / "01-索引"
+    idx_dir.mkdir(parents=True, exist_ok=True)
+    idx = idx_dir / "README.md"
+    rows = sdd_index_rows(plan)
+    if idx.exists():
+        lines = read_text(idx).splitlines()
+        kept = [ln for ln in lines if not ln.startswith(f"| {plan['nn']} ")]
+        table_rows = [i for i, ln in enumerate(kept) if ln.startswith("|")]
+        if table_rows:
+            insert_at = table_rows[-1] + 1
+        else:
+            kept += ["", "## 交付物清单", "", "| 序号 | 类型 | 名称 | 责任人 | 状态 | 位置 |", "|---|---|---|---|---|---|"]
+            insert_at = len(kept)
+        kept[insert_at:insert_at] = rows
+        idx.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        return
+    today = datetime.date.today().isoformat()
+    idx.write_text(
+        f"# {version_root.name} 索引\n\n"
+        f"> 版本状态：迁移生成（待人工确认）\n"
+        f"> 建立日期：{today}\n"
+        f"> 责任人：待定（迁移自 Spec Kit）\n\n"
+        f"## 交付物清单\n\n"
+        f"| 序号 | 类型 | 名称 | 责任人 | 状态 | 位置 |\n"
+        f"|---|---|---|---|---|---|\n"
+        + "\n".join(rows) + "\n\n"
+        f"## 目录状态\n\n"
+        f"- `01-索引/`：本文件，随交付物增补持续维护。\n"
+        f"- `02-需求/`、`03-架构设计/`、`04-详细设计/`、`06-实现计划/`、`07-原始需求材料/`：随迁移建立。\n"
+        f"- `05-变更/`：按需建立（存量功能变更时使用）。\n",
+        encoding="utf-8",
+    )
+
+
+def apply_sdd_migration(target: Path, feature: Path, plan: dict, version: str, sdd_root: str) -> None:
+    version_root = target / sdd_root / version
+    # 先整体校验目标不冲突，再移动——避免半迁移。
+    for _, rel_dst in plan["moves"]:
+        dst = version_root / rel_dst
+        if dst.exists():
+            raise ValueError(f"目标已存在，拒绝覆盖: {dst.relative_to(target)}")
+    for ph in plan["placeholders"]:
+        if (version_root / ph["path"]).exists():
+            raise ValueError(f"目标已存在，拒绝覆盖: {ph['path']}")
+    for rel_src, rel_dst in plan["moves"]:
+        vcs_move(target, feature / rel_src, version_root / rel_dst)
+    for ph in plan["placeholders"]:
+        path = version_root / ph["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stem = Path(ph["path"]).name.removesuffix(".md")
+        path.write_text(
+            f"# {plan['nn']}-{plan['name']} {stem}\n\n"
+            f"<!-- {PENDING_PREFIX}{ph['marker']} -->\n"
+            f"> 状态：待核验（结构迁移占位，未含项目事实）\n"
+            f"> {ph['prompt']}\n",
+            encoding="utf-8",
+        )
+    for pend in plan["pendings"]:
+        append_text(
+            version_root / pend["path"],
+            f"## {pend['label']}\n\n"
+            f"<!-- {PENDING_PREFIX}{pend['field']} -->\n"
+            f"> 状态：待核验（结构迁移占位，未含项目事实）\n"
+            f"> {pend['prompt']}\n",
+        )
+    update_sdd_index(version_root, plan)
+    leftover = [p for p in feature.rglob("*") if p.is_file()]
+    if leftover:
+        raise ValueError(f"feature 目录仍有未迁移文件: {[str(p) for p in leftover[:3]]}")
+    for d in sorted((p for p in feature.rglob("*") if p.is_dir()), reverse=True):
+        try:
+            d.rmdir()
+        except OSError:
+            pass
+    feature.rmdir()
+
+
+def sdd_pending_scan(target: Path, sdd_root: str) -> list[dict]:
+    root = target / sdd_root
+    hits: list[dict] = []
+    if not root.is_dir():
+        return hits
+    for f in sorted(root.rglob("*.md")):
+        if not f.is_file():
+            continue
+        try:
+            text = read_text(f)
+        except (OSError, UnicodeError):
+            hits.append({"path": str(f.relative_to(target)), "marker": "<不可读>"})
+            continue
+        for m in re.finditer(r"agent-engineering-kit:migration-pending:([A-Za-z0-9_\-]+)", text):
+            hits.append({"path": str(f.relative_to(target)), "marker": m.group(1)})
+    return hits
 
 
 def summarize(features: list[dict]) -> dict:
@@ -362,6 +629,18 @@ def parse_args() -> argparse.Namespace:
         "--feature", action="append", default=[], metavar="NAME",
         help="只处理指定的 feature 目录名（可重复传入）",
     )
+    parser.add_argument(
+        "--layout", choices=("inplace", "sdd"), default="inplace",
+        help="inplace=在 Spec Kit 文件内补字段（默认）；sdd=移动到 SDD 目录结构",
+    )
+    parser.add_argument(
+        "--sdd-version", metavar="VERSION",
+        help="SDD 版本目录名（--layout sdd 必填，如 V1.0）",
+    )
+    parser.add_argument(
+        "--sdd-root", default=SDD_ROOT_DEFAULT, metavar="DIR",
+        help=f"SDD 结构根目录（默认 {SDD_ROOT_DEFAULT}）",
+    )
     parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     parser.add_argument("target", nargs="?", default=".", help="目标项目目录")
     return parser.parse_args()
@@ -391,10 +670,16 @@ def main() -> int:
     mode = "apply" if args.apply else ("dry-run" if args.dry_run else "check")
     if not specs.is_dir():
         data = payload(target, specs, [], [])
+        data["sdd_pending"] = sdd_pending_scan(target, args.sdd_root)
         if args.json:
             print(json.dumps(data, ensure_ascii=False, indent=2))
         else:
             print("未发现 .specify/specs，跳过 Spec Kit 迁移。")
+            hits = data["sdd_pending"]
+            if hits:
+                print(f"SDD 待核验: {len(hits)} 处（{args.sdd_root}）")
+                for hit in hits[:20]:
+                    print(f"- {hit['path']}: {hit['marker']}")
         return 0
 
     blocked = [feature for feature in features if feature["missing_core"]]
@@ -404,6 +689,58 @@ def main() -> int:
             print(f"错误: {feature['name']} 缺少核心文件: {missing}", file=sys.stderr)
         print("迁移已整体阻断，未写入任何文件。", file=sys.stderr)
         return 2
+
+    # ── SDD 结构迁移分支 ──
+    if args.layout == "sdd" and mode in {"dry-run", "apply"}:
+        if not args.sdd_version:
+            print("错误: --layout sdd 需要 --sdd-version <版本目录名>（如 V1.0）", file=sys.stderr)
+            return 2
+        if mode == "apply" and not args.feature:
+            print("错误: --layout sdd 的 --apply 必须用 --feature 显式指定，避免整仓移动", file=sys.stderr)
+            return 2
+        sdd_root_abs = (target / args.sdd_root).resolve()
+        try:
+            sdd_root_abs.relative_to(target)
+        except ValueError:
+            print(f"错误: --sdd-root 必须位于目标仓库内: {args.sdd_root}", file=sys.stderr)
+            return 2
+        try:
+            plans = [build_sdd_plan(Path(feature["path"])) for feature in features]
+        except (OSError, UnicodeError) as exc:
+            print(f"错误: 无法安全读取 Spec Kit 文档: {exc}", file=sys.stderr)
+            return 2
+        if mode == "dry-run":
+            if args.json:
+                print(json.dumps(
+                    {"layout": "sdd", "sdd_root": args.sdd_root,
+                     "sdd_version": args.sdd_version, "plans": plans},
+                    ensure_ascii=False, indent=2,
+                ))
+            else:
+                print(f"Spec Kit → SDD 迁移 DRY-RUN（{args.sdd_root}/{args.sdd_version}）")
+                for plan in plans:
+                    print(f"- {plan['feature']} → {plan['nn']} {plan['name']}：{len(plan['moves'])} 个文件")
+                    for rel_src, rel_dst in plan["moves"]:
+                        print(f"    {plan['feature']}/{rel_src} -> {args.sdd_root}/{args.sdd_version}/{rel_dst}")
+                    for ph in plan["placeholders"]:
+                        print(f"    [结构占位] {args.sdd_root}/{args.sdd_version}/{ph['path']}")
+                    for pend in plan["pendings"]:
+                        print(f"    [待核验] {pend['label']} -> {pend['path']}")
+            return 0
+        applied = []
+        try:
+            for feature, plan in zip(features, plans):
+                apply_sdd_migration(target, Path(feature["path"]), plan, args.sdd_version, args.sdd_root)
+                applied.append(plan)
+        except (OSError, ValueError) as exc:
+            print(f"错误: SDD 迁移失败: {exc}", file=sys.stderr)
+            print("已完成的移动保留在目标结构中，可用版本控制回退后重试。", file=sys.stderr)
+            return 2
+        for plan in applied:
+            print(f"SDD 迁移完成: {plan['feature']} -> {args.sdd_root}/{args.sdd_version}/（{plan['nn']} {plan['name']}）")
+        hits = sdd_pending_scan(target, args.sdd_root)
+        print(f"SDD 待核验标记: {len(hits)} 处（含本次与历史迁移）")
+        return 0
 
     try:
         operations = planned_operations(target, features)
@@ -418,10 +755,17 @@ def main() -> int:
     else:
         data = before
 
+    if mode == "check":
+        data["sdd_pending"] = sdd_pending_scan(target, args.sdd_root)
     if args.json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
     else:
         print_human(mode, data)
+        hits = data.get("sdd_pending") or []
+        if hits:
+            print(f"SDD 待核验: {len(hits)} 处（{args.sdd_root}）")
+            for hit in hits[:20]:
+                print(f"- {hit['path']}: {hit['marker']}")
     return 0
 
 

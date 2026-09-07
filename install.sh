@@ -8,6 +8,10 @@
 #   ./install.sh --dry-run /path/to/your-project   # 只展示计划，不写入
 #   ./install.sh --migrate-specify /path/to/your-project
 #                                                  # 显式增量迁移已有 Spec Kit 文档
+#   ./install.sh --migrate-specify=001-demo /path/to/your-project
+#                                                  # 只迁移指定 feature（逗号分隔可多个）
+#   ./install.sh --migrate-specify=001-demo --sdd-layout --sdd-version V1.0 /path/to/your-project
+#                                                  # 迁移为 SDD 目录结构（docs/03-SDD/V<版本>）
 #   ./install.sh --uninstall /path/to/your-project # 卸载 kit 管辖产物（不触碰用户数据）
 #   ./install.sh --with-codebase-memory /path/to/your-project
 #                                                  # 同时安装/配置代码图谱 MCP
@@ -28,6 +32,9 @@ set -e
 MODE=install
 DRY_RUN=0
 MIGRATE_SPECIFY=0
+MIGRATE_FEATURES=""
+SDD_LAYOUT=0
+SDD_VERSION=""
 INSTALL_CODEBASE_MEMORY=0
 CODEX_ROOT=""
 TARGET=""
@@ -46,6 +53,17 @@ while [ "$#" -gt 0 ]; do
         --uninstall) set_mode uninstall ;;
         --dry-run) DRY_RUN=1 ;;
         --migrate-specify) MIGRATE_SPECIFY=1 ;;
+        --sdd-layout) SDD_LAYOUT=1 ;;
+        --sdd-version)
+            shift
+            [ "$#" -gt 0 ] || { echo "错误: --sdd-version 需要版本目录名参数"; exit 1; }
+            SDD_VERSION="$1"
+            ;;
+        --migrate-specify=*)
+            MIGRATE_SPECIFY=1
+            MIGRATE_FEATURES="${1#*=}"
+            [ -n "$MIGRATE_FEATURES" ] || { echo "错误: --migrate-specify= 需要至少一个 feature 名（逗号分隔）"; exit 1; }
+            ;;
         --with-codebase-memory) INSTALL_CODEBASE_MEMORY=1 ;;
         --codex-root)
             shift
@@ -61,7 +79,7 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
-[ -n "$TARGET" ] || { echo "用法: ./install.sh [--update|--repair|--doctor|--uninstall] [--dry-run] [--migrate-specify] [--with-codebase-memory] [--codex-root /workspace] /path/to/your-project"; exit 1; }
+[ -n "$TARGET" ] || { echo "用法: ./install.sh [--update|--repair|--doctor|--uninstall] [--dry-run] [--migrate-specify[=FEATURE,...]] [--with-codebase-memory] [--codex-root /workspace] /path/to/your-project"; exit 1; }
 [ -d "$TARGET" ] || { echo "错误: 目标目录不存在: $TARGET"; exit 1; }
 [ "$MODE" != "uninstall" ] || [ "$INSTALL_CODEBASE_MEMORY" = "0" ] || {
     echo "错误: --with-codebase-memory 不能与 --uninstall 同时使用"; exit 1;
@@ -74,6 +92,15 @@ done
 }
 [ "$MODE" != "doctor" ] || [ "$MIGRATE_SPECIFY" = "0" ] || {
     echo "错误: --migrate-specify 不能与 --doctor 同时使用"; exit 1;
+}
+[ "$SDD_LAYOUT" = "0" ] || [ -n "$SDD_VERSION" ] || {
+    echo "错误: --sdd-layout 需要 --sdd-version <版本目录名>（如 V1.0）"; exit 1;
+}
+[ -z "$SDD_VERSION" ] || [ "$SDD_LAYOUT" = "1" ] || {
+    echo "错误: --sdd-version 仅在 --sdd-layout 时使用"; exit 1;
+}
+[ "$SDD_LAYOUT" = "0" ] || [ "$MIGRATE_SPECIFY" = "1" ] || {
+    echo "错误: --sdd-layout 仅在 --migrate-specify 时使用"; exit 1;
 }
 TARGET="$(cd "$TARGET" && pwd)"
 
@@ -236,6 +263,20 @@ preflight_managed_paths() {
 }
 
 # ── 只读生命周期命令 ────────────────────────────────────────────────
+run_spec_migrate() { # $1=mode $2=脚本路径 $3=目标仓库
+    mode="$1"; script="$2"; repo="$3"
+    set --
+    if [ -n "$MIGRATE_FEATURES" ]; then
+        oldIFS=$IFS
+        IFS=,
+        for f in $MIGRATE_FEATURES; do set -- "$@" --feature "$f"; done
+        IFS=$oldIFS
+    fi
+    if [ "$SDD_LAYOUT" = "1" ]; then
+        set -- "$@" --layout sdd --sdd-version "$SDD_VERSION"
+    fi
+    python3 "$script" "$mode" "$@" "$repo"
+}
 doctor() {
     manifest="$TARGET/.repo-memory-kit/manifest"
     doctor_errors=0
@@ -329,9 +370,10 @@ dry_run() {
             if [ -d "$TARGET/.specify/specs" ]; then
                 echo "发现 Spec Kit: $TARGET/.specify/specs"
                 if [ "$MIGRATE_SPECIFY" = "1" ]; then
-                    python3 "$KIT_DIR/spec-migrate" --dry-run "$TARGET"
+                    [ "$SDD_LAYOUT" = "0" ] || echo "计划: 迁移为 SDD 结构 docs/03-SDD/$SDD_VERSION"
+                    run_spec_migrate --dry-run "$KIT_DIR/spec-migrate" "$TARGET"
                 else
-                    python3 "$KIT_DIR/spec-migrate" --check "$TARGET"
+                    run_spec_migrate --check "$KIT_DIR/spec-migrate" "$TARGET"
                     echo "计划: 仅报告；添加 --migrate-specify 才会迁移"
                 fi
             fi
@@ -524,10 +566,10 @@ echo "已安装校验器、生成器与 Spec 迁移器 .repo-memory-kit/bin/{val
 if [ -d "$TARGET/.specify/specs" ]; then
     echo "发现 Spec Kit: $TARGET/.specify/specs"
     if [ "$MIGRATE_SPECIFY" = "1" ]; then
-        python3 "$TARGET/.repo-memory-kit/bin/spec-migrate" --apply "$TARGET"
+        run_spec_migrate --apply "$TARGET/.repo-memory-kit/bin/spec-migrate" "$TARGET"
     else
-        python3 "$TARGET/.repo-memory-kit/bin/spec-migrate" --check "$TARGET"
-        echo "提示: 当前仅检查未修改文档；确认后可使用 --migrate-specify 增量迁移"
+        run_spec_migrate --check "$TARGET/.repo-memory-kit/bin/spec-migrate" "$TARGET"
+        echo "提示: 当前仅检查未修改文档；确认后可使用 --migrate-specify[=FEATURE,...] 增量迁移"
     fi
 fi
 

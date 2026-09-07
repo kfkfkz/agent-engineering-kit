@@ -259,6 +259,23 @@ if grep -q 'migration-pending' "$F16/plan.md"; then bad "普通安装静默迁�
 "$KIT/install.sh" --migrate-specify "$P16" >/dev/null
 assert_grep "显式选项迁移 Spec 文档" 'agent-engineering-kit:migration-pending' "$F16/plan.md"
 
+# ── T24b SDD 结构迁移透传 ──
+P18="$T/proj18"; F18="$P18/.specify/specs/001-demo"
+mkdir -p "$F18" "$P18/.specify/templates"
+for name in spec plan tasks; do printf '# %s\n' "$name" > "$F18/$name.md"; done
+if "$KIT/install.sh" --migrate-specify=001-demo --sdd-layout --sdd-version V测试 "$P18" >/dev/null 2>&1; then
+    ok "install.sh SDD 透传执行成功"
+else
+    bad "install.sh SDD 透传执行失败"
+fi
+assert_exists "SDD 需求落位" "$P18/docs/03-SDD/V测试/02-需求/001-spec.md"
+assert_gone "SDD 迁移后源 feature 移除" "$F18"
+if "$KIT/install.sh" --sdd-layout --sdd-version V测试 "$P18" >/dev/null 2>&1; then
+    bad "--sdd-layout 脱离 --migrate-specify 未报错"
+else
+    ok "--sdd-layout 需与 --migrate-specify 同用"
+fi
+
 # ── T25 安装前拒绝会把受管文件写出仓库的符号链接 ──
 P17="$T/proj17"; ESC17="$T/outside-agents"; mkdir -p "$P17" "$ESC17"
 ln -s "$ESC17" "$P17/.agents"
