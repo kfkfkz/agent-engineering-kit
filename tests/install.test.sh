@@ -321,6 +321,23 @@ if [ -n "$old_rev" ]; then
     assert_exists "非 kit 内容的技能目录保留" "$P19/.claude/skills/custom-skill/SKILL.md"
     if "$KIT/install.sh" --doctor "$P19" >/dev/null 2>&1; then ok "清理后 doctor 健康"; else bad "清理后 doctor 失败"; fi
 fi
+
+# ── T27 会话提醒钩子：注册进 settings.json、保留既有配置、卸载清理 ──
+P20="$T/proj20"; mkdir -p "$P20/.claude"
+printf '{\n  "enabledPlugins": {"demo@x": true}\n}\n' > "$P20/.claude/settings.json"
+"$KIT/install.sh" "$P20" >/dev/null
+assert_grep "钩子注册进 settings.json" "session-reminder" "$P20/.claude/settings.json"
+assert_grep "既有配置保留" "demo@x" "$P20/.claude/settings.json"
+if python3 -c "import zvec" >/dev/null 2>&1; then
+    if sh "$P20/.repo-memory-kit/bin/session-reminder" | grep -q "语义"; then ok "提醒脚本输出状态"; else bad "提醒脚本无输出"; fi
+else
+    if sh "$P20/.repo-memory-kit/bin/session-reminder" >/dev/null 2>&1; then ok "无 zvec 时静默退出"; else bad "无 zvec 时异常退出"; fi
+fi
+"$KIT/install.sh" --uninstall "$P20" >/dev/null
+if grep -q "session-reminder" "$P20/.claude/settings.json" 2>/dev/null; then bad "卸载未清理钩子"; else ok "卸载清理钩子"; fi
+assert_grep "卸载保留既有配置" "demo@x" "$P20/.claude/settings.json"
+
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

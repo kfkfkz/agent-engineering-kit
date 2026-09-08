@@ -165,6 +165,7 @@ docs/memory/_PROFILE_TEMPLATE.md
 .repo-memory-kit/bin/memory-build
 .repo-memory-kit/bin/spec-migrate
 .repo-memory-kit/bin/memory-recall
+.repo-memory-kit/bin/session-reminder
 .repo-memory-kit/codex-workspace-root
 "
 
@@ -450,7 +451,28 @@ uninstall() {
             rmdir "$TARGET/$d" 2>/dev/null && echo "已移除空目录 $d"
         done
     done
-    echo "卸载完成。用户数据（README.md 索引、记忆条目、.anchors.json）未触碰。"
+    if command -v python3 >/dev/null 2>&1 && [ -f "$TARGET/.claude/settings.json" ]; then
+    python3 - "$TARGET" <<'PYUNHOOK' || true
+import json, sys
+from pathlib import Path
+sp = Path(sys.argv[1]) / ".claude" / "settings.json"
+try:
+    data = json.loads(sp.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+ss = data.get("hooks", {}).get("SessionStart", [])
+kept = [e for e in ss if not any(".repo-memory-kit" in str(h.get("command", "")) for h in e.get("hooks", []))]
+if kept != ss:
+    data["hooks"]["SessionStart"] = kept
+    if not kept:
+        del data["hooks"]["SessionStart"]
+    if not data["hooks"]:
+        del data["hooks"]
+    sp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print("已移除会话提醒钩子（settings.json 其余内容保留）")
+PYUNHOOK
+fi
+echo "卸载完成。用户数据（README.md 索引、记忆条目、.anchors.json、settings.json 其余配置）未触碰。"
 }
 
 [ "$MODE" = "doctor" ] && { doctor; exit $?; }
@@ -604,8 +626,42 @@ cp "$KIT_DIR/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/validate-memory.s
 cp "$KIT_DIR/memory-build" "$TARGET/.repo-memory-kit/bin/memory-build"
 cp "$KIT_DIR/spec-migrate" "$TARGET/.repo-memory-kit/bin/spec-migrate"
 cp "$KIT_DIR/memory-recall" "$TARGET/.repo-memory-kit/bin/memory-recall"
-chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/memory-build" "$TARGET/.repo-memory-kit/bin/spec-migrate" "$TARGET/.repo-memory-kit/bin/memory-recall"
-echo "已安装校验器、生成器、Spec 迁移器与语义检索器 .repo-memory-kit/bin/{validate-memory.sh,memory-build,spec-migrate,memory-recall}"
+cp "$KIT_DIR/session-reminder" "$TARGET/.repo-memory-kit/bin/session-reminder"
+chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/memory-build" "$TARGET/.repo-memory-kit/bin/spec-migrate" "$TARGET/.repo-memory-kit/bin/memory-recall" "$TARGET/.repo-memory-kit/bin/session-reminder"
+echo "已安装校验器、生成器、Spec 迁移器与语义检索器 .repo-memory-kit/bin/{validate-memory.sh,memory-build,spec-migrate,memory-recall,session-reminder}"
+
+# 会话提醒钩子：合并写入项目 .claude/settings.json（需 python3；失败只降级不阻断）
+# shellcheck disable=SC2016  # CLAUDE_PROJECT_DIR 需在钩子运行时由 Claude Code 展开,此处保留字面量
+RECALL_HOOK_CMD='"$CLAUDE_PROJECT_DIR/.repo-memory-kit/bin/session-reminder"'
+recall_hook_install() {
+    command -v python3 >/dev/null 2>&1 || { echo "提示: 无 python3，跳过会话钩子；语义检索路由由 CLAUDE.md 承担"; return 0; }
+    python3 - "$TARGET" "$RECALL_HOOK_CMD" <<'PYHOOK' || echo "提示: 会话钩子写入失败；语义检索路由由 CLAUDE.md 承担"
+import json, sys
+from pathlib import Path
+target, cmd = Path(sys.argv[1]), sys.argv[2]
+sp = target / ".claude" / "settings.json"
+sp.parent.mkdir(parents=True, exist_ok=True)
+data = {}
+if sp.exists():
+    try:
+        data = json.loads(sp.read_text(encoding="utf-8"))
+    except Exception:
+        print("提示: .claude/settings.json 不是合法 JSON，跳过钩子注册"); sys.exit(0)
+if not isinstance(data, dict):
+    print("提示: .claude/settings.json 结构异常，跳过钩子注册"); sys.exit(0)
+ss = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+for entry in ss:
+    for h in entry.get("hooks", []):
+        if ".repo-memory-kit" in str(h.get("command", "")):
+            h["command"] = cmd
+            sp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            sys.exit(0)
+ss.append({"matcher": "startup|resume", "hooks": [{"type": "command", "command": cmd, "timeout": 5}]})
+sp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print("已注册会话提醒钩子 .claude/settings.json（SessionStart，合并式写入）")
+PYHOOK
+}
+recall_hook_install
 
 # 默认只发现和报告已有 Spec Kit 文档；显式选项才执行保留原文的增量迁移。
 if [ -d "$TARGET/.specify/specs" ]; then

@@ -1,0 +1,27 @@
+#!/bin/sh
+# agent-engineering-kit 会话提醒：语义检索层状态（只读、快速）。
+# 由项目 .claude/settings.json 的 SessionStart 钩子调用（$CLAUDE_PROJECT_DIR 定位）；
+# kit 未装、无 docs/ 或层未启用时静默退出，不产生噪音。
+set -u
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+TARGET="$(cd "$SELF_DIR/../.." && pwd)"
+
+[ -d "$TARGET/docs" ] || exit 0
+[ -f "$TARGET/.repo-memory-kit/bin/memory-recall" ] || exit 0
+INDEX="$TARGET/.repo-memory-kit/zvec/recall"
+
+if [ ! -d "$INDEX" ]; then
+    # 索引未建：仅当 zvec 实际可用时提醒构建，否则静默（避免每会话唠叨）
+    command -v python3 >/dev/null 2>&1 || exit 0
+    python3 -c "import zvec" >/dev/null 2>&1 || exit 0
+    echo "[agent-engineering-kit] 语义检索层未建索引。构建：.repo-memory-kit/bin/memory-recall --rebuild"
+    exit 0
+fi
+
+newest="$(find "$TARGET/docs" -name '*.md' -newer "$INDEX" -print -quit 2>/dev/null)"
+if [ -n "$newest" ]; then
+    echo "[agent-engineering-kit] 语义索引落后于最近文档变更。刷新：.repo-memory-kit/bin/memory-recall --rebuild"
+    exit 0
+fi
+
+echo "[agent-engineering-kit] 语义检索可用：.repo-memory-kit/bin/memory-recall \"<任务描述>\"（docs/ 全量：坑/决定/场景/域条目/SDD）"

@@ -12,6 +12,7 @@
 - 交付收口用 `delivery-gate`：diff 审查、对抗复核与验证闭环；验证结论以 `docs/delivery-receipts/` 回执为唯一证据，无回执不得声称验证通过
 - 已有 `.specify/specs` 先用 `spec-migrate` 检查；只有明确要求时才增量迁移，待核验标记不等于设计完成
 - 任务中断或跨 Agent/会话移交时使用 `task-handoff`，以当前源码和权威 spec 复核交接内容
+- 任务动手前先用 `.repo-memory-kit/bin/memory-recall "<任务描述>"` 语义检索 docs/ 全量（坑/决定/场景/域条目/SDD），命中条目读全文；索引落后于文档时 `--rebuild` 重建
 - 会话开始先读 `docs/memory/PROFILE.md`（L3 画像，存在时），再查 `README.md` 索引
 - 修改代码前先查 `docs/memory/pitfalls/`，命中相关条目必须先读全文；状态为「待验证」的条目不得作为修改依据
 - bug 修复人工审核通过后，将原因/影响范围/修复方案整理为新 pitfall 条目入库
