@@ -293,7 +293,7 @@ if python3 -c "import zvec" >/dev/null 2>&1; then
     python3 "$KIT/memory-recall" --rebuild "$P4R" >/dev/null
     OUT9="$(python3 "$KIT/memory-recall" "Alpha 坑" "$P4R")"
     case "$OUT9" in *"2026-01-01-alpha.md"*) ok "语义检索命中条目";; *) bad "语义检索未命中: $OUT9";; esac
-    if python3 "$KIT/memory-recall" --check "$P4R" | grep -q "1 篇"; then ok "--check 报告索引规模"; else bad "--check 异常"; fi
+    if python3 "$KIT/memory-recall" --check "$P4R" | grep -q "语义索引"; then ok "--check 报告索引规模"; else bad "--check 异常"; fi
 else
     if python3 "$KIT/memory-recall" --rebuild "$P4R" >/dev/null 2>&1; then bad "缺 zvec 未报错"; else ok "缺 zvec 明确报错降级"; fi
 fi

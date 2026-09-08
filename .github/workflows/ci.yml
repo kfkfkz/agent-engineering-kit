@@ -19,7 +19,7 @@ jobs:
       - name: 安装器测试
         run: sh tests/install.test.sh
       - name: 安装 zvec（语义检索层测试依赖）
-        run: pip install --user zvec
+        run: pip install --user --break-system-packages zvec
       - name: 生成器测试
         run: sh tests/build.test.sh
       - name: Spec Kit 迁移测试
