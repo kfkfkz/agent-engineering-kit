@@ -297,7 +297,13 @@ for rev_candidate in $(git -C "$KIT" log --all --format=%H -- skills/delivery-re
         break
     fi
 done
-[ -n "$old_rev" ] || { bad "找不到历史版本 delivery-review"; }
+if [ -z "$old_rev" ]; then
+    if [ -f "$KIT/.git/shallow" ]; then
+        ok "浅克隆无历史，跳过退役清理用例"
+    else
+        bad "找不到历史版本 delivery-review"
+    fi
+fi
 if [ -n "$old_rev" ]; then
     mkdir -p "$P19/.claude/skills/delivery-review" "$P19/.agents/skills/delivery-review"
     git -C "$KIT" show "$old_rev:skills/delivery-review/SKILL.md" > "$P19/.claude/skills/delivery-review/SKILL.md"
