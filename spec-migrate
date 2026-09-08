@@ -160,7 +160,7 @@ SDD_FILE_MAP = {
     "baseline.md": ("07-原始需求材料", "{nn}-实施基线.md"),
     "data-model.md": ("04-详细设计/{n}-{name}", "03-数据库设计.md"),
     "quickstart.md": ("04-详细设计/{n}-{name}", "07-验证指南.md"),
-    "contracts": ("04-详细设计/{n}-{name}", "02-API设计-契约"),
+    "contracts": ("04-详细设计/{n}-{name}", "02-API设计/契约"),
     "checklists": ("07-原始需求材料", "{nn}-检查单"),
 }
 

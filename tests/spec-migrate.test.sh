@@ -189,7 +189,7 @@ assert_exists "架构设计迁移落位" "$SDD/03-架构设计/020-演示功能.
 assert_exists "实现计划迁移落位" "$SDD/06-实现计划/020-演示功能.md"
 assert_exists "详细设计目录（去零序号）" "$SDD/04-详细设计/20-演示功能"
 assert_exists "数据库设计改名落位" "$SDD/04-详细设计/20-演示功能/03-数据库设计.md"
-assert_exists "契约目录落位" "$SDD/04-详细设计/20-演示功能/02-API设计-契约/api.md"
+assert_exists "契约归入 API 槽位子目录" "$SDD/04-详细设计/20-演示功能/02-API设计/契约/api.md"
 assert_exists "验证指南落位" "$SDD/04-详细设计/20-演示功能/07-验证指南.md"
 assert_exists "检查单落位" "$SDD/07-原始需求材料/020-检查单/requirements.md"
 assert_exists "流程设计结构占位" "$SDD/04-详细设计/20-演示功能/04-流程设计.md"
