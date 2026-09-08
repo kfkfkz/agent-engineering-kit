@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import json
 import re
 import shutil
@@ -378,6 +379,85 @@ def vcs_move(repo: Path, src: Path, dst: Path) -> None:
     shutil.move(str(src), str(dst))
 
 
+LINK_RE = re.compile(r"(\[[^\]]*\]\()([^)#\s]+)([^)]*\))")
+
+
+def rewrite_links_for_move(old_file: Path, new_file: Path, move_map: dict) -> int:
+    """被移动 md 文件内的相对链接重写：按旧位置解析目标，换算为相对新位置的路径。
+
+    目标若是本次同批迁移的文件（旧位置已不存在），解析到其新位置；其余目标
+    （含跨仓库相对路径）须真实存在才改写；http/锚点/<> 包裹形式不动。
+    """
+    try:
+        text = new_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return 0
+    old_dir, new_dir = old_file.parent, new_file.parent
+    count = 0
+
+    def repl(m: "re.Match[str]") -> str:
+        nonlocal count
+        prefix, target, suffix = m.group(1), m.group(2), m.group(3)
+        if target.startswith(("http://", "https://", "#", "mailto:", "data:", "<")):
+            return m.group(0)
+        anchor = ""
+        body = target
+        if "#" in target:
+            body, _, anchor = target.partition("#")
+            if not body:
+                return m.group(0)
+        if not body:
+            return m.group(0)
+        abs_target = os.path.normpath(os.path.join(old_dir, body))
+        if abs_target in move_map:
+            abs_target = move_map[abs_target]
+        elif not os.path.exists(abs_target):
+            return m.group(0)
+        new_rel = os.path.relpath(abs_target, new_dir).replace(os.sep, "/")
+        count += 1
+        return f"{prefix}{new_rel}{('#' + anchor) if anchor else ''}{suffix}"
+
+    new_text = LINK_RE.sub(repl, text)
+    if count:
+        new_file.write_text(new_text, encoding="utf-8")
+    return count
+
+
+def rewrite_external_refs(target: Path, feature: Path, version_root: Path, plan: dict) -> int:
+    """改写仓库内文档对旧 Spec Kit 路径的引用（docs/**、CLAUDE.md、AGENTS.md）。
+
+    精确整路径替换：文件级（.specify/specs/<f>/<file> → SDD 新路径）与
+    目录级（.specify/specs/<f> → 版本目录）。只动引用文本，不动语义。
+    """
+    file_map = {}
+    for rel_src, rel_dst in plan["moves"]:
+        old_repo = os.path.relpath(feature / rel_src, target).replace(os.sep, "/")
+        new_repo = os.path.relpath(version_root / rel_dst, target).replace(os.sep, "/")
+        file_map[old_repo] = new_repo
+    dir_old = os.path.relpath(feature, target).replace(os.sep, "/")
+    dir_new = os.path.relpath(version_root, target).replace(os.sep, "/")
+    candidates = [target / "CLAUDE.md", target / "AGENTS.md"]
+    docs = target / "docs"
+    if docs.is_dir():
+        candidates.extend(q for q in docs.rglob("*.md"))
+    total = 0
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        new_text = text
+        for old, new in file_map.items():
+            new_text = new_text.replace(old, new)
+        new_text = new_text.replace(dir_old, dir_new)
+        if new_text != text:
+            path.write_text(new_text, encoding="utf-8")
+            total += 1
+    return total
+
+
 def sdd_index_rows(plan: dict) -> list[str]:
     nn, n, name = plan["nn"], plan["n"], plan["name"]
     return [
@@ -436,6 +516,16 @@ def apply_sdd_migration(target: Path, feature: Path, plan: dict, version: str, s
             raise ValueError(f"目标已存在，拒绝覆盖: {ph['path']}")
     for rel_src, rel_dst in plan["moves"]:
         vcs_move(target, feature / rel_src, version_root / rel_dst)
+    # 移动后重写文件内相对链接（./spec.md、../../prd 等按旧位置写的引用）。
+    moved_links = 0
+    move_map = {
+        os.path.normpath(feature / rel_src): os.path.normpath(version_root / rel_dst)
+        for rel_src, rel_dst in plan["moves"]
+    }
+    for rel_src, rel_dst in plan["moves"]:
+        new_file = version_root / rel_dst
+        if rel_src.endswith(".md") and new_file.is_file():
+            moved_links += rewrite_links_for_move(feature / rel_src, new_file, move_map)
     for ph in plan["placeholders"]:
         path = version_root / ph["path"]
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -456,6 +546,7 @@ def apply_sdd_migration(target: Path, feature: Path, plan: dict, version: str, s
             f"> {pend['prompt']}\n",
         )
     update_sdd_index(version_root, plan)
+    ext_refs = rewrite_external_refs(target, feature, version_root, plan)
     leftover = [p for p in feature.rglob("*") if p.is_file()]
     if leftover:
         raise ValueError(f"feature 目录仍有未迁移文件: {[str(p) for p in leftover[:3]]}")
@@ -465,6 +556,10 @@ def apply_sdd_migration(target: Path, feature: Path, plan: dict, version: str, s
         except OSError:
             pass
     feature.rmdir()
+    if moved_links:
+        print(f"已重写被移动文件内相对链接 {moved_links} 处")
+    if ext_refs:
+        print(f"已改写外部文档引用 {ext_refs} 个文件（旧 Spec Kit 路径 → SDD 路径）")
 
 
 def sdd_pending_scan(target: Path, sdd_root: str) -> list[dict]:

@@ -159,7 +159,11 @@ fi
 P8="$T/sdd-project"; F8="$P8/.specify/specs/020-demo"
 mkdir -p "$F8/contracts" "$F8/checklists"
 printf '# Feature Specification: 演示功能\n\n## Success Criteria\n\n- 可验收\n' > "$F8/spec.md"
-printf '# Implementation Plan\n\n## Technical Context\n\n已有证据。\n' > "$F8/plan.md"
+printf '# Implementation Plan\n\n## Technical Context\n\n已有证据。Spec 见 [spec.md](./spec.md)，PRD 见 [notes](../../prd/notes.md)。\n' > "$F8/plan.md"
+mkdir -p "$P8/.specify/prd"
+printf '# PRD notes\n' > "$P8/.specify/prd/notes.md"
+mkdir -p "$P8/docs"
+printf '外部引用：见 .specify/specs/020-demo/plan.md 与 .specify/specs/020-demo/ 目录。\n' > "$P8/docs/外部引用.md"
 printf '# Tasks\n\n### Tests for User Story 1\n\n- 用例\n' > "$F8/tasks.md"
 printf '# 数据模型\n' > "$F8/data-model.md"
 printf '# 验证指南\n' > "$F8/quickstart.md"
@@ -172,7 +176,7 @@ if python3 "$KIT/spec-migrate" --dry-run --layout sdd --sdd-version V测试一�
 else
     bad "SDD dry-run 计划缺失"
 fi
-assert_gone "SDD dry-run 不写文件" "$P8/docs"
+assert_gone "SDD dry-run 不写 SDD 目录" "$P8/docs/03-SDD"
 if python3 "$KIT/spec-migrate" --apply --layout sdd --feature 020-demo "$P8" >/dev/null 2>&1; then
     bad "缺 --sdd-version 未报错"
 else
@@ -185,6 +189,10 @@ else
 fi
 python3 "$KIT/spec-migrate" --apply --layout sdd --sdd-version V测试一期 --feature 020-demo "$P8" >/dev/null
 assert_exists "需求迁移落位并改名" "$SDD/02-需求/020-演示功能.md"
+assert_grep "文件内相对链接换算(同 feature)" '](../02-需求/020-演示功能.md)' "$SDD/03-架构设计/020-演示功能.md"
+assert_grep "文件内相对链接换算(跨目录)" '](../../../../.specify/prd/notes.md)' "$SDD/03-架构设计/020-演示功能.md"
+if grep -q 'specify/specs/020-demo' "$P8/docs/外部引用.md"; then bad "外部引用未改写"; else ok "外部引用旧路径改写"; fi
+assert_grep "外部引用指向新路径" 'docs/03-SDD/V测试一期/03-架构设计/020-演示功能.md' "$P8/docs/外部引用.md"
 assert_exists "架构设计迁移落位" "$SDD/03-架构设计/020-演示功能.md"
 assert_exists "实现计划迁移落位" "$SDD/06-实现计划/020-演示功能.md"
 assert_exists "详细设计目录（去零序号）" "$SDD/04-详细设计/20-演示功能"

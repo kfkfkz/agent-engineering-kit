@@ -38,6 +38,8 @@ description: "检查并迁移已有 Spec Kit 文档到统一交付字段，保�
 
 迁移完成标准：`--check` 报告的 `migration-pending` 与 SDD 待核验计数归零；残留未清的迁移不视为完成。
 
+核验时注意：迁入槽位的文档保留原文，标题可能与槽位语义不符（如 plan.md 的 Implementation Plan 标题位于 03-架构设计）——改题并在头部加溯源指针指向权威对文档（如功能级《业务流程设计》《详细设计》在 SDK 仓库的情形），不复制正文。
+
 未来新 feature 由 `.specify/templates/*-template.md` 中的受管覆盖层承接这些字段；项目自定义模板正文保持不变。
 
 ## 输出
