@@ -260,6 +260,35 @@ OUT7="$(MB --rename-by-title "$P3")"
 case "$OUT7" in *"无需重命名"*) ok "重命名幂等";; *) bad "重命名不幂等: $OUT7";; esac
 if MB --check "$P3" >/dev/null 2>&1; then ok "重命名后 --check 一致"; else bad "重命名后 --check 失败"; fi
 
+
+# ── T8 memory-recall 语义检索层 ──
+P4R="$T/recall"; mkdir -p "$P4R"
+"$KIT/install.sh" "$P4R" >/dev/null
+assert_exists "语义检索器随仓库安装" "$P4R/.repo-memory-kit/bin/memory-recall"
+cat > "$P4R/docs/memory/pitfalls/2026-01-01-alpha.md" <<'EOF2'
+---
+type: pitfall
+status: confirmed
+created: 2026-01-01
+summary: Alpha 坑
+---
+
+# Alpha 坑
+
+内容。
+EOF2
+OUT8="$(python3 "$KIT/memory-recall" --list "$P4R")"
+case "$OUT8" in *"pitfall/confirmed"*"2026-01-01-alpha.md"*) ok "--list 输出语料类型与状态";; *) bad "--list 异常: $OUT8";; esac
+if python3 -c "import zvec" >/dev/null 2>&1; then
+    python3 "$KIT/memory-recall" --rebuild "$P4R" >/dev/null
+    OUT9="$(python3 "$KIT/memory-recall" "Alpha 坑" "$P4R")"
+    case "$OUT9" in *"2026-01-01-alpha.md"*) ok "语义检索命中条目";; *) bad "语义检索未命中: $OUT9";; esac
+    if python3 "$KIT/memory-recall" --check "$P4R" | grep -q "1 篇"; then ok "--check 报告索引规模"; else bad "--check 异常"; fi
+else
+    if python3 "$KIT/memory-recall" --rebuild "$P4R" >/dev/null 2>&1; then bad "缺 zvec 未报错"; else ok "缺 zvec 明确报错降级"; fi
+fi
+
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

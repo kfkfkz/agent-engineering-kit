@@ -8,7 +8,7 @@ jobs:
       - name: 语法检查（sh -n / py_compile）
         run: |
           sh -n install.sh validate-memory.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh
-          python3 -m py_compile memory-build spec-migrate
+          python3 -m py_compile memory-build spec-migrate memory-recall
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
@@ -16,6 +16,8 @@ jobs:
           shellcheck install.sh validate-memory.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh
       - name: 安装器测试
         run: sh tests/install.test.sh
+      - name: 安装 zvec（语义检索层测试依赖）
+        run: pip install --user zvec
       - name: 生成器测试
         run: sh tests/build.test.sh
       - name: Spec Kit 迁移测试

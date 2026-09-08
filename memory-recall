@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""agent-engineering-kit 语义检索层：docs/ 全量文档的混合全文检索。
+
+用法:
+  memory-recall --rebuild [目标仓库]              # 全量重建语义索引
+  memory-recall "查询文本" [目标仓库]              # 混合检索，默认 top 8
+  memory-recall "查询" --top 5 --type pitfall,domain --status confirmed [目标仓库]
+  memory-recall --list [目标仓库]                  # 列出语料清单（不依赖 zvec）
+  memory-recall --check [目标仓库]                 # 索引状态
+
+语料 = docs/**/*.md（记忆条目、业务域地图、SDD、交付回执等；模板与生成索引排除）。
+检索 = zvec jieba 分词全文（标题/摘要/锚点 + 正文双字段）+ RRF 融合 + 结构化过滤，
+零 API key、零模型下载。索引是派生数据（.repo-memory-kit/zvec/recall），随时 --rebuild 重建，
+随卸载移除；未安装 zvec（pip install zvec）时明确报错降级，不影响记忆体系其余功能。
+"""
+import argparse
+import hashlib
+import re
+import shutil
+import sys
+from pathlib import Path
+
+STORE_REL = ".repo-memory-kit/zvec/recall"
+EXCLUDE_SUFFIXES = ("01-索引/README.md", "docs/memory/README.md")
+
+TYPE_BY_PREFIX = (
+    ("docs/memory/pitfalls/", "pitfall"),
+    ("docs/memory/decisions/", "decision"),
+    ("docs/memory/playbooks/", "playbook"),
+    ("docs/02-业务域地图/", "domain"),
+    ("docs/03-SDD/", "sdd"),
+    ("docs/delivery-receipts/", "receipt"),
+)
+DOMAIN_STATUS = {"已确认": "confirmed", "草稿": "draft", "待确认": "draft", "已废弃": "deprecated"}
+
+
+def parse_frontmatter(text):
+    if not text.startswith("---\n"):
+        return {}, text
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return {}, text
+    fm, key = {}, None
+    for ln in text[4:end].splitlines():
+        m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", ln)
+        if m:
+            key = m.group(1)
+            fm[key] = m.group(2).split(" #")[0].strip()
+    return fm, text[end + 5:]
+
+
+def derive_type(rel):
+    for prefix, typ in TYPE_BY_PREFIX:
+        if rel.startswith(prefix):
+            return typ
+    return "doc"
+
+
+def derive_status(rel, fm, body):
+    s = str(fm.get("status") or "").strip()
+    if s:
+        return s
+    if rel.startswith("docs/02-业务域地图/"):
+        m = re.search(r"^>\s*状态[：:]\s*([^\s（(，,]+)", body, re.M)
+        if m:
+            return DOMAIN_STATUS.get(m.group(1), m.group(1))
+    return ""
+
+
+def iter_docs(repo):
+    """语料提取：docs/**/*.md → (rel, fm, body, title, typ, meta)。不依赖 zvec。"""
+    docs = repo / "docs"
+    if not docs.is_dir():
+        return
+    for p in sorted(docs.rglob("*.md")):
+        rel = p.relative_to(repo).as_posix()
+        if p.name.startswith("_") or any(rel.endswith(s) for s in EXCLUDE_SUFFIXES):
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        fm, body = parse_frontmatter(text)
+        m = re.search(r"^# (.+)$", body, re.M)
+        title = (m.group(1).strip() if m else p.stem)
+        anchors = " ".join(fm.get("anchors", "").split())
+        meta = " ".join(x for x in (title, str(fm.get("summary") or ""), anchors) if x)
+        yield rel, fm, body, title, derive_type(rel), meta
+
+
+def build_docs(repo):
+    out = []
+    for rel, fm, body, title, typ, meta in iter_docs(repo):
+        out.append({
+            "rel": rel, "title": title, "type": typ,
+            "status": derive_status(rel, fm, body),
+            "module": str(fm.get("module") or ""),
+            "verified": str(fm.get("verified") or fm.get("created") or ""),
+            "meta": meta, "content": body.strip(),
+        })
+    return out
+
+
+def require_zvec():
+    try:
+        import zvec  # noqa: F401
+        from zvec.extension.multi_vector_reranker import RrfReRanker  # noqa: F401
+    except ImportError as exc:
+        sys.exit("✗ 未安装 zvec（pip install zvec）。语义检索层不可用；"
+                 f"记忆体系其余功能不受影响。原始错误: {exc}")
+    return True
+
+
+def cmd_rebuild(repo):
+    require_zvec()
+    import zvec
+    from zvec import (CollectionOption, DataType, Doc, FieldSchema,
+                      FtsIndexParam, CollectionSchema)
+
+    docs = build_docs(repo)
+    if not docs:
+        sys.exit("✗ docs/ 下没有可索引的 Markdown 文档")
+    store = repo / STORE_REL
+    if store.exists():
+        shutil.rmtree(store)
+    jieba = FtsIndexParam(tokenizer_name="jieba")
+    schema = CollectionSchema(
+        name="recall",
+        fields=[
+            FieldSchema("path", DataType.STRING, nullable=True),
+            FieldSchema("title", DataType.STRING, nullable=True),
+            FieldSchema("type", DataType.STRING, nullable=True),
+            FieldSchema("status", DataType.STRING, nullable=True),
+            FieldSchema("module", DataType.STRING, nullable=True),
+            FieldSchema("verified", DataType.STRING, nullable=True),
+            FieldSchema("meta", DataType.STRING, nullable=True, index_param=jieba),
+            FieldSchema("content", DataType.STRING, nullable=True, index_param=jieba),
+        ],
+    )
+    coll = zvec.create_and_open(str(store), schema,
+                                CollectionOption(read_only=False, enable_mmap=True))
+    # zvec 文档 ID 只接受受限字符集：用路径哈希做 ID，真实路径存字段。
+    payload = [
+        Doc(id=hashlib.sha1(d["rel"].encode("utf-8")).hexdigest()[:16], fields={
+            "path": d["rel"], "title": d["title"], "type": d["type"],
+            "status": d["status"], "module": d["module"], "verified": d["verified"],
+            "meta": d["meta"], "content": d["content"][:20000],
+        })
+        for d in docs
+    ]
+    statuses = coll.upsert(payload)
+    bad = [str(s) for s in statuses if s and not getattr(s, "ok", lambda: True)()]
+    if bad:
+        print(f"⚠ {len(bad)} 条写入异常: {bad[:2]}")
+    print(f"✓ 语义索引已重建：{len(docs)} 篇文档 → {store.relative_to(repo)}")
+
+
+def cmd_query(repo, text, top, types, status, module):
+    require_zvec()
+    import zvec
+    from zvec import Query
+    from zvec.extension.multi_vector_reranker import RrfReRanker
+    from zvec.model.param.query import Fts
+
+    store = repo / STORE_REL
+    if not store.exists():
+        sys.exit("✗ 语义索引不存在，先运行 memory-recall --rebuild")
+    coll = zvec.open(str(store))
+    results = coll.query(
+        queries=[
+            Query(field_name="meta", fts=Fts(match_string=text)),
+            Query(field_name="content", fts=Fts(match_string=text)),
+        ],
+        topk=max(top * 4, 20),
+        reranker=RrfReRanker(rank_constant=60),
+    )
+    shown = 0
+    print(f'语义检索: "{text}"')
+    for d in results:
+        f = d.fields
+        if types and f.get("type") not in types:
+            continue
+        if status and f.get("status") != status:
+            continue
+        if module and module not in f.get("module", ""):
+            continue
+        shown += 1
+        tag = f.get("type") or "doc"
+        st = f.get("status") or "—"
+        print(f"{shown}. [score {d.score:.3f}] [{tag}/{st}] {f.get('title', '')}")
+        print(f"   {f.get('path') or d.id}")
+        if shown >= top:
+            break
+    if not shown:
+        print("无命中。可尝试去掉 --type/--status 过滤，或检查关键词。")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="docs/ 语义检索层（zvec jieba 全文 + RRF）")
+    ap.add_argument("query", nargs="?", help="检索文本")
+    ap.add_argument("target", nargs="?", default=".", help="目标仓库")
+    ap.add_argument("--rebuild", action="store_true", help="全量重建语义索引")
+    ap.add_argument("--check", action="store_true", help="显示索引状态")
+    ap.add_argument("--list", action="store_true", help="列出语料清单（不依赖 zvec）")
+    ap.add_argument("--top", type=int, default=8)
+    ap.add_argument("--type", help="按类型过滤（逗号分隔：pitfall,decision,playbook,domain,sdd,receipt）")
+    ap.add_argument("--status", help="按状态过滤（如 confirmed）")
+    ap.add_argument("--module", help="按模块过滤（子串匹配）")
+    args = ap.parse_args()
+
+    # --rebuild/--check/--list 模式下，单个位置参数视为目标仓库而非查询文本。
+    if args.rebuild or args.check or args.list:
+        target_str = args.query or args.target
+        args.query = None
+    else:
+        target_str = args.target
+
+    repo = Path(target_str).expanduser().resolve()
+    if not repo.is_dir():
+        sys.exit(f"✗ 目标目录不存在: {repo}")
+    if not (repo / "docs").is_dir():
+        sys.exit(f"✗ 未找到 {repo}/docs（安装过 agent-engineering-kit 吗？）")
+
+    if args.list:
+        docs = build_docs(repo)
+        print(f"语料 {len(docs)} 篇：")
+        for d in docs:
+            print(f"  [{d['type']}/{d['status'] or '—'}] {d['rel']}")
+        return
+    if args.check:
+        store = repo / STORE_REL
+        if not store.exists():
+            print("✗ 语义索引不存在（运行 memory-recall --rebuild）")
+            return
+        try:
+            import zvec
+            coll = zvec.open(str(store))
+            n = len(coll.query(topk=100000))
+            print(f"✓ 语义索引 {store.relative_to(repo)}：{n} 篇")
+        except ImportError:
+            print(f"✓ 索引文件存在（{store.relative_to(repo)}）；未安装 zvec，无法打开")
+        return
+    if args.rebuild:
+        cmd_rebuild(repo)
+        return
+    if not args.query:
+        ap.error("提供检索文本，或 --rebuild/--check/--list")
+    types = [t.strip() for t in args.type.split(",")] if args.type else None
+    cmd_query(repo, args.query, args.top, types, args.status, args.module)
+
+
+if __name__ == "__main__":
+    main()

@@ -320,6 +320,10 @@ L0  代码（第一事实源）、业务域地图、spec/SDD、接口文档
 
 # 存量英文命名条目按标题批量转为中文名
 .repo-memory-kit/bin/memory-build --rename-by-title .
+
+# 语义检索：docs/ 全量（记忆/域地图/SDD/回执）混合检索，可选层
+.repo-memory-kit/bin/memory-recall --rebuild .
+.repo-memory-kit/bin/memory-recall "任务描述" .
 ```
 
 条目命名 `YYYY-MM-DD-<中文标题>.md`，纯代码符号名可保留英文。
@@ -402,6 +406,7 @@ git pull
 ## 依赖边界
 
 - 基础安装：POSIX shell 以及 `sha256sum` 或 `shasum`；仓库存在 `.specify/specs` 或需要记忆构建/Spec 迁移时另需 Python 3。
+- 语义检索层：可选，`pip install zvec`（预编译轮子，无模型下载、零 API key）；未安装时其余功能不受影响。
 - 代码图谱增强：仅在使用 `--with-codebase-memory` 时需要网络和 `curl`。
 - `open-code-review` 不包含在基础包中，因为它还依赖独立 `ocr` CLI 和 LLM 凭证。团队需要时可自行安装；基础工作流已经包含基于规范、风险、调用影响和最终 diff 的自审。
 - git 不是目标项目的硬要求；SVN 或纯本地项目也可以使用记忆系统和显式文件清单检查。

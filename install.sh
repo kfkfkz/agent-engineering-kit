@@ -164,6 +164,7 @@ docs/memory/_PROFILE_TEMPLATE.md
 .repo-memory-kit/bin/validate-memory.sh
 .repo-memory-kit/bin/memory-build
 .repo-memory-kit/bin/spec-migrate
+.repo-memory-kit/bin/memory-recall
 .repo-memory-kit/codex-workspace-root
 "
 
@@ -602,8 +603,9 @@ mkdir -p "$TARGET/.repo-memory-kit/bin"
 cp "$KIT_DIR/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/validate-memory.sh"
 cp "$KIT_DIR/memory-build" "$TARGET/.repo-memory-kit/bin/memory-build"
 cp "$KIT_DIR/spec-migrate" "$TARGET/.repo-memory-kit/bin/spec-migrate"
-chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/memory-build" "$TARGET/.repo-memory-kit/bin/spec-migrate"
-echo "已安装校验器、生成器与 Spec 迁移器 .repo-memory-kit/bin/{validate-memory.sh,memory-build,spec-migrate}"
+cp "$KIT_DIR/memory-recall" "$TARGET/.repo-memory-kit/bin/memory-recall"
+chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/memory-build" "$TARGET/.repo-memory-kit/bin/spec-migrate" "$TARGET/.repo-memory-kit/bin/memory-recall"
+echo "已安装校验器、生成器、Spec 迁移器与语义检索器 .repo-memory-kit/bin/{validate-memory.sh,memory-build,spec-migrate,memory-recall}"
 
 # 默认只发现和报告已有 Spec Kit 文档；显式选项才执行保留原文的增量迁移。
 if [ -d "$TARGET/.specify/specs" ]; then
