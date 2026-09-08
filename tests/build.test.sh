@@ -257,7 +257,7 @@ cat > "$P3/docs/memory/PROFILE.md" <<'EOF2'
 
 | 风险域 | 信号 | 等级 | 下钻 |
 |---|---|---|---|
-| 格式解析 | 压缩包容器歧义 | 反复 | → pitfalls/2026-03-01-ofd-zip-magic-routing、playbooks/120-test-env |
+| 格式解析 | 压缩包容器歧义 | 反复 | → pitfalls/2026-03-01-zip-format-mismatch、playbooks/120-test-env |
 EOF2
 MB --rename-by-title "$P3" >/dev/null
 assert_exists "条目按中文标题重命名" "$P3/docs/memory/pitfalls/2026-03-01-压缩包格式误判.md"
