@@ -250,12 +250,22 @@ related:
 ## 现象
 有关联
 EOF
+cat > "$P3/docs/memory/PROFILE.md" <<'EOF2'
+# 项目经验画像（L3）
+
+> 最后蒸馏：2026-03-02
+
+| 风险域 | 信号 | 等级 | 下钻 |
+|---|---|---|---|
+| 格式解析 | 压缩包容器歧义 | 反复 | → pitfalls/2026-03-01-ofd-zip-magic-routing、playbooks/120-test-env |
+EOF2
 MB --rename-by-title "$P3" >/dev/null
 assert_exists "条目按中文标题重命名" "$P3/docs/memory/pitfalls/2026-03-01-压缩包格式误判.md"
 assert_gone "旧英文文件名移除" "$P3/docs/memory/pitfalls/2026-03-01-zip-format-mismatch.md"
 assert_grep "交叉引用联动改写" 'pitfalls/2026-03-01-压缩包格式误判.md' "$P3/docs/memory/pitfalls/2026-03-02-相邻问题.md"
 assert_grep "README 索引指向新文件名" '2026-03-01-压缩包格式误判.md' "$P3/docs/memory/README.md"
 assert_grep "锚点表条目路径更新" '2026-03-01-压缩包格式误判.md' "$P3/docs/memory/.anchors.json"
+assert_grep "PROFILE 裸词干引用联动改写" 'pitfalls/2026-03-01-压缩包格式误判' "$P3/docs/memory/PROFILE.md"
 OUT7="$(MB --rename-by-title "$P3")"
 case "$OUT7" in *"无需重命名"*) ok "重命名幂等";; *) bad "重命名不幂等: $OUT7";; esac
 if MB --check "$P3" >/dev/null 2>&1; then ok "重命名后 --check 一致"; else bad "重命名后 --check 失败"; fi

@@ -334,14 +334,20 @@ def rename_by_title(entries, mem, target):
         for s in skipped:
             print(f"  - 跳过 {s}")
         return
-    # 先改写引用（旧路径仍在），再移动文件。
-    for e in entries:
-        text = open(e["path"], encoding="utf-8").read()
+    # 先改写引用（旧路径仍在），再移动文件。条目正文与 PROFILE（L3 画像）
+    # 都可能引用条目：带 .md 的路径引用与不带后缀的裸词干引用各替换一遍。
+    rewrite_targets = [e["path"] for e in entries]
+    profile_path = os.path.join(mem, "PROFILE.md")
+    if os.path.exists(profile_path):
+        rewrite_targets.append(profile_path)
+    for path in rewrite_targets:
+        text = open(path, encoding="utf-8").read()
         new_text = text
         for _, old_name, new_name in plan:
             new_text = new_text.replace(old_name, new_name)
+            new_text = new_text.replace(old_name[:-3], new_name[:-3])
         if new_text != text:
-            atomic_write(e["path"], new_text)
+            atomic_write(path, new_text)
     for e, old_name, new_name in plan:
         src = e["path"]
         dst = os.path.join(os.path.dirname(src), new_name)
