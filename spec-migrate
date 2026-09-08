@@ -6,7 +6,7 @@ sections with explicit migration-pending markers; an Agent and human reviewer
 must then integrate evidence and remove those markers.  ``--layout sdd``
 additionally moves a feature into the team's SDD directory structure
 (01-索引/02-需求/03-架构设计/04-详细设计/05-变更/06-实现计划/07-原始需求材料)
-with SDD-style file naming, so the delivery docs stop living in two
+with the team's SDD file-naming conventions, so the delivery docs stop living in two
 parallel systems.
 """
 
@@ -160,16 +160,12 @@ SDD_FILE_MAP = {
     "baseline.md": ("07-原始需求材料", "{nn}-实施基线.md"),
     "data-model.md": ("04-详细设计/{n}-{name}", "03-数据库设计.md"),
     "quickstart.md": ("04-详细设计/{n}-{name}", "07-验证指南.md"),
-    "frontend-api-contract.md": ("04-详细设计/{n}-{name}", "02-API设计-前端对接.md"),
-    "frontend-api-operator.md": ("04-详细设计/{n}-{name}", "02-API设计-接口管理.md"),
-    "frontend-api-reference.md": ("04-详细设计/{n}-{name}", "02-API设计-接口手册.md"),
-    "frontend-mapping.md": ("04-详细设计/{n}-{name}", "06-前端落位.md"),
     "contracts": ("04-详细设计/{n}-{name}", "02-API设计-契约"),
     "checklists": ("07-原始需求材料", "{nn}-检查单"),
 }
 
 # SDD 详细设计固定件中源结构没有独立文件的，落结构占位（Agent 负责语义整合）。
-# 提示语软引用项目的详细设计模板（如 项目详细设计模板 技能），不复制模板正文——单一权威来源。
+# 提示语软引用项目的详细设计模板，不复制模板正文——单一权威来源。
 SDD_DESIGN_PLACEHOLDERS = (
     (
         "01-功能设计.md", "sdd_functional_design",
@@ -177,15 +173,15 @@ SDD_DESIGN_PLACEHOLDERS = (
     ),
     (
         "04-流程设计.md", "sdd_flow_design",
-        "请按项目详细设计模板（如 项目详细设计模板 的 templates/flow-design.md）骨架，从 02-需求/03-架构设计 及源码调用链整合流程设计；确认后删除本提示。",
+        "请按项目详细设计模板（如项目的流程设计模板）骨架，从 02-需求/03-架构设计 及源码调用链整合流程设计；确认后删除本提示。",
     ),
     (
         "05-验收标准.md", "sdd_acceptance",
-        "请按项目详细设计模板（如 项目详细设计模板 的 templates/acceptance-criteria.md）骨架，从 02-需求 的用户场景与成功标准整合可测量验收标准和失败场景；确认后删除本提示。",
+        "请按项目详细设计模板（如项目的验收标准模板）骨架，从 02-需求 的用户场景与成功标准整合可测量验收标准和失败场景；确认后删除本提示。",
     ),
 )
 
-# 图片与图源文件统一进详细设计区的 images/（项目详细设计模板 约定）。
+# 图片与图源文件统一进详细设计区的 images/（详细设计目录惯例）。
 SDD_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".puml", ".drawio"}
 
 # 缺失字段的待核验小节在 SDD 结构中的归宿（acceptance 由 05-验收标准 占位承担）。
