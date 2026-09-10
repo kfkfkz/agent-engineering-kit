@@ -326,8 +326,11 @@ L0  代码（第一事实源）、业务域地图、spec/SDD、接口文档
 .repo-memory-kit/bin/memory-build --rename-by-title .
 
 # 语义检索：docs/ 全量（记忆/域地图/SDD/回执）混合检索，可选层
-.repo-memory-kit/bin/memory-recall --rebuild .
+# memory-build 构建时 zvec 可用即自动随动刷新，单独重建用 --rebuild
 .repo-memory-kit/bin/memory-recall "任务描述" .
+
+# 域地图守卫：索引登记/状态/证据路径核验（回写域条目后运行）
+.repo-memory-kit/bin/domain-check .
 ```
 
 条目命名 `YYYY-MM-DD-<中文标题>.md`，纯代码符号名可保留英文。

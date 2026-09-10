@@ -11,7 +11,7 @@
 4. 条目过时改为 `deprecated`；被新条目替代改为 `superseded`（并在新条目 frontmatter 的 `supersedes` 指回旧条目）。原则上不删除，保留可追溯。**唯一例外见「敏感信息误入库应急」**。
 5. 遵循安全要求：条目中禁止出现密钥、Token、真实 PII、内网地址。
 6. **功能验收通过后进行功能蒸馏**：按下方「功能蒸馏」清单将核心流程与环境信息沉淀为 playbook 条目。
-7. **任何条目增删改后必须运行 `memory-build`**（`.repo-memory-kit/bin/memory-build`）刷新 README 索引与锚点表——索引与锚点表是生成物，禁止手改；已启用语义层时另运行 `memory-recall --rebuild`。
+7. **任何条目增删改后必须运行 `memory-build`**（`.repo-memory-kit/bin/memory-build`）刷新 README 索引与锚点表——索引与锚点表是生成物，禁止手改；zvec 可用时语义索引随本次构建自动刷新。
 
 ## 触发与捕获（记忆怎么进来）
 
@@ -57,7 +57,7 @@ L1  pitfalls/ + decisions/      原子经验：坑（缺陷/陷阱）与决定�
 L0  权威文档与代码（记忆区外）   证据：源码（第一事实源）、业务域地图、spec/SDD、接口文档
 ```
 
-**语义检索层（memory-recall）**：`docs/` 下全部 Markdown（记忆条目、业务域地图、SDD、交付回执；模板与生成索引除外）经 zvec jieba 全文 + 双字段 RRF 建成可检索索引，Agent 取上下文时先 `.repo-memory-kit/bin/memory-recall "<任务描述>"`，再读命中条目全文——功能点多了以后，靠人工记得去查索引表必然漏召回。索引是派生数据（`.repo-memory-kit/zvec/recall`，随卸载移除），条目增删改后 `--rebuild` 重建；可选依赖 `pip install zvec`，未安装时明确报错降级，不影响记忆体系其余功能。
+**语义检索层（memory-recall）**：`docs/` 下全部 Markdown（记忆条目、业务域地图、SDD、交付回执；模板与生成索引除外）经 zvec jieba 全文 + 双字段 RRF 建成可检索索引，Agent 取上下文时先 `.repo-memory-kit/bin/memory-recall "<任务描述>"`，再读命中条目全文——功能点多了以后，靠人工记得去查索引表必然漏召回。索引是派生数据（`.repo-memory-kit/zvec/recall`，随卸载移除），条目增删改后由 `memory-build` 随动重建（单独 `--rebuild` 仍可用）；可选依赖 `pip install zvec`，未安装时明确报错降级，不影响记忆体系其余功能。
 
 **L3 消费规则（写入 Agent 指引）**：`PROFILE.md` 存在时，Agent 会话开始必须先读它，再查 README 索引——没有消费规则的生产规则是死代码。
 

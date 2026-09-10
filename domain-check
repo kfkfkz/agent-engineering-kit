@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""agent-engineering-kit 域地图守卫：索引一致性、头部状态校验、证据路径存在性。
+
+用法: domain-check [目标仓库] [--strict]
+退出码: 有错误=1；仅警告=0（--strict 时警告也计 1）。只读，不改任何文件。
+
+背景：域地图是系统状态知识的唯一事实登记处，但此前没有任何守卫——
+代码改了、条目没更新，不会有任何东西发现。本工具补三件事：
+1) 01-索引 登记 ↔ 实际条目 一致性；
+2) 条目头部「状态/最后核对日期」存在且合法，超期未复核给警告；
+3) §9 代码证据索引里的路径仍然存在（失联=条目大概率过时）。
+跨仓库前缀（dmtp-sdk/ 等）、绝对路径、含省略号的缩写路径跳过并列出。
+"""
+import datetime
+import os
+import re
+import sys
+
+STALE_DAYS = 90
+CROSS_REPO_PREFIXES = ("dmtp-sdk/", "sdk-demo/", "olym/")
+
+
+def main():
+    strict = "--strict" in sys.argv[1:]
+    pos = [a for a in sys.argv[1:] if not a.startswith("-")]
+    repo = os.path.abspath(pos[0] if pos else ".")
+    root = os.path.join(repo, "docs", "02-业务域地图")
+    if not os.path.isdir(root):
+        sys.exit(f"✗ 未找到 {root}（该项目建了业务域地图吗？）")
+    errors, warns = [], []
+
+    entries = {}
+    for group in ("02-公共能力域", "03-核心业务域"):
+        d = os.path.join(root, group)
+        if not os.path.isdir(d):
+            continue
+        for sub in sorted(os.listdir(d)):
+            if os.path.isdir(os.path.join(d, sub)):
+                p = os.path.join(d, sub, "README.md")
+                if os.path.isfile(p):
+                    entries[sub] = p
+                else:
+                    errors.append(f"{group}/{sub} 缺 README.md")
+    if not entries:
+        errors.append("域地图没有任何条目")
+
+    # 1) 索引一致性
+    idx = os.path.join(root, "01-索引", "README.md")
+    indexed = set()
+    if not os.path.isfile(idx):
+        errors.append("缺 01-索引/README.md")
+    else:
+        for name in re.findall(
+            r"\]\((?:\.\./)?(?:02-公共能力域|03-核心业务域)/([^)/]+)/README\.md\)",
+            open(idx, encoding="utf-8").read(),
+        ):
+            indexed.add(name)
+        for name in sorted(entries):
+            if name not in indexed:
+                warns.append(f"条目未登记索引: {name}")
+        for name in sorted(indexed - set(entries)):
+            errors.append(f"索引指向不存在的条目: {name}")
+
+    # 2) 头部状态  3) 证据路径存在性
+    today = datetime.date.today()
+    cross = []
+    for name, path in sorted(entries.items()):
+        text = open(path, encoding="utf-8").read()
+        head = "\n".join(text.splitlines()[:15])
+        if not re.search(r"^> *状态[：:]", head, re.M):
+            errors.append(f"{name}: 头部缺「状态」行")
+        m = re.search(r"^> *最后核对日期[：:] *(\d{4}-\d{2}-\d{2})", head, re.M)
+        if not m:
+            errors.append(f"{name}: 头部缺「最后核对日期」")
+        else:
+            try:
+                d = datetime.date.fromisoformat(m.group(1))
+            except ValueError:
+                errors.append(f"{name}: 最后核对日期格式非法 {m.group(1)}")
+            else:
+                if d > today:
+                    errors.append(f"{name}: 最后核对日期在未来")
+                elif (today - d).days > STALE_DAYS:
+                    warns.append(f"{name}: 最后核对 {m.group(1)}，超 {STALE_DAYS} 天未复核")
+
+        sec = re.search(r"^#+.*代码证据索引\s*$", text, re.M)
+        if sec:
+            body = text[sec.end():]
+            nxt = re.search(r"^## ", body, re.M)
+            body = body[:nxt.start()] if nxt else body
+            for tok in re.findall(r"`([^`\n]+)`", body):
+                if "/" not in tok or tok.startswith(("http", "/")) or "..." in tok:
+                    continue
+                if tok.startswith(CROSS_REPO_PREFIXES):
+                    cross.append(f"{name}: {tok}")
+                    continue
+                cands = [tok, re.sub(r"^backend/", "", tok)]
+                if any(os.path.exists(os.path.join(repo, c)) for c in cands):
+                    continue
+                errors.append(f"{name}: 证据路径失联 {tok}")
+
+    print(f"域地图守卫: {len(entries)} 条目（{root}）")
+    if indexed:
+        print("✓ 索引登记核对完成" if not [w for w in warns if "未登记" in w] else "⚠ 存在未登记条目")
+    if cross:
+        print(f"ℹ 跨仓库路径 {len(cross)} 处（在目标仓库核验）:")
+        for c in cross[:5]:
+            print(f"  - {c}")
+    if warns:
+        print(f"⚠ 警告 {len(warns)} 项:")
+        for w in warns:
+            print(f"  - {w}")
+    if errors:
+        print(f"✗ 错误 {len(errors)} 项:")
+        for e in errors:
+            print(f"  - {e}")
+        sys.exit(1)
+    if strict and warns:
+        print("✗ --strict：警告计为失败")
+        sys.exit(1)
+    print("✓ 域地图索引、状态与证据路径检查通过" if not warns else "✓ 无错误（含警告见上）")
+
+
+if __name__ == "__main__":
+    main()

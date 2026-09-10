@@ -294,9 +294,58 @@ if python3 -c "import zvec" >/dev/null 2>&1; then
     OUT9="$(python3 "$KIT/memory-recall" "Alpha 坑" "$P4R")"
     case "$OUT9" in *"2026-01-01-alpha.md"*) ok "语义检索命中条目";; *) bad "语义检索未命中: $OUT9";; esac
     if python3 "$KIT/memory-recall" --check "$P4R" | grep -q "语义索引"; then ok "--check 报告索引规模"; else bad "--check 异常"; fi
+    # 单一刷新链:memory-build 构建后语义索引随动刷新
+    OUT_MB="$(MB "$P4R" 2>&1)"
+    case "$OUT_MB" in *语义索引已重建*) ok "memory-build 随动刷新语义索引";; *) bad "memory-build 未随动刷新语义索引: $OUT_MB";; esac
+    case "$(MB --check "$P4R" 2>/dev/null)" in *语义索引已重建*) bad "--check 不应触发语义重建";; *) ok "--check 只读不触发语义重建";; esac
 else
     if python3 "$KIT/memory-recall" --rebuild "$P4R" >/dev/null 2>&1; then bad "缺 zvec 未报错"; else ok "缺 zvec 明确报错降级"; fi
 fi
+
+
+
+# ── T9 domain-check:域地图守卫(索引/状态/证据路径) ──
+P5D="$T/domaincheck"; mkdir -p "$P5D"
+"$KIT/install.sh" "$P5D" >/dev/null
+DM="$P5D/docs/02-业务域地图"
+mkdir -p "$DM/01-索引" "$DM/03-核心业务域/好域" "$DM/03-核心业务域/坏域" "$P5D/src/real"
+mkdir -p "$P5D/.repo-memory-kit/bin" && cp "$KIT/domain-check" "$P5D/.repo-memory-kit/bin/domain-check"
+printf 'x\n' > "$P5D/src/real/Service.java"
+cat > "$DM/01-索引/README.md" <<'EOF2'
+# 索引
+| 域 | 入口 |
+| --- | --- |
+| 好域 | [README](../03-核心业务域/好域/README.md) |
+| 幽灵域 | [README](../03-核心业务域/幽灵域/README.md) |
+EOF2
+cat > "$DM/03-核心业务域/好域/README.md" <<'EOF2'
+# 好域
+> 状态：已确认
+> 最后核对日期：2026-09-01
+## 9. 代码证据索引
+| 类型 | 路径 |
+| --- | --- |
+| 类 | `src/real/Service.java` |
+| 缩写 | `dsmp-x/.../Abbrev` |
+| 跨仓库 | `dmtp-sdk/docs/pair.md` |
+EOF2
+cat > "$DM/03-核心业务域/坏域/README.md" <<'EOF2'
+# 坏域
+> 只有标题没有状态行
+## 9. 代码证据索引
+| 类型 | 路径 |
+| --- | --- |
+| 类 | `src/gone/Deleted.java` |
+EOF2
+OUTD="$(python3 "$KIT/domain-check" "$P5D" 2>&1 || true)"
+case "$OUTD" in *证据路径失联*src/gone*) ok "域守卫抓到证据路径失联";; *) bad "域守卫未抓到失联路径: $OUTD";; esac
+case "$OUTD" in *缺「状态」行*) ok "域守卫抓到缺状态行";; *) bad "域守卫未抓到缺状态行";; esac
+case "$OUTD" in *索引指向不存在的条目*幽灵域*) ok "域守卫抓到索引幽灵条目";; *) bad "域守卫未抓到幽灵条目";; esac
+case "$OUTD" in *未登记索引*坏域*) ok "域守卫提示未登记条目";; *) bad "域守卫未提示未登记: $OUTD";; esac
+if python3 "$KIT/domain-check" "$P5D" >/dev/null 2>&1; then bad "有错误时退出码应为 1"; else ok "有错误时退出码 1"; fi
+mv "$DM/03-核心业务域/坏域" "$T/坏域备份"
+sed -i '/幽灵域/d' "$DM/01-索引/README.md"
+if python3 "$KIT/domain-check" "$P5D" >/dev/null 2>&1; then ok "干净域地图通过"; else bad "干净域地图误报: $(python3 "$KIT/domain-check" "$P5D" 2>&1 | head -3)"; fi
 
 
 echo

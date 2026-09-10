@@ -13,7 +13,7 @@ description: "记忆捕获与蒸馏：从当前会话提取候选记忆，起草
 
 - 草稿必须带 **frontmatter**（type/status/created 必填，playbook 还须 verified；符号锚点写进 `anchors`，索引一句话写进 `summary`）——状态与日期不再写在正文。
 - **业务流总结登记到业务域地图**：项目已有业务域地图（或 SDD 等体系，按建议格式组织、非事实权威）时，开发完/测试完的业务流（含跨域端到端链路）、能力入口、调用链、域职责类候选路由为域地图条目的新建/更新建议（待人确认），不在 playbook 里复制口径；playbook 只留场景化操作（环境访问、测试数据、环境执行套路、构建与工具操作）；事实以代码为准，与代码冲突时修正域地图。
-- 入库后**必须运行** `.repo-memory-kit/bin/memory-build` 刷新 README 索引与 `.anchors.json`（生成物，禁止手改）；已启用语义层时另运行 `memory-recall --rebuild`。
+- 入库后**必须运行** `.repo-memory-kit/bin/memory-build` 刷新 README 索引与 `.anchors.json`（生成物，禁止手改）；zvec 可用时语义索引随动刷新。
 
 ## 边界（固定约束）
 

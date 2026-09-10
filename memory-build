@@ -577,6 +577,20 @@ def main():
 
     atomic_write(readme, render_readme(readme, index_text))
     print(f"✓ README 索引已生成/刷新（{len(entries)} 条目）")
+    # 单一刷新链：zvec 可用时语义索引随本次构建自动重建，消除"两条命令漏跑第二条"。
+    try:
+        import zvec  # noqa: F401
+        recall_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory-recall")
+        if os.path.isfile(recall_bin):
+            r = subprocess.run([sys.executable, recall_bin, "--rebuild", target],
+                              capture_output=True, text=True)
+            for line in r.stdout.splitlines():
+                if line.startswith("✓"):
+                    print(line)
+            if r.returncode != 0:
+                print("⚠ 语义索引随动刷新失败（可手动 memory-recall --rebuild）")
+    except ImportError:
+        pass
     if anchors["anchors"] or has_anchors or anchors["unresolved"]:
         atomic_write(os.path.join(mem, ".anchors.json"),
                      json.dumps(anchors, ensure_ascii=False, indent=2) + "\n")

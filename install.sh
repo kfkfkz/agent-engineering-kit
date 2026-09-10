@@ -165,6 +165,7 @@ docs/memory/_PROFILE_TEMPLATE.md
 .repo-memory-kit/bin/memory-build
 .repo-memory-kit/bin/spec-migrate
 .repo-memory-kit/bin/memory-recall
+.repo-memory-kit/bin/domain-check
 .repo-memory-kit/bin/session-reminder
 .repo-memory-kit/codex-workspace-root
 "
@@ -627,8 +628,9 @@ cp "$KIT_DIR/memory-build" "$TARGET/.repo-memory-kit/bin/memory-build"
 cp "$KIT_DIR/spec-migrate" "$TARGET/.repo-memory-kit/bin/spec-migrate"
 cp "$KIT_DIR/memory-recall" "$TARGET/.repo-memory-kit/bin/memory-recall"
 cp "$KIT_DIR/session-reminder" "$TARGET/.repo-memory-kit/bin/session-reminder"
-chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/memory-build" "$TARGET/.repo-memory-kit/bin/spec-migrate" "$TARGET/.repo-memory-kit/bin/memory-recall" "$TARGET/.repo-memory-kit/bin/session-reminder"
-echo "已安装校验器、生成器、Spec 迁移器与语义检索器 .repo-memory-kit/bin/{validate-memory.sh,memory-build,spec-migrate,memory-recall,session-reminder}"
+cp "$KIT_DIR/domain-check" "$TARGET/.repo-memory-kit/bin/domain-check"
+chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/memory-build" "$TARGET/.repo-memory-kit/bin/spec-migrate" "$TARGET/.repo-memory-kit/bin/memory-recall" "$TARGET/.repo-memory-kit/bin/domain-check" "$TARGET/.repo-memory-kit/bin/session-reminder"
+echo "已安装校验器、生成器、Spec 迁移器、语义检索器与域地图守卫 .repo-memory-kit/bin/{validate-memory.sh,memory-build,spec-migrate,memory-recall,domain-check,session-reminder}"
 
 # 会话提醒钩子：合并写入项目 .claude/settings.json（需 python3；失败只降级不阻断）
 # shellcheck disable=SC2016  # CLAUDE_PROJECT_DIR 需在钩子运行时由 Claude Code 展开,此处保留字面量
