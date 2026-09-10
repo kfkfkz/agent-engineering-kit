@@ -45,7 +45,8 @@ TOOLS = [
     {
         "name": "memory_build",
         "description": "重建记忆索引和语义索引（条目变更后调用）。"
-                       "mode: build=重建, check=只读校验, changed=变更影响分析, files=stdin文件清单。",
+                       "mode: build=重建, check=只读校验, changed=变更影响分析。"
+                       "target 不传则用当前工作目录。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -70,7 +71,8 @@ TOOLS = [
     {
         "name": "kit_status",
         "description": "查看 kit 安装状态、语义索引新鲜度、域地图健康度。"
-                       "会话开始时调用一次以了解项目知识层状态。",
+                       "会话开始时调用一次以了解项目知识层状态。"
+                       "target 应传项目根目录路径。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -87,8 +89,11 @@ def run_cli(script_name, args, cwd):
     if not os.path.isfile(script):
         return 1, "", f"CLI tool not found: {script}"
     cmd = [sys.executable, script] + args
-    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=30)
-    return r.returncode, r.stdout, r.stderr
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=60)
+        return r.returncode, r.stdout, r.stderr
+    except subprocess.TimeoutExpired:
+        return 124, "", f"Tool timeout after 60s: {script_name}"
 
 
 def tool_memory_recall(args):
@@ -189,7 +194,7 @@ def handle_request(req):
             "id": req_id,
             "result": {
                 "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             },
         }
@@ -251,6 +256,11 @@ def main():
         try:
             req = json.loads(line)
         except json.JSONDecodeError:
+            sys.stdout.write(json.dumps({
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32700, "message": "Parse error"}
+            }) + "\n")
+            sys.stdout.flush()
             continue
 
         resp = handle_request(req)

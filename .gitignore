@@ -1,1 +1,8 @@
 __pycache__/
+
+# agent-engineering-kit: 语义索引派生数据(可随时重建)
+.repo-memory-kit/zvec/
+
+# kit 自身产物(派生数据,不入库)
+.repo-memory-kit/
+.claude/settings.json
