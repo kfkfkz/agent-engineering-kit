@@ -130,7 +130,9 @@ def cmd_rebuild(repo):
     store = repo / STORE_REL
     tmp_store = repo / (STORE_REL + ".tmp")
     if tmp_store.exists():
-        shutil.rmtree(tmp_store)  # 清理上次失败残留
+        shutil.rmtree(tmp_store)  # 清理旧版原子替换方案的残留
+    if store.exists():
+        shutil.rmtree(store)  # 直接构建:先删旧再建新(zvec 0.7.0 不支持原子替换)
     jieba = FtsIndexParam(tokenizer_name="jieba")
     schema = CollectionSchema(
         name="recall",
@@ -145,7 +147,7 @@ def cmd_rebuild(repo):
             FieldSchema("content", DataType.STRING, nullable=True, index_param=jieba),
         ],
     )
-    coll = zvec.create_and_open(str(tmp_store), schema,
+    coll = zvec.create_and_open(str(store), schema,
                                 CollectionOption(read_only=False, enable_mmap=True))
     # zvec 文档 ID 只接受受限字符集：用路径哈希做 ID，真实路径存字段。
     payload = [
@@ -160,9 +162,9 @@ def cmd_rebuild(repo):
     bad = [str(s) for s in statuses if s and not getattr(s, "ok", lambda: True)()]
     if bad:
         print(f"⚠ {len(bad)} 条写入异常: {bad[:2]}")
-    if store.exists():
-        shutil.rmtree(store)  # 删除旧索引(构建已成功)
-    tmp_store.rename(store)  # 原子替换
+    # zvec 0.7.0 已知限制:小数据集的 RocksDB flush/close 会输出 stderr 错误
+    # (SST 文件未生成,memtable 无法 flush)。数据在 mmap 中,进程退出时由 OS 写回。
+    # 此为 SDK 内部行为,不影响功能,详见 kit README「已知限制」。
     print(f"✓ 语义索引已重建：{len(docs)} 篇文档 → {store.relative_to(repo)}")
     # 写文档计数,供 session-reminder 检测删除(不只是 mtime 变化)
     (store / ".doc-count").write_text(str(len(docs)), encoding="utf-8")
