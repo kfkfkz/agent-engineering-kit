@@ -155,7 +155,7 @@ SDD_ROOT_DEFAULT = "docs/03-SDD"
 
 SDD_FILE_MAP = {
     "spec.md": ("02-需求", "{nn}-{name}.md"),
-    "plan.md": ("03-架构设计", "{nn}-{name}.md"),
+    "plan.md": ("04-详细设计/{n}-{name}", "01-功能设计-技术概要.md"),
     "tasks.md": ("06-实现计划", "{nn}-{name}.md"),
     "research.md": ("07-原始需求材料", "{nn}-研究结论.md"),
     "baseline.md": ("07-原始需求材料", "{nn}-实施基线.md"),
@@ -188,13 +188,13 @@ SDD_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp", ".puml",
 # 缺失字段的待核验小节在 SDD 结构中的归宿（acceptance 由 05-验收标准 占位承担）。
 SDD_FIELD_HOME = {
     "target_scope": "02-需求/{nn}-{name}.md",
-    "evidence": "03-架构设计/{nn}-{name}.md",
-    "design": "03-架构设计/{nn}-{name}.md",
-    "compatibility_risk": "03-架构设计/{nn}-{name}.md",
-    "security": "03-架构设计/{nn}-{name}.md",
-    "test": "03-架构设计/{nn}-{name}.md",
-    "verification": "03-架构设计/{nn}-{name}.md",
-    "docs_memory": "03-架构设计/{nn}-{name}.md",
+    "evidence": "04-详细设计/{n}-{name}/01-功能设计-技术概要.md",
+    "design": "04-详细设计/{n}-{name}/01-功能设计-技术概要.md",
+    "compatibility_risk": "04-详细设计/{n}-{name}/01-功能设计-技术概要.md",
+    "security": "04-详细设计/{n}-{name}/01-功能设计-技术概要.md",
+    "test": "04-详细设计/{n}-{name}/01-功能设计-技术概要.md",
+    "verification": "04-详细设计/{n}-{name}/01-功能设计-技术概要.md",
+    "docs_memory": "04-详细设计/{n}-{name}/01-功能设计-技术概要.md",
     "tasks": "06-实现计划/{nn}-{name}.md",
 }
 
@@ -237,16 +237,14 @@ def inspect_feature(feature: Path) -> dict:
     # 字段判定只看核心三文件（spec/plan/tasks）的标题：辅助文档（research、
     # contracts、checklists 等）是证据来源，不是统一字段的载体，跨文件聚合
     # 会让 quickstart 的「日志安全」之类标题误判 security 已覆盖。
-    core_headings = "\n".join(
-        heading
-        for name in CORE_FILES
-        for heading in headings(files.get(name, ""))
-    )
+    # 字段判定:必须出现在正确的目标文件(而非任何核心文件)
     field_status = {}
     for field_id, field in FIELDS.items():
         target_text = files.get(field["target"], "")
         pending = f"{PENDING_PREFIX}{field_id}" in target_text
-        present = bool(re.search(field["pattern"], core_headings, re.IGNORECASE))
+        # 只在目标文件的标题中查找,而不是合并后的标题
+        target_headings = "\n".join(headings(target_text))
+        present = bool(re.search(field["pattern"], target_headings, re.IGNORECASE))
         if not present and field.get("file_hint"):
             present = (feature / field["file_hint"]).is_file()
         field_status[field_id] = "pending_review" if pending else (
@@ -388,6 +386,8 @@ def rewrite_links_for_move(old_file: Path, new_file: Path, move_map: dict) -> in
     目标若是本次同批迁移的文件（旧位置已不存在），解析到其新位置；其余目标
     （含跨仓库相对路径）须真实存在才改写；http/锚点/<> 包裹形式不动。
     """
+    if new_file.is_symlink():
+        return 0
     try:
         text = new_file.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
@@ -442,8 +442,8 @@ def rewrite_external_refs(target: Path, feature: Path, version_root: Path, plan:
         candidates.extend(q for q in docs.rglob("*.md"))
     total = 0
     for path in candidates:
-        if not path.is_file():
-            continue
+        if not path.is_file() or path.is_symlink():
+            continue  # 安全:拒绝符号链接,防止越界写入
         try:
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):

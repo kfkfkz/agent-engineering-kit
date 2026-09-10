@@ -17,6 +17,17 @@ STATUS_MAP = {"confirmed": "已确认", "unverified": "待验证", "deprecated":
 VALID_STATUS = set(STATUS_MAP)
 TYPE_BY_DIR = {"pitfalls": "pitfall", "decisions": "decision", "playbooks": "playbook"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+def valid_date(s):
+    """格式 + 日历合法性(拒绝 2026-99-99)"""
+    if not DATE_RE.match(str(s)):
+        return False
+    import datetime
+    try:
+        datetime.date.fromisoformat(str(s))
+        return True
+    except ValueError:
+        return False
 KEY_RE = re.compile(r"^(class|method|file|route|config):.+")
 INDEX_START = "<!-- index:start -->"
 INDEX_END = "<!-- index:end -->"
@@ -48,7 +59,11 @@ def parse_frontmatter(text):
         if m:
             key = m.group(1)
             val = m.group(2).split(" #")[0].strip()
-            fm[key] = val
+            # 支持 YAML 行内空数组 [] (模板默认值)
+            if val == "[]":
+                fm[key] = []
+            else:
+                fm[key] = val
     return fm, text[end + 5:]
 
 
@@ -95,7 +110,7 @@ def validate(entries):
             errs.append(f"{rel}: 缺 created（YYYY-MM-DD）")
         for dk in ("created", "verified"):
             v = fm.get(dk)
-            if v and not DATE_RE.match(str(v)):
+            if v and not valid_date(v):
                 errs.append(f"{rel}: {dk} 日期非法 {v!r}（YYYY-MM-DD）")
         if e["type"] == "playbook" and not fm.get("verified"):
             errs.append(f"{rel}: playbook 必须有 verified（最后有效日期）")
@@ -429,7 +444,9 @@ def affected(entries, changed_files):
             if kind == "file" and ident in cset:
                 ok = True
             elif kind in ("class", "method"):
-                cls = ident.split("@")[-1].split(".")[-1].split("(")[0]
+                if "@" in ident:
+                    continue  # 跨仓库锚点不参与本地匹配
+                cls = ident.split(".")[-1].split("(")[0]
                 ok = cls in stems
             if ok:
                 hits.setdefault(e["rel"], []).append(k)
@@ -557,7 +574,9 @@ def main():
 
     if mode == "check":
         problems = []
-        if os.path.exists(readme):
+        if not os.path.exists(readme):
+            problems.append("README.md 不存在（运行 memory-build 生成）")
+        else:
             cur = open(readme, encoding="utf-8").read()
             if INDEX_START in cur:
                 if render_readme(readme, index_text) != cur:

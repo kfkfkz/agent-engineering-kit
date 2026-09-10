@@ -106,7 +106,12 @@ TARGET="$(cd "$TARGET" && pwd)"
 
 CODEX_ROOT_MARKER="$TARGET/.repo-memory-kit/codex-workspace-root"
 if [ -z "$CODEX_ROOT" ] && [ -f "$CODEX_ROOT_MARKER" ]; then
-    CODEX_ROOT="$(sed -n '1p' "$CODEX_ROOT_MARKER")"
+    _saved_root="$(sed -n '1p' "$CODEX_ROOT_MARKER")"
+    case "$_saved_root" in /*) CODEX_ROOT="$_saved_root" ;; esac
+    # 已记录的 workspace 根需用户确认或与当前目标目录在同一文件系统
+    if [ -n "$CODEX_ROOT" ] && [ "$MODE" != "uninstall" ] && [ "$MODE" != "doctor" ]; then
+        echo "提示: 使用已记录的 Codex workspace: $CODEX_ROOT（来自 .repo-memory-kit/codex-workspace-root）"
+    fi
 fi
 if [ -n "$CODEX_ROOT" ]; then
     [ -d "$CODEX_ROOT" ] || { echo "错误: Codex workspace 不存在: $CODEX_ROOT"; exit 1; }
@@ -266,19 +271,34 @@ preflight_managed_paths() {
 # 安全:校验托管区块起止标记完整(都存在且顺序正确)
 check_block_markers() { # $1=文件 $2=起始 $3=结束
     [ -f "$1" ] || return 0
-    # POSIX sh 没有 local
-    start_n="$(grep -cF "$2" "$1" 2>/dev/null || echo 0)"
-    end_n="$(grep -cF "$3" "$1" 2>/dev/null || echo 0)"
-    if [ "$start_n" -gt 0 ] && [ "$end_n" -eq 0 ]; then
-        echo "错误: $1 有起始标记但缺结束标记,区块结构异常——请手工修复后再运行"
+    [ -L "$1" ] && return 0  # 符号链接不检查(由其他机制拒绝)
+    start_line=0; end_line=0
+    # 用 grep -n 找行号(同时验证顺序),避免 grep -c 的 || echo 双行问题
+    start_line="$(grep -nF "$2" "$1" 2>/dev/null | head -1 | cut -d: -f1)"
+    end_line="$(grep -nF "$3" "$1" 2>/dev/null | head -1 | cut -d: -f1)"
+    # 无标记时 grep -n 输出空行,head -1 | cut -d: -f1 得空串
+    [ -z "$start_line" ] && start_line=0
+    [ -z "$end_line" ] && end_line=0
+    if [ "$start_line" -gt 0 ] && [ "$end_line" -eq 0 ]; then
+        echo "错误: $1 有起始标记但缺结束标记——请手工修复后再运行"
         return 1
     fi
-    if [ "$start_n" -eq 0 ] && [ "$end_n" -gt 0 ]; then
-        echo "错误: $1 有结束标记但缺起始标记,区块结构异常——请手工修复后再运行"
+    if [ "$start_line" -eq 0 ] && [ "$end_line" -gt 0 ]; then
+        echo "错误: $1 有结束标记但缺起始标记——请手工修复后再运行"
         return 1
     fi
-    if [ "$start_n" -gt 1 ] || [ "$end_n" -gt 1 ]; then
-        echo "错误: $1 托管区块标记重复(start=$start_n end=$end_n)——请手工修复后再运行"
+    if [ "$start_line" -gt 0 ] && [ "$end_line" -gt 0 ]; then
+        # 顺序校验:START 必须在 END 之前
+        if [ "$start_line" -ge "$end_line" ]; then
+            echo "错误: $1 结束标记(行 $end_line)在起始标记(行 $start_line)之前——请手工修复后再运行"
+            return 1
+        fi
+    fi
+    # 重复检查:多个标记
+    start_count=$(grep -cF "$2" "$1" 2>/dev/null) || start_count=0
+    end_count=$(grep -cF "$3" "$1" 2>/dev/null) || end_count=0
+    if [ "$start_count" -gt 1 ] || [ "$end_count" -gt 1 ]; then
+        echo "错误: $1 托管区块标记重复(start=$start_count end=$end_count)——请手工修复后再运行"
         return 1
     fi
     return 0
@@ -472,7 +492,11 @@ uninstall() {
         rm -f "$TARGET/.cbmignore.bak"
         echo "已移除 .cbmignore 托管区块"
     fi
-    rm -rf "$TARGET/.repo-memory-kit"
+    # 精细清理:manifest 已在上方逐文件处理(含漂移保护),此处只清 kit 专属结构
+    rm -f "$MANIFEST" 2>/dev/null || true
+    rm -rf "$TARGET/.repo-memory-kit/bin" 2>/dev/null || true
+    rm -f "$TARGET/.repo-memory-kit/codex-workspace-root" 2>/dev/null || true
+    rmdir "$TARGET/.repo-memory-kit" 2>/dev/null || true  # 只有空目录才删成功
     for skill_root in .claude/skills .agents/skills; do
         for tool in $KIT_SKILLS; do
             d="$skill_root/$tool"

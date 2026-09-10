@@ -1,6 +1,6 @@
 ---
 type: playbook
-status: confirmed
+status: unverified
 module: <模块/服务>
 created: YYYY-MM-DD
 verified: YYYY-MM-DD        # 必填：最后有效日期（在什么环境验证通过）

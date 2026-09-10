@@ -42,10 +42,17 @@ def parse_frontmatter(text):
         return {}, text
     fm, key = {}, None
     for ln in text[4:end].splitlines():
+        # 支持缩进列表项(anchors: 的 "- class:xxx" 行)
+        if re.match(r"^\s+-\s+", ln) and key:
+            if not isinstance(fm.get(key), list):
+                fm[key] = []
+            fm[key].append(ln.strip()[2:].strip())
+            continue
         m = re.match(r"^([A-Za-z_][\w-]*):\s*(.*)$", ln)
         if m:
             key = m.group(1)
-            fm[key] = m.group(2).split(" #")[0].strip()
+            val = m.group(2).split(" #")[0].strip()
+            fm[key] = [] if val == "[]" else val
     return fm, text[end + 5:]
 
 
@@ -121,8 +128,9 @@ def cmd_rebuild(repo):
     if not docs:
         sys.exit("✗ docs/ 下没有可索引的 Markdown 文档")
     store = repo / STORE_REL
-    if store.exists():
-        shutil.rmtree(store)
+    tmp_store = repo / (STORE_REL + ".tmp")
+    if tmp_store.exists():
+        shutil.rmtree(tmp_store)  # 清理上次失败残留
     jieba = FtsIndexParam(tokenizer_name="jieba")
     schema = CollectionSchema(
         name="recall",
@@ -137,7 +145,7 @@ def cmd_rebuild(repo):
             FieldSchema("content", DataType.STRING, nullable=True, index_param=jieba),
         ],
     )
-    coll = zvec.create_and_open(str(store), schema,
+    coll = zvec.create_and_open(str(tmp_store), schema,
                                 CollectionOption(read_only=False, enable_mmap=True))
     # zvec 文档 ID 只接受受限字符集：用路径哈希做 ID，真实路径存字段。
     payload = [
@@ -152,6 +160,9 @@ def cmd_rebuild(repo):
     bad = [str(s) for s in statuses if s and not getattr(s, "ok", lambda: True)()]
     if bad:
         print(f"⚠ {len(bad)} 条写入异常: {bad[:2]}")
+    if store.exists():
+        shutil.rmtree(store)  # 删除旧索引(构建已成功)
+    tmp_store.rename(store)  # 原子替换
     print(f"✓ 语义索引已重建：{len(docs)} 篇文档 → {store.relative_to(repo)}")
     # 写文档计数,供 session-reminder 检测删除(不只是 mtime 变化)
     (store / ".doc-count").write_text(str(len(docs)), encoding="utf-8")

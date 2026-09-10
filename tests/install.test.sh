@@ -127,7 +127,8 @@ assert_gone     "卸载：tdd 技能移除"       "$P4/.agents/skills/tdd"
 for tool in reuse-research security-review delivery-gate spec-migrate task-handoff; do
     assert_gone "卸载：$tool 技能移除" "$P4/.agents/skills/$tool"
 done
-assert_gone     "卸载：清单移除"           "$P4/.repo-memory-kit"
+assert_gone     "卸载：bin 目录移除"       "$P4/.repo-memory-kit/bin"
+assert_gone     "卸载：manifest 移除"       "$P4/.repo-memory-kit/manifest"
 assert_gone     "卸载：_TEMPLATE.md（清单内）移除" "$P4/docs/memory/pitfalls/_TEMPLATE.md"
 if grep -qF '<!-- repo-memory-kit:start -->' "$P4/CLAUDE.md"; then bad "卸载后 CLAUDE.md 仍含区块"; else ok "卸载：CLAUDE.md 区块移除"; fi
 if [ -f "$P4/CLAUDE.md" ]; then ok "卸载：CLAUDE.md 本体保留"; else bad "卸载误删 CLAUDE.md 本体"; fi

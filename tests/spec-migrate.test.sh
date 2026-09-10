@@ -189,11 +189,11 @@ else
 fi
 python3 "$KIT/spec-migrate" --apply --layout sdd --sdd-version V测试一期 --feature 020-demo "$P8" >/dev/null
 assert_exists "需求迁移落位并改名" "$SDD/02-需求/020-演示功能.md"
-assert_grep "文件内相对链接换算(同 feature)" '](../02-需求/020-演示功能.md)' "$SDD/03-架构设计/020-演示功能.md"
-assert_grep "文件内相对链接换算(跨目录)" '](../../../../.specify/prd/notes.md)' "$SDD/03-架构设计/020-演示功能.md"
+assert_grep "文件内相对链接换算(同 feature)" '](../../02-需求/020-演示功能.md)' "$SDD/04-详细设计/20-演示功能/01-功能设计-技术概要.md"
+assert_grep "文件内相对链接换算(跨目录)" '](../../../../../.specify/prd/notes.md)' "$SDD/04-详细设计/20-演示功能/01-功能设计-技术概要.md"
 if grep -q 'specify/specs/020-demo' "$P8/docs/外部引用.md"; then bad "外部引用未改写"; else ok "外部引用旧路径改写"; fi
-assert_grep "外部引用指向新路径" 'docs/03-SDD/V测试一期/03-架构设计/020-演示功能.md' "$P8/docs/外部引用.md"
-assert_exists "架构设计迁移落位" "$SDD/03-架构设计/020-演示功能.md"
+assert_grep "外部引用指向新路径" 'docs/03-SDD/V测试一期/04-详细设计/20-演示功能/01-功能设计-技术概要.md' "$P8/docs/外部引用.md"
+assert_exists "架构设计迁移落位" "$SDD/04-详细设计/20-演示功能/01-功能设计-技术概要.md"
 assert_exists "实现计划迁移落位" "$SDD/06-实现计划/020-演示功能.md"
 assert_exists "详细设计目录（去零序号）" "$SDD/04-详细设计/20-演示功能"
 assert_exists "数据库设计改名落位" "$SDD/04-详细设计/20-演示功能/03-数据库设计.md"
@@ -207,7 +207,7 @@ assert_exists "图片进 images 目录" "$SDD/04-详细设计/20-演示功能/im
 assert_exists "索引生成" "$SDD/01-索引/README.md"
 assert_grep "索引登记序号与功能名" '020 | 需求 | 演示功能' "$SDD/01-索引/README.md"
 assert_gone "源 feature 目录移除" "$F8"
-assert_grep "安全待核验进架构设计" 'migration-pending:security' "$SDD/03-架构设计/020-演示功能.md"
+assert_grep "安全待核验进架构设计" 'migration-pending:security' "$SDD/04-详细设计/20-演示功能/01-功能设计-技术概要.md"
 assert_grep "目标范围待核验进需求" 'migration-pending:target_scope' "$SDD/02-需求/020-演示功能.md"
 OUT8="$(python3 "$KIT/spec-migrate" --check "$P8")"
 case "$OUT8" in
