@@ -518,11 +518,13 @@ uninstall() {
         rm -f "$TARGET/.cbmignore.bak"
         echo "已移除 .cbmignore 托管区块"
     fi
-    # 精细清理:manifest 已在上方逐文件处理(含漂移保护),此处只清 kit 专属结构
+    # 精细清理:manifest 逐文件处理已完成(含 bin 下工具的漂移保护);
+    # 此处只删 manifest 本身和 marker,不 rm -rf 任何目录
     rm -f "$MANIFEST" 2>/dev/null || true
-    rm -rf "$TARGET/.repo-memory-kit/bin" 2>/dev/null || true
     rm -f "$TARGET/.repo-memory-kit/codex-workspace-root" 2>/dev/null || true
-    rmdir "$TARGET/.repo-memory-kit" 2>/dev/null || true  # 只有空目录才删成功
+    # 尝试清理空目录(bin/ 在 manifest 处理后可能已空)
+    rmdir "$TARGET/.repo-memory-kit/bin" 2>/dev/null || true
+    rmdir "$TARGET/.repo-memory-kit" 2>/dev/null || true
     for skill_root in .claude/skills .agents/skills; do
         for tool in $KIT_SKILLS; do
             d="$skill_root/$tool"

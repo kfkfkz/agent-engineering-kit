@@ -835,6 +835,22 @@ def main() -> int:
             return 0
         applied = []
         try:
+            # 两阶段:先全量验证所有 feature 的移动可行性,再逐个执行
+            _vr = target / args.sdd_root / args.sdd_version
+            _seen_dsts = set()
+            for feature, plan in zip(features, plans):
+                for _src, _dst in plan["moves"]:
+                    if _dst in _seen_dsts:
+                        print(f"错误: 多个 feature 目标冲突: {_dst}({_seen_dsts} vs {feature['name']})", file=sys.stderr)
+                        return 2
+                    _seen_dsts.add(_dst)
+                    if not (Path(feature["path"]) / _src).is_file():
+                        print(f"错误: 源文件不存在: {feature['name']}/{_src}", file=sys.stderr)
+                        return 2
+                    if (_vr / _dst).exists():
+                        print(f"错误: 目标已存在: {_dst}", file=sys.stderr)
+                        return 2
+            # 全部验证通过,进入执行
             for feature, plan in zip(features, plans):
                 apply_sdd_migration(target, Path(feature["path"]), plan, args.sdd_version, args.sdd_root)
                 applied.append(plan)

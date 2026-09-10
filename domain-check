@@ -110,9 +110,9 @@ def main():
                         continue
                     # 安全:解析后必须仍在仓库内
                     try:
-                        os.path.realpath(full).startswith(os.path.realpath(repo) + os.sep)
-                        found = True
-                        break
+                        if os.path.realpath(full).startswith(os.path.realpath(repo) + os.sep):
+                            found = True
+                            break
                     except (OSError, ValueError):
                         continue
                 if found:
