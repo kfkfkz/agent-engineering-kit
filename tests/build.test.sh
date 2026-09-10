@@ -344,12 +344,10 @@ case "$OUTD" in *证据路径失联*src/gone*) ok "域守卫抓到证据路径�
 case "$OUTD" in *缺「状态」行*) ok "域守卫抓到缺状态行";; *) bad "域守卫未抓到缺状态行";; esac
 case "$OUTD" in *索引指向不存在的条目*幽灵域*) ok "域守卫抓到索引幽灵条目";; *) bad "域守卫未抓到幽灵条目";; esac
 case "$OUTD" in *未登记索引*坏域*) ok "域守卫提示未登记条目";; *) bad "域守卫未提示未登记: $OUTD";; esac
-CROSS_REPO_PREFIXES="dmtp-sdk" python3 "$KIT/domain-check" "$P5D" >/dev/null 2>&1
-if [ $? -eq 0 ]; then bad "有错误时退出码应为 1"; else ok "有错误时退出码 1"; fi
+if CROSS_REPO_PREFIXES="dmtp-sdk" python3 "$KIT/domain-check" "$P5D" >/dev/null 2>&1; then bad "有错误时退出码应为 1"; else ok "有错误时退出码 1"; fi
 mv "$DM/03-核心业务域/坏域" "$T/坏域备份"
 sed -i '/幽灵域/d' "$DM/01-索引/README.md"
-CROSS_REPO_PREFIXES="dmtp-sdk" python3 "$KIT/domain-check" "$P5D" >/dev/null 2>&1
-if [ $? -eq 0 ]; then ok "干净域地图通过"; else bad "干净域地图误报: $(python3 "$KIT/domain-check" "$P5D" 2>&1 | head -3)"; fi
+if CROSS_REPO_PREFIXES="dmtp-sdk" python3 "$KIT/domain-check" "$P5D" >/dev/null 2>&1; then ok "干净域地图通过"; else bad "干净域地图误报: $(python3 "$KIT/domain-check" "$P5D" 2>&1 | head -3)"; fi
 
 
 echo

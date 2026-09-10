@@ -259,7 +259,12 @@ def main():
             import zvec
             coll = zvec.open(str(store))
             n = len(coll.query(topk=100000))
-            print(f"✓ 语义索引 {store.relative_to(repo)}：{n} 篇")
+            # 新鲜度:索引内文档数 vs 当前语料数
+            current_docs = build_docs(repo)
+            if n != len(current_docs):
+                print(f"✗ 语义索引过期：索引 {n} 篇，当前语料 {len(current_docs)} 篇（运行 --rebuild）")
+                sys.exit(1)
+            print(f"✓ 语义索引 {store.relative_to(repo)}：{n} 篇（与语料一致）")
         except ImportError:
             print(f"✓ 索引文件存在（{store.relative_to(repo)}）；未安装 zvec，无法打开")
         return

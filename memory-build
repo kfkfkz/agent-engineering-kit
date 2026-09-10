@@ -226,9 +226,14 @@ def build_anchors(entries, mem):
 
 
 def atomic_write(path, text):
+    _old_mode = None
+    if os.path.exists(path):
+        _old_mode = os.stat(path).st_mode & 0o777
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(text)
+    if _old_mode is not None:
+        os.chmod(tmp, _old_mode)
     os.replace(tmp, path)
 
 
@@ -446,7 +451,9 @@ def affected(entries, changed_files):
             elif kind in ("class", "method"):
                 if "@" in ident:
                     continue  # 跨仓库锚点不参与本地匹配
-                cls = ident.split(".")[-1].split("(")[0]
+                # 方法锚点取类名(倒数第二个分量),class 锚点取最后分量
+                parts = ident.split("(")[0].split(".")
+                cls = parts[-2] if (kind == "method" and len(parts) >= 2) else parts[-1]
                 ok = cls in stems
             if ok:
                 hits.setdefault(e["rel"], []).append(k)

@@ -73,6 +73,10 @@ def main():
         head = "\n".join(text.splitlines()[:15])
         if not re.search(r"^> *状态[：:]", head, re.M):
             errors.append(f"{name}: 头部缺「状态」行")
+        else:
+            sm = re.search(r"^> *状态[：:] *([^\n（(，,]+)", head, re.M)
+            if sm and sm.group(1).strip() not in ("已确认", "草稿", "已废弃"):
+                errors.append(f"{name}: 无效状态值 {sm.group(1).strip()!r}(合法: 已确认/草稿/已废弃)")
         m = re.search(r"^> *最后核对日期[：:] *(\d{4}-\d{2}-\d{2})", head, re.M)
         if not m:
             errors.append(f"{name}: 头部缺「最后核对日期」")
@@ -99,7 +103,19 @@ def main():
                     cross.append(f"{name}: {tok}")
                     continue
                 cands = [tok, re.sub(r"^backend/", "", tok)]
-                if any(os.path.exists(os.path.join(repo, c)) for c in cands):
+                found = False
+                for c in cands:
+                    full = os.path.join(repo, c)
+                    if not os.path.exists(full):
+                        continue
+                    # 安全:解析后必须仍在仓库内
+                    try:
+                        os.path.realpath(full).startswith(os.path.realpath(repo) + os.sep)
+                        found = True
+                        break
+                    except (OSError, ValueError):
+                        continue
+                if found:
                     continue
                 errors.append(f"{name}: 证据路径失联 {tok}")
 

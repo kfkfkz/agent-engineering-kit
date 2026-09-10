@@ -390,6 +390,32 @@ doctor() {
             *) echo "错误: Codex workspace 记录路径可疑"; doctor_errors=$((doctor_errors+1)) ;;
         esac
     fi
+    # 扩展检查:.cbmignore 区块(存在但缺区块=error;完全不存在=跳过,项目可能不需要)
+    if [ -f "$TARGET/.cbmignore" ]; then
+        if ! grep -qF "$BLOCK_START" "$TARGET/.cbmignore"; then
+            echo "警告: .cbmignore 存在但缺托管区块"
+            doctor_errors=$((doctor_errors+1))
+        fi
+    fi
+    # hook 检查(有 settings.json 且 kit 装过 hook 但被删=error)
+    if [ -f "$TARGET/.claude/settings.json" ] && command -v python3 >/dev/null 2>&1; then
+        if ! python3 -c "
+import json,os
+try:
+    # 只在 manifest 存在(装过 kit)时检查
+    if not os.path.exists('$TARGET/.repo-memory-kit/manifest'): exit(0)
+    d=json.load(open('$TARGET/.claude/settings.json'))
+    ss=d.get('hooks',{}).get('SessionStart',[])
+    for e in ss:
+        for h in e.get('hooks',[]):
+            if 'session-reminder' in h.get('command',''): exit(0)
+    exit(1)
+except: exit(0)
+" 2>/dev/null; then
+            echo "警告: SessionStart 钩子缺失(运行 --repair 恢复)"
+            doctor_errors=$((doctor_errors+1))
+        fi
+    fi
     if [ "$doctor_errors" -gt 0 ]; then
         echo "DOCTOR: 发现 $doctor_errors 个错误；可运行 --repair 修复受管产物"
         return 1
@@ -630,6 +656,19 @@ if [ -f "$TARGET/.repo-memory-kit/manifest" ]; then
 fi
 
 for tool in $KIT_SKILLS; do
+    for _root in .claude/skills .agents/skills; do
+        _dst="$TARGET/$_root/$tool/SKILL.md"
+        if [ -f "$_dst" ]; then
+            # 首次安装(无 manifest)时同名 Skill 已存在:
+            # 内容是 kit 产物→允许覆盖(更新场景)
+            # 内容不是 kit 产物→拒绝,提示用户处理
+            if ! content_is_kit_artifact "$_dst" "skills/$tool/SKILL.md" || [ ! -f "$TARGET/.repo-memory-kit/manifest" ]; then
+                echo "错误: $_root/$tool/SKILL.md 已存在且非 kit 产物,拒绝覆盖"
+                echo "  处理方式: 备份后删除,或将内容合并到 kit 版本,再重新安装"
+                exit 1
+            fi
+        fi
+    done
     mkdir -p "$TARGET/.claude/skills/$tool" "$TARGET/.agents/skills/$tool"
     cp "$KIT_DIR/skills/$tool/SKILL.md" "$TARGET/.claude/skills/$tool/SKILL.md"
     cp "$KIT_DIR/skills/$tool/SKILL.md" "$TARGET/.agents/skills/$tool/SKILL.md"
@@ -744,6 +783,14 @@ if [ -d "$TARGET/.specify/specs" ]; then
     fi
 fi
 
+# ── 3b. .gitignore 补充语义索引(如果项目有 .gitignore) ─────────────
+if [ -f "$TARGET/.gitignore" ]; then
+    if ! grep -qF ".repo-memory-kit/zvec" "$TARGET/.gitignore"; then
+        printf '\n# agent-engineering-kit: 语义索引派生数据(可随时重建)\n.repo-memory-kit/zvec/\n' >> "$TARGET/.gitignore"
+        echo "已补充 .gitignore: .repo-memory-kit/zvec/"
+    fi
+fi
+
 # ── 4. .cbmignore 托管区块（整体校验与替换）───────────────────────────
 CBM="$TARGET/.cbmignore"
 if [ -f "$CBM" ]; then
@@ -829,7 +876,7 @@ if [ "$MODE" = "update" ]; then
 elif [ "$MODE" = "repair" ]; then
     echo "修复完成。kit 受管文件、托管区块和技能链接已恢复为当前版本。"
 else
-    echo "完成。下一步：把最近一个 bug 写成第一条 pitfall（复制 _TEMPLATE.md，按日期命名），并在 README.md 索引表中登记。"
+    echo "完成。下一步：把最近一个 bug 写成第一条 pitfall（复制 _TEMPLATE.md，按日期命名）；README 索引由 memory-build 自动生成，禁止手改。"
 fi
 echo
 echo "提醒: 巡检默认强制依赖结构化代码检索工具（代码知识图谱类，如 codebase-memory MCP），未安装请先配置——grep 无法可靠核验记忆条目。"
