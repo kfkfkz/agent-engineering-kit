@@ -172,6 +172,7 @@ docs/memory/_PROFILE_TEMPLATE.md
 .repo-memory-kit/bin/memory-recall
 .repo-memory-kit/bin/domain-check
 .repo-memory-kit/bin/session-reminder
+.repo-memory-kit/bin/agent-engineering-mcp
 .repo-memory-kit/codex-workspace-root
 "
 
@@ -456,6 +457,28 @@ done
 check_block_markers "$TARGET/.cbmignore" "$BLOCK_START" "$BLOCK_END" || exit 1
 
 # 卸载 ────────────────────────────────────────────────────────────
+mcp_server_uninstall() {
+    command -v python3 >/dev/null 2>&1 || return 0
+    [ -f "$TARGET/.claude/settings.json" ] || return 0
+    python3 - "$TARGET" <<'PYUNMCP' || true
+import json, sys
+from pathlib import Path
+sp = Path(sys.argv[1]) / ".claude" / "settings.json"
+try:
+    data = json.loads(sp.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+mcp = data.get("mcpServers", {})
+if "agent-engineering" in mcp:
+    del mcp["agent-engineering"]
+    if not mcp:
+        del data["mcpServers"]
+    sp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print("已移除 MCP 服务器注册（settings.json 其余内容保留）")
+PYUNMCP
+}
+
+# ── 卸载 ────────────────────────────────────────────────────────
 uninstall() {
     # 仅清理由本目标仓库创建、且仍指回本目标的 workspace 技能链接。
     if [ -f "$CODEX_ROOT_MARKER" ]; then
@@ -572,7 +595,7 @@ echo "卸载完成。用户数据（README.md 索引、记忆条目、.anchors.j
     echo "错误: --migrate-specify 要求目标存在 .specify/specs" >&2; exit 1;
 }
 [ "$DRY_RUN" = "1" ] && { dry_run; exit 0; }
-[ "$MODE" = "uninstall" ] && { uninstall; exit 0; }
+[ "$MODE" = "uninstall" ] && { uninstall; mcp_server_uninstall; exit 0; }
 preflight_managed_paths
 
 [ "$INSTALL_CODEBASE_MEMORY" = "0" ] || install_codebase_memory_runtime
@@ -733,9 +756,41 @@ cp "$KIT_DIR/spec-migrate" "$TARGET/.repo-memory-kit/bin/spec-migrate"
 cp "$KIT_DIR/memory-recall" "$TARGET/.repo-memory-kit/bin/memory-recall"
 cp "$KIT_DIR/session-reminder" "$TARGET/.repo-memory-kit/bin/session-reminder"
 cp "$KIT_DIR/domain-check" "$TARGET/.repo-memory-kit/bin/domain-check"
-chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/memory-build" "$TARGET/.repo-memory-kit/bin/spec-migrate" "$TARGET/.repo-memory-kit/bin/memory-recall" "$TARGET/.repo-memory-kit/bin/domain-check" "$TARGET/.repo-memory-kit/bin/session-reminder"
-echo "已安装校验器、生成器、Spec 迁移器、语义检索器与域地图守卫 .repo-memory-kit/bin/{validate-memory.sh,memory-build,spec-migrate,memory-recall,domain-check,session-reminder}"
+cp "$KIT_DIR/agent-engineering-mcp" "$TARGET/.repo-memory-kit/bin/agent-engineering-mcp"
+chmod +x "$TARGET/.repo-memory-kit/bin/validate-memory.sh" "$TARGET/.repo-memory-kit/bin/memory-build" "$TARGET/.repo-memory-kit/bin/spec-migrate" "$TARGET/.repo-memory-kit/bin/memory-recall" "$TARGET/.repo-memory-kit/bin/domain-check" "$TARGET/.repo-memory-kit/bin/agent-engineering-mcp" "$TARGET/.repo-memory-kit/bin/session-reminder"
+echo "已安装校验器、生成器、Spec 迁移器、语义检索器与域地图守卫 .repo-memory-kit/bin/{validate-memory.sh,memory-build,spec-migrate,memory-recall,domain-check,session-reminder,agent-engineering-mcp}"
 
+# MCP 服务器注册(合并式写入 .claude/settings.json,同 hook 逻辑)
+mcp_server_install() {
+    command -v python3 >/dev/null 2>&1 || { echo "提示: 无 python3，跳过 MCP 服务器注册"; return 0; }
+    [ -L "$TARGET/.claude/settings.json" ] && { echo "提示: settings.json 为符号链接，跳过 MCP 注册"; return 0; }
+    python3 - "$TARGET" <<'PYMCP' || echo "提示: MCP 服务器注册失败"
+import json, sys
+from pathlib import Path
+target = Path(sys.argv[1])
+sp = target / ".claude" / "settings.json"
+sp.parent.mkdir(parents=True, exist_ok=True)
+data = {}
+if sp.exists():
+    try:
+        data = json.loads(sp.read_text(encoding="utf-8"))
+    except Exception:
+        print("提示: .claude/settings.json 不是合法 JSON，跳过 MCP 注册"); sys.exit(0)
+if not isinstance(data, dict):
+    print("提示: .claude/settings.json 结构异常，跳过 MCP 注册"); sys.exit(0)
+mcp = data.setdefault("mcpServers", {})
+server_name = "agent-engineering"
+server_cmd = str(target / ".repo-memory-kit" / "bin" / "agent-engineering-mcp")
+# 已注册且路径一致→幂等返回
+if server_name in mcp and mcp[server_name].get("command") == server_cmd:
+    sys.exit(0)
+mcp[server_name] = {"command": server_cmd, "args": [], "env": {}}
+sp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print("已注册 MCP 服务器 agent-engineering (" + server_cmd + ")")
+PYMCP
+}
+
+# 卸载时清理 MCP 服务器注册
 # 会话提醒钩子：合并写入项目 .claude/settings.json（需 python3；失败只降级不阻断）
 # shellcheck disable=SC2016  # CLAUDE_PROJECT_DIR 需在钩子运行时由 Claude Code 展开,此处保留字面量
 RECALL_HOOK_CMD='"$CLAUDE_PROJECT_DIR/.repo-memory-kit/bin/session-reminder"'
@@ -773,6 +828,7 @@ print("已注册会话提醒钩子 .claude/settings.json（SessionStart，合并
 PYHOOK
 }
 recall_hook_install
+mcp_server_install
 
 # 默认只发现和报告已有 Spec Kit 文档；显式选项才执行保留原文的增量迁移。
 if [ -d "$TARGET/.specify/specs" ]; then

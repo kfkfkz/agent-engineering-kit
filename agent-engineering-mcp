@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""agent-engineering-kit MCP server.
+
+Exposes deterministic knowledge operations as first-class MCP tools,
+eliminating the "Agent has to remember to use Bash" gap:
+  memory_recall   — semantic search over docs/ (replaces Bash CLI call)
+  memory_build     — rebuild indexes (replaces Bash CLI call)
+  domain_check     — domain map validation (replaces Bash CLI call)
+  kit_status      — installation & staleness overview (new)
+
+Zero external dependencies: Python stdlib only (json, sys, subprocess, os).
+Delegates to existing CLI tools (single implementation, no code duplication).
+
+Usage:
+  agent-engineering-mcp <target-repo>     # stdio JSON-RPC MCP server
+"""
+import json
+import os
+import subprocess
+import sys
+
+KIT_BIN = os.path.dirname(os.path.abspath(__file__))
+
+PROTOCOL_VERSION = "2024-11-05"
+SERVER_NAME = "agent-engineering-kit"
+SERVER_VERSION = "1.0.0"
+
+TOOLS = [
+    {
+        "name": "memory_recall",
+        "description": "语义检索 docs/ 全量文档（记忆条目、业务域地图、SDD、交付回执）。"
+                       "任务开始时先调此工具查找相关知识，再读命中条目全文。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "检索文本"},
+                "type": {"type": "string", "description": "类型过滤(逗号分隔): pitfall,decision,playbook,domain,sdd,receipt"},
+                "status": {"type": "string", "description": "状态过滤: confirmed,unverified"},
+                "top": {"type": "integer", "description": "最大返回数", "default": 8},
+                "target": {"type": "string", "description": "目标仓库路径", "default": "."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "memory_build",
+        "description": "重建记忆索引和语义索引（条目变更后调用）。"
+                       "mode: build=重建, check=只读校验, changed=变更影响分析, files=stdin文件清单。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["build", "check", "changed"],
+                         "description": "操作模式", "default": "build"},
+                "target": {"type": "string", "description": "目标仓库路径", "default": "."},
+            },
+        },
+    },
+    {
+        "name": "domain_check",
+        "description": "校验业务域地图（索引登记一致性、状态合法、证据路径存在）。"
+                       "回写域条目后或定期巡检时调用。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "strict": {"type": "boolean", "description": "警告也计为失败", "default": False},
+                "target": {"type": "string", "description": "目标仓库路径", "default": "."},
+            },
+        },
+    },
+    {
+        "name": "kit_status",
+        "description": "查看 kit 安装状态、语义索引新鲜度、域地图健康度。"
+                       "会话开始时调用一次以了解项目知识层状态。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "目标仓库路径", "default": "."},
+            },
+        },
+    },
+]
+
+
+def run_cli(script_name, args, cwd):
+    """Delegate to existing CLI tool. Returns (returncode, stdout, stderr)."""
+    script = os.path.join(KIT_BIN, script_name)
+    if not os.path.isfile(script):
+        return 1, "", f"CLI tool not found: {script}"
+    cmd = [sys.executable, script] + args
+    r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=30)
+    return r.returncode, r.stdout, r.stderr
+
+
+def tool_memory_recall(args):
+    query = args.get("query", "")
+    if not query:
+        return {"error": "query is required"}
+    target = args.get("target", ".")
+    cmd_args = [query, target]
+    if args.get("type"):
+        cmd_args.extend(["--type", args["type"]])
+    if args.get("status"):
+        cmd_args.extend(["--status", args["status"]])
+    if args.get("top"):
+        cmd_args.extend(["--top", str(args["top"])])
+    rc, out, err = run_cli("memory-recall", cmd_args, target)
+    return {"returncode": rc, "output": out.strip(), "error": err.strip() if rc != 0 else ""}
+
+
+def tool_memory_build(args):
+    target = args.get("target", ".")
+    mode = args.get("mode", "build")
+    if mode == "build":
+        rc, out, err = run_cli("memory-build", [target], target)
+    elif mode == "check":
+        rc, out, err = run_cli("memory-build", ["--check", target], target)
+    elif mode == "changed":
+        rc, out, err = run_cli("memory-build", ["--changed", target], target)
+    else:
+        return {"error": f"invalid mode: {mode}"}
+    return {"returncode": rc, "output": out.strip(), "error": err.strip() if rc != 0 else ""}
+
+
+def tool_domain_check(args):
+    target = args.get("target", ".")
+    cmd_args = [target]
+    if args.get("strict"):
+        cmd_args.append("--strict")
+    rc, out, err = run_cli("domain-check", cmd_args, target)
+    return {"returncode": rc, "output": out.strip(), "error": err.strip() if rc != 0 else ""}
+
+
+def tool_kit_status(args):
+    target = os.path.abspath(args.get("target", "."))
+    status = {"target": target, "kit_version": None, "semantic_index": None, "domain_map": None}
+
+    # manifest
+    manifest = os.path.join(target, ".repo-memory-kit", "manifest")
+    if os.path.isfile(manifest):
+        with open(manifest) as f:
+            for line in f:
+                if line.startswith("kit_version="):
+                    status["kit_version"] = line.strip().split("=", 1)[1]
+                    break
+    else:
+        status["kit_version"] = "not installed"
+
+    # semantic index
+    recall = os.path.join(target, ".repo-memory-kit", "zvec", "recall")
+    if os.path.isdir(recall):
+        count_file = os.path.join(recall, ".doc-count")
+        if os.path.isfile(count_file):
+            status["semantic_index"] = {"exists": True, "docs": int(open(count_file).read().strip())}
+        else:
+            status["semantic_index"] = {"exists": True, "docs": "unknown"}
+    else:
+        status["semantic_index"] = {"exists": False}
+
+    # domain map
+    dm = os.path.join(target, "docs", "02-业务域地图")
+    if os.path.isdir(dm):
+        count = sum(1 for g in ("02-公共能力域", "03-核心业务域")
+                    for d in (os.path.join(dm, g) for _ in [1])
+                    if os.path.isdir(d)
+                    for s in os.listdir(d) if os.path.isdir(os.path.join(d, s)))
+        status["domain_map"] = {"exists": True, "entries": count}
+    else:
+        status["domain_map"] = {"exists": False}
+
+    return status
+
+
+TOOL_HANDLERS = {
+    "memory_recall": tool_memory_recall,
+    "memory_build": tool_memory_build,
+    "domain_check": tool_domain_check,
+    "kit_status": tool_kit_status,
+}
+
+
+def handle_request(req):
+    """Handle a single JSON-RPC request. Returns response dict or None (for notifications)."""
+    method = req.get("method")
+    req_id = req.get("id")
+
+    if method == "initialize":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+            },
+        }
+
+    if method == "notifications/initialized":
+        return None  # notification, no response
+
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}}
+
+    if method == "tools/call":
+        params = req.get("params", {})
+        tool_name = params.get("name")
+        arguments = params.get("arguments", {})
+
+        if tool_name not in TOOL_HANDLERS:
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "error": {"code": -32602, "message": f"Unknown tool: {tool_name}"},
+            }
+
+        try:
+            result = TOOL_HANDLERS[tool_name](arguments)
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
+                    "isError": result.get("returncode", 0) != 0,
+                },
+            }
+        except Exception as e:
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps({"error": str(e)})}],
+                    "isError": True,
+                },
+            }
+
+    # ping
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
+
+    # unknown method
+    if req_id is not None:
+        return {
+            "jsonrpc": "2.0", "id": req_id,
+            "error": {"code": -32601, "message": f"Method not found: {method}"},
+        }
+    return None
+
+
+def main():
+    """Read newline-delimited JSON-RPC from stdin, write responses to stdout."""
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        resp = handle_request(req)
+        if resp is not None:
+            sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main()
