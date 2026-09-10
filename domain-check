@@ -17,7 +17,11 @@ import re
 import sys
 
 STALE_DAYS = 90
-CROSS_REPO_PREFIXES = ("dmtp-sdk/", "sdk-demo/", "olym/")
+# 跨仓库前缀:优先从环境变量 CROSS_REPO_PREFIXES 读取(冒号分隔),无则空集
+# 团队在 .claude/settings.json 或 CI 中按项目配置,不硬编码项目名
+import os as _os
+_cross_env = _os.environ.get("CROSS_REPO_PREFIXES", "")
+CROSS_REPO_PREFIXES = tuple(p.strip() + "/" for p in _cross_env.split(":") if p.strip())
 
 
 def main():
@@ -38,7 +42,7 @@ def main():
             if os.path.isdir(os.path.join(d, sub)):
                 p = os.path.join(d, sub, "README.md")
                 if os.path.isfile(p):
-                    entries[sub] = p
+                    entries[f"{group}/{sub}"] = p
                 else:
                     errors.append(f"{group}/{sub} 缺 README.md")
     if not entries:
@@ -50,11 +54,11 @@ def main():
     if not os.path.isfile(idx):
         errors.append("缺 01-索引/README.md")
     else:
-        for name in re.findall(
-            r"\]\((?:\.\./)?(?:02-公共能力域|03-核心业务域)/([^)/]+)/README\.md\)",
+        for grp, name in re.findall(
+            r"\]\((?:\.\./)?(02-公共能力域|03-核心业务域)/([^)/]+)/README\.md\)",
             open(idx, encoding="utf-8").read(),
         ):
-            indexed.add(name)
+            indexed.add(f"{grp}/{name}")
         for name in sorted(entries):
             if name not in indexed:
                 warns.append(f"条目未登记索引: {name}")

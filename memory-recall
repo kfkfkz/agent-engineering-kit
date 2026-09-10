@@ -153,6 +153,8 @@ def cmd_rebuild(repo):
     if bad:
         print(f"⚠ {len(bad)} 条写入异常: {bad[:2]}")
     print(f"✓ 语义索引已重建：{len(docs)} 篇文档 → {store.relative_to(repo)}")
+    # 写文档计数,供 session-reminder 检测删除(不只是 mtime 变化)
+    (store / ".doc-count").write_text(str(len(docs)), encoding="utf-8")
 
 
 def cmd_query(repo, text, top, types, status, module):
@@ -166,6 +168,15 @@ def cmd_query(repo, text, top, types, status, module):
     if not store.exists():
         sys.exit("✗ 语义索引不存在，先运行 memory-recall --rebuild")
     coll = zvec.open(str(store))
+    # 构建过滤表达式:过滤下推到查询层,先取够结果再过滤(防止类型多时漏召回)
+    filter_expr = ""
+    if types:
+        type_list = ", ".join(f'"{x}"' for x in types)
+        filter_expr = f"type in ({type_list})"
+    if status:
+        s = f'status == "{status}"'
+        filter_expr = f"{filter_expr} and {s}" if filter_expr else s
+
     results = coll.query(
         queries=[
             Query(field_name="meta", fts=Fts(match_string=text)),
@@ -173,6 +184,7 @@ def cmd_query(repo, text, top, types, status, module):
         ],
         topk=max(top * 4, 20),
         reranker=RrfReRanker(rank_constant=60),
+        filter=filter_expr if filter_expr else None,
     )
     shown = 0
     print(f'语义检索: "{text}"')
@@ -231,7 +243,7 @@ def main():
         store = repo / STORE_REL
         if not store.exists():
             print("✗ 语义索引不存在（运行 memory-recall --rebuild）")
-            return
+            sys.exit(1)
         try:
             import zvec
             coll = zvec.open(str(store))

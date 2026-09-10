@@ -10,7 +10,7 @@ jobs:
       - name: 语法检查（sh -n / py_compile）
         run: |
           sh -n install.sh validate-memory.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh
-          python3 -m py_compile memory-build spec-migrate memory-recall
+          python3 -m py_compile memory-build spec-migrate memory-recall domain-check
       - name: ShellCheck
         run: |
           sudo apt-get update -qq

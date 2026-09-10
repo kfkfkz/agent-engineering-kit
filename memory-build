@@ -344,8 +344,9 @@ def rename_by_title(entries, mem, target):
         text = open(path, encoding="utf-8").read()
         new_text = text
         for _, old_name, new_name in plan:
-            new_text = new_text.replace(old_name, new_name)
-            new_text = new_text.replace(old_name[:-3], new_name[:-3])
+            import re as _re
+            for pat, rep in [(old_name, new_name), (old_name[:-3], new_name[:-3])]:
+                new_text = _re.sub(_re.escape(pat) + r"(?![\w-])", rep, new_text)
         if new_text != text:
             atomic_write(path, new_text)
     for e, old_name, new_name in plan:

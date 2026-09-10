@@ -450,8 +450,8 @@ def rewrite_external_refs(target: Path, feature: Path, version_root: Path, plan:
             continue
         new_text = text
         for old, new in file_map.items():
-            new_text = new_text.replace(old, new)
-        new_text = new_text.replace(dir_old, dir_new)
+            new_text = re.sub(re.escape(old) + r"(?![\w-])", new, new_text)
+        new_text = re.sub(re.escape(dir_old) + r"(?![\w-])", dir_new, new_text)
         if new_text != text:
             path.write_text(new_text, encoding="utf-8")
             total += 1
@@ -786,6 +786,9 @@ def main() -> int:
         if not args.sdd_version:
             print("错误: --layout sdd 需要 --sdd-version <版本目录名>（如 V1.0）", file=sys.stderr)
             return 2
+        if "/" in args.sdd_version or "\\" in args.sdd_version or ".." in args.sdd_version:
+            print(f"错误: --sdd-version 不允许路径分隔符或 ..: {args.sdd_version!r}", file=sys.stderr)
+            return 2
         if mode == "apply" and not args.feature:
             print("错误: --layout sdd 的 --apply 必须用 --feature 显式指定，避免整仓移动", file=sys.stderr)
             return 2
@@ -795,6 +798,18 @@ def main() -> int:
         except ValueError:
             print(f"错误: --sdd-root 必须位于目标仓库内: {args.sdd_root}", file=sys.stderr)
             return 2
+        # 安全:版本目录解析后不得逃逸 sdd_root
+        version_root_check = sdd_root_abs / args.sdd_version
+        if version_root_check.exists():
+            try:
+                version_root_check.resolve().relative_to(sdd_root_abs)
+            except ValueError:
+                print(f"错误: 版本目录解析后逃逸 SDD 根: {args.sdd_version}", file=sys.stderr)
+                return 2
+        for sub in sdd_root_abs.rglob("*"):
+            if sub.is_symlink():
+                print(f"错误: SDD 根目录下存在符号链接: {sub}", file=sys.stderr)
+                return 2
         try:
             plans = [build_sdd_plan(Path(feature["path"])) for feature in features]
         except (OSError, UnicodeError) as exc:

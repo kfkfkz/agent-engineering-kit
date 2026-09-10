@@ -263,6 +263,27 @@ preflight_managed_paths() {
     fi
 }
 
+# 安全:校验托管区块起止标记完整(都存在且顺序正确)
+check_block_markers() { # $1=文件 $2=起始 $3=结束
+    [ -f "$1" ] || return 0
+    # POSIX sh 没有 local
+    start_n="$(grep -cF "$2" "$1" 2>/dev/null || echo 0)"
+    end_n="$(grep -cF "$3" "$1" 2>/dev/null || echo 0)"
+    if [ "$start_n" -gt 0 ] && [ "$end_n" -eq 0 ]; then
+        echo "错误: $1 有起始标记但缺结束标记,区块结构异常——请手工修复后再运行"
+        return 1
+    fi
+    if [ "$start_n" -eq 0 ] && [ "$end_n" -gt 0 ]; then
+        echo "错误: $1 有结束标记但缺起始标记,区块结构异常——请手工修复后再运行"
+        return 1
+    fi
+    if [ "$start_n" -gt 1 ] || [ "$end_n" -gt 1 ]; then
+        echo "错误: $1 托管区块标记重复(start=$start_n end=$end_n)——请手工修复后再运行"
+        return 1
+    fi
+    return 0
+}
+
 # ── 只读生命周期命令 ────────────────────────────────────────────────
 run_spec_migrate() { # $1=mode $2=脚本路径 $3=目标仓库
     mode="$1"; script="$2"; repo="$3"
@@ -382,7 +403,13 @@ dry_run() {
     esac
 }
 
-# ── 卸载 ────────────────────────────────────────────────────────────
+# ── 卸载(标记完整性预检) ──
+for _md in "$TARGET/CLAUDE.md" "$TARGET/AGENTS.md"; do
+    check_block_markers "$_md" "$SEC_START" "$SEC_END" || exit 1
+done
+check_block_markers "$TARGET/.cbmignore" "$BLOCK_START" "$BLOCK_END" || exit 1
+
+# 卸载 ────────────────────────────────────────────────────────────
 uninstall() {
     # 仅清理由本目标仓库创建、且仍指回本目标的 workspace 技能链接。
     if [ -f "$CODEX_ROOT_MARKER" ]; then
@@ -462,15 +489,27 @@ try:
 except Exception:
     sys.exit(0)
 ss = data.get("hooks", {}).get("SessionStart", [])
-kept = [e for e in ss if not any(".repo-memory-kit" in str(h.get("command", "")) for h in e.get("hooks", []))]
-if kept != ss:
-    data["hooks"]["SessionStart"] = kept
-    if not kept:
-        del data["hooks"]["SessionStart"]
+# 精确删除:仅移除 command 包含 session-reminder 的 hook 条目,不动同组其他 hook
+changed = False
+for entry in ss:
+    hooks_list = entry.get("hooks", [])
+    remaining = [h for h in hooks_list if "session-reminder" not in str(h.get("command", ""))]
+    if len(remaining) != len(hooks_list):
+        if remaining:
+            entry["hooks"] = remaining
+        else:
+            entry["hooks"] = []
+        changed = True
+# 清理空 entry(只有 hook 全被删的 entry)
+ss = [e for e in ss if e.get("hooks")]
+data["hooks"]["SessionStart"] = ss
+if not ss:
+    del data["hooks"]["SessionStart"]
     if not data["hooks"]:
         del data["hooks"]
+if changed:
     sp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print("已移除会话提醒钩子（settings.json 其余内容保留）")
+    print("已移除会话提醒钩子（同组其他 hook 保留）")
 PYUNHOOK
 fi
 echo "卸载完成。用户数据（README.md 索引、记忆条目、.anchors.json、settings.json 其余配置）未触碰。"
@@ -636,6 +675,11 @@ echo "已安装校验器、生成器、Spec 迁移器、语义检索器与域地
 # shellcheck disable=SC2016  # CLAUDE_PROJECT_DIR 需在钩子运行时由 Claude Code 展开,此处保留字面量
 RECALL_HOOK_CMD='"$CLAUDE_PROJECT_DIR/.repo-memory-kit/bin/session-reminder"'
 recall_hook_install() {
+    # 安全:settings.json 为符号链接时拒绝写入(防越界修改)
+    if [ -L "$TARGET/.claude/settings.json" ]; then
+        echo "提示: .claude/settings.json 是符号链接，跳过钩子注册（防越界写入）"
+        return 0
+    fi
     command -v python3 >/dev/null 2>&1 || { echo "提示: 无 python3，跳过会话钩子；语义检索路由由 CLAUDE.md 承担"; return 0; }
     python3 - "$TARGET" "$RECALL_HOOK_CMD" <<'PYHOOK' || echo "提示: 会话钩子写入失败；语义检索路由由 CLAUDE.md 承担"
 import json, sys
@@ -696,7 +740,13 @@ fi
 } >> "$CBM"
 echo "已写入 .cbmignore 托管区块（图谱索引否定规则）"
 
-# ── 5. CLAUDE.md / AGENTS.md 托管区块 ─────────────────────────────────
+# ── 5. CLAUDE.md / AGENTS.md 托管区块(标记完整性预检) ──
+for _md in "$TARGET/CLAUDE.md" "$TARGET/AGENTS.md"; do
+    check_block_markers "$_md" "$SEC_START" "$SEC_END" || exit 1
+done
+check_block_markers "$TARGET/.cbmignore" "$BLOCK_START" "$BLOCK_END" || exit 1
+
+# CLAUDE.md / AGENTS.md 托管区块 ─────────────────────────────────
 section_body() { # 提取「项目记忆」段落（含标题，到下一个二级标题前）
     awk '/^## 项目记忆（坑与流程）/{p=1} p{if(/^## / && $0 !~ /^## 项目记忆（坑与流程）/) exit; print}' "$1"
 }

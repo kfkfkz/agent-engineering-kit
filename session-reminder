@@ -18,10 +18,24 @@ if [ ! -d "$INDEX" ]; then
     exit 0
 fi
 
+# 检测新增/修改(时间戳)
 newest="$(find "$TARGET/docs" -name '*.md' -newer "$INDEX" -print -quit 2>/dev/null)"
 if [ -n "$newest" ]; then
     echo "[agent-engineering-kit] 语义索引落后于最近文档变更。刷新：.repo-memory-kit/bin/memory-recall --rebuild"
     exit 0
+fi
+
+# 检测删除:当前 docs/ 下 md 数与上次 rebuild 记录的数对比
+doc_count="$(find "$TARGET/docs" -name '*.md' ! -name '_*' -not -path '*/01-索引/*' 2>/dev/null | wc -l)"
+if [ "$doc_count" -gt 0 ]; then
+    count_file="$TARGET/.repo-memory-kit/zvec/recall/.doc-count"
+    if [ -f "$count_file" ]; then
+        last_count="$(cat "$count_file" 2>/dev/null || echo 0)"
+        if [ "$doc_count" != "$last_count" ]; then
+            echo "[agent-engineering-kit] 语义索引文档数变化（$last_count → $doc_count），可能存在删除或新增。刷新：.repo-memory-kit/bin/memory-recall --rebuild"
+            exit 0
+        fi
+    fi
 fi
 
 echo "[agent-engineering-kit] 语义检索可用：.repo-memory-kit/bin/memory-recall \"<任务描述>\"（docs/ 全量：坑/决定/场景/域条目/SDD）"
