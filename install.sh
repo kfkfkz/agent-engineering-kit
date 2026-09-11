@@ -265,7 +265,7 @@ preflight_managed_paths() {
         assert_no_symlink_components "$TARGET" "$safe_rel" || return 1
     done
     # 文件级检查:所有受管文件不能是符号链接(防通过链接写仓库外)
-    for _file in $MANAGED_FILES .claude/settings.json; do
+    for _file in $MANAGED_FILES .claude/settings.json .mcp.json .codex/config.toml; do
         if [ -L "$TARGET/$_file" ]; then
             echo "错误: $TARGET/$_file 是符号链接——拒绝安装(防越界写入)" >&2
             return 1
@@ -405,6 +405,15 @@ doctor() {
             doctor_errors=$((doctor_errors+1))
         fi
     fi
+    # MCP 配置检查(.mcp.json 和 .codex/config.toml)
+    if [ ! -f "$TARGET/.mcp.json" ]; then
+        echo "警告: .mcp.json 不存在(Claude Code MCP 未注册)"
+        doctor_errors=$((doctor_errors+1))
+    fi
+    if [ ! -f "$TARGET/.codex/config.toml" ]; then
+        echo "警告: .codex/config.toml 不存在(Codex MCP 未注册)"
+        doctor_errors=$((doctor_errors+1))
+    fi
     # hook 检查(有 settings.json 且 kit 装过 hook 但被删=error)
     if [ -f "$TARGET/.claude/settings.json" ] && command -v python3 >/dev/null 2>&1; then
         if ! python3 -c "
@@ -495,20 +504,26 @@ if config_toml.exists():
     try:
         content = config_toml.read_text(encoding="utf-8")
         if "[mcp_servers.agent-engineering]" in content:
-            # 删除 [mcp_servers.agent-engineering] 段及其 command 行
-            lines = content.splitlines()
-            keep = []
-            in_our_section = False
-            for ln in lines:
-                if ln.strip().startswith("[mcp_servers.agent-engineering]"):
-                    in_our_section = True
-                    continue
-                if in_our_section and ln.strip().startswith("["):
-                    in_our_section = False
-                if not in_our_section:
-                    keep.append(ln)
-            config_toml.write_text("\n".join(keep).rstrip() + "\n", encoding="utf-8")
-            print("已移除 .codex/config.toml 中的 agent-engineering")
+            # 只删除 command 指向 .repo-memory-kit 的条目(归属验证)
+            import re as _re
+            _section = _re.search(
+                r"\[mcp_servers\.agent-engineering\]\ncommand\s*=\s*\"([^\"]+)\"", content)
+            if _section and ".repo-memory-kit" in _section.group(1):
+                lines = content.splitlines()
+                keep = []
+                in_our_section = False
+                for ln in lines:
+                    if ln.strip().startswith("[mcp_servers.agent-engineering]"):
+                        in_our_section = True
+                        continue
+                    if in_our_section and ln.strip().startswith("["):
+                        in_our_section = False
+                    if not in_our_section:
+                        keep.append(ln)
+                config_toml.write_text("\n".join(keep).rstrip() + "\n", encoding="utf-8")
+                print("已移除 .codex/config.toml 中的 agent-engineering(归属验证通过)")
+            else:
+                print("跳过 .codex/config.toml: agent-engineering 非本 kit 创建")
     except Exception:
         pass
 
@@ -735,10 +750,9 @@ for tool in $KIT_SKILLS; do
     for _root in .claude/skills .agents/skills; do
         _dst="$TARGET/$_root/$tool/SKILL.md"
         if [ -f "$_dst" ]; then
-            # 首次安装(无 manifest)时同名 Skill 已存在:
-            # 内容是 kit 产物→允许覆盖(更新场景)
-            # 内容不是 kit 产物→拒绝,提示用户处理
-            if ! content_is_kit_artifact "$_dst" "skills/$tool/SKILL.md" || [ ! -f "$TARGET/.repo-memory-kit/manifest" ]; then
+            # 内容与 kit 历史版本一致→允许覆盖(无论有无 manifest)
+            # 内容不是 kit 产物→拒绝
+            if ! content_is_kit_artifact "$_dst" "skills/$tool/SKILL.md"; then
                 echo "错误: $_root/$tool/SKILL.md 已存在且非 kit 产物,拒绝覆盖"
                 echo "  处理方式: 备份后删除,或将内容合并到 kit 版本,再重新安装"
                 exit 1

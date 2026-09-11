@@ -169,15 +169,38 @@ def cmd_rebuild(repo):
     statuses = coll.upsert(payload)
     bad = [str(s) for s in statuses if s and not getattr(s, "ok", lambda: True)()]
     if bad:
-        print(f"⚠ {len(bad)} 条写入异常: {bad[:2]}")
-    # zvec 0.7.0 已知限制:小数据集的 RocksDB flush/close 会输出 stderr 错误
-    # (SST 文件未生成,memtable 无法 flush)。数据在 mmap 中,进程退出时由 OS 写回。
-    # 此为 SDK 内部行为,不影响功能,详见 kit README「已知限制」。
-    # 原子切换:删除旧 generation,rename 新 generation 到最终路径
+        print(f"✗ {len(bad)} 条写入异常——索引不发布,旧索引保留", file=sys.stderr)
+        shutil.rmtree(_gen_dir, ignore_errors=True)
+        sys.exit(1)
+    # 关闭 collection(RocksDB 内部有多个子实例)
+    # zvec 0.7.0 已知限制:小数据集的 flush/close 有 stderr 噪音,数据在 mmap 中
+    for _attr in ("flush", "close"):
+        try:
+            getattr(coll, _attr)()
+        except Exception:
+            pass
+    del coll
+    import gc
+    gc.collect()  # 强制 GC 触发 C++ 析构
+    import time as _time
+    _time.sleep(0.3)  # 等 LSM 后台线程
+
+    # 安全切换:先 rename 旧 → backup,再 rename 新 → 最终位置
+    # 任何时刻至少有一个可用索引;失败时恢复 backup
     _final = repo / STORE_REL
+    _backup = store.parent / "recall.old"
+    if _backup.exists():
+        shutil.rmtree(_backup)
     if _final.exists():
-        shutil.rmtree(_final)
-    _gen_dir.rename(_final)
+        _final.rename(_backup)  # 旧 → backup(原子 rename)
+    try:
+        _gen_dir.rename(_final)  # 新 gen → 最终位置
+    except OSError:
+        if _backup.exists():
+            _backup.rename(_final)  # 恢复
+        raise
+    if _backup.exists():
+        shutil.rmtree(_backup)  # 成功后清理 backup
     print(f"✓ 语义索引已重建：{len(docs)} 篇文档 → {_final.relative_to(repo)}")
     # 写文档计数,供 session-reminder 检测删除(不只是 mtime 变化)
     (_final / ".doc-count").write_text(str(len(docs)), encoding="utf-8")

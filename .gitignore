@@ -10,3 +10,7 @@ __pycache__/
 # 安装产物由 install.sh 从 skills/ 生成,不跟踪(防三份漂移)
 .claude/skills/
 .agents/skills/
+
+# MCP 配置含本机绝对路径,由 install.sh 每次生成
+.mcp.json
+.codex/
