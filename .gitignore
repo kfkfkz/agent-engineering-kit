@@ -14,3 +14,6 @@ __pycache__/
 # MCP 配置含本机绝对路径,由 install.sh 每次生成
 .mcp.json
 .codex/
+
+# 内部文档（设计/回执/项目记忆）：不随公开仓库分发
+docs/

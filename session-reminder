@@ -2,15 +2,26 @@
 # agent-engineering-kit 会话提醒：语义检索层状态（只读、快速）。
 # 由项目 .claude/settings.json 的 SessionStart 钩子调用（$CLAUDE_PROJECT_DIR 定位）；
 # kit 未装、无 docs/ 或层未启用时静默退出，不产生噪音。
+# 索引布局（v12 §15）：zvec/generations/<uuid> + current.json 指针；
+# 旧 zvec/recall 布局只读兼容（发布新索引后即退役）。
 set -u
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 TARGET="$(cd "$SELF_DIR/../.." && pwd)"
 
 [ -d "$TARGET/docs" ] || exit 0
 [ -f "$TARGET/.repo-memory-kit/bin/memory-recall" ] || exit 0
-INDEX="$TARGET/.repo-memory-kit/zvec/recall"
+ZVEC_DIR="$TARGET/.repo-memory-kit/zvec"
 
-if [ ! -d "$INDEX" ]; then
+# 检测 docs/ 新增/修改（时间戳）与删除（计数），对新旧两种布局分别判定
+check_dir="$TARGET/docs"
+if [ -f "$ZVEC_DIR/current.json" ]; then
+    INDEX="$ZVEC_DIR/generations/$(sed -n 's/.*"generation": *"\([^"]*\)".*/\1/p' "$ZVEC_DIR/current.json" | head -1)"
+    [ -d "$INDEX" ] || exit 0
+    count_file="$INDEX/.doc-count"
+elif [ -d "$ZVEC_DIR/recall" ]; then
+    INDEX="$ZVEC_DIR/recall"
+    count_file="$INDEX/.doc-count"
+else
     # 索引未建：仅当 zvec 实际可用时提醒构建，否则静默（避免每会话唠叨）
     command -v python3 >/dev/null 2>&1 || exit 0
     python3 -c "import zvec" >/dev/null 2>&1 || exit 0
@@ -18,23 +29,20 @@ if [ ! -d "$INDEX" ]; then
     exit 0
 fi
 
-# 检测新增/修改(时间戳)
-newest="$(find "$TARGET/docs" -name '*.md' -newer "$INDEX" -print -quit 2>/dev/null)"
+# 新增/修改：docs/ 下有比索引目录更新的 md
+newest="$(find "$check_dir" -name '*.md' -newer "$INDEX" -print -quit 2>/dev/null)"
 if [ -n "$newest" ]; then
     echo "[agent-engineering-kit] 语义索引落后于最近文档变更。刷新：.repo-memory-kit/bin/memory-recall --rebuild"
     exit 0
 fi
 
-# 检测删除:当前 docs/ 下 md 数与上次 rebuild 记录的数对比
-doc_count="$(find "$TARGET/docs" -name '*.md' ! -name '_*' -not -path '*/01-索引/*' -not -path '*/memory/README.md' 2>/dev/null | wc -l)"
-if [ "$doc_count" -gt 0 ]; then
-    count_file="$TARGET/.repo-memory-kit/zvec/recall/.doc-count"
-    if [ -f "$count_file" ]; then
-        last_count="$(cat "$count_file" 2>/dev/null || echo 0)"
-        if [ "$doc_count" != "$last_count" ]; then
-            echo "[agent-engineering-kit] 语义索引文档数变化（$last_count → $doc_count），可能存在删除或新增。刷新：.repo-memory-kit/bin/memory-recall --rebuild"
-            exit 0
-        fi
+# 删除/新增：当前 docs/ 下 md 数与上次 rebuild 记录的数对比
+doc_count="$(find "$check_dir" -name '*.md' ! -name '_*' -not -path '*/01-索引/*' -not -path '*/memory/README.md' 2>/dev/null | wc -l)"
+if [ "$doc_count" -gt 0 ] && [ -f "$count_file" ]; then
+    last_count="$(cat "$count_file" 2>/dev/null || echo 0)"
+    if [ "$doc_count" != "$last_count" ]; then
+        echo "[agent-engineering-kit] 语义索引文档数变化（$last_count → $doc_count），可能存在删除或新增。刷新：.repo-memory-kit/bin/memory-recall --rebuild"
+        exit 0
     fi
 fi
 

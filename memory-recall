@@ -2,7 +2,7 @@
 """agent-engineering-kit 语义检索层：docs/ 全量文档的混合全文检索。
 
 用法:
-  memory-recall --rebuild [目标仓库]              # 全量重建语义索引
+  memory-recall --rebuild [目标仓库]              # 全量重建语义索引（generation 发布协议）
   memory-recall "查询文本" [目标仓库]              # 混合检索，默认 top 8
   memory-recall "查询" --top 5 --type pitfall,domain --status confirmed [目标仓库]
   memory-recall --list [目标仓库]                  # 列出语料清单（不依赖 zvec）
@@ -10,18 +10,32 @@
 
 语料 = docs/**/*.md（记忆条目、业务域地图、SDD、交付回执等；模板与生成索引排除）。
 检索 = zvec jieba 分词全文（标题/摘要/锚点 + 正文双字段）+ RRF 融合 + 结构化过滤，
-零 API key、零模型下载。索引是派生数据（.repo-memory-kit/zvec/recall），随时 --rebuild 重建，
-随卸载移除；未安装 zvec（pip install zvec）时明确报错降级，不影响记忆体系其余功能。
+零 API key、零模型下载。索引是派生数据，随时 --rebuild 重建，随卸载移除；
+未安装 zvec（pip install zvec）时明确报错降级，不影响记忆体系其余功能。
+
+索引发布协议（与 installer/zvec.py 同一 on-disk 格式，v12 设计 §15）：
+  .repo-memory-kit/zvec/generations/<uuid>/   # 每次构建写入新 generation
+  .repo-memory-kit/zvec/current.json          # {"generation": "<uuid>", "docs": N}
+  .repo-memory-kit/zvec/rebuild.lock          # 构建方进程锁
+父进程固定语料快照 → 子进程只读快照构建（--rebuild-gen）→ 三方 hash 与路径集
+校验 → 元数据/协议锁落盘 → 原子切换指针 → 延迟回收旧 generation；reader 持
+共享锁打开 generation（§15.4）。旧布局 zvec/recall 只读兼容（发布新索引后移除）。
 """
 import argparse
+import fcntl
+import gc
 import hashlib
+import json
 import os
 import re
 import shutil
 import sys
+import time
+import uuid
 from pathlib import Path
 
-STORE_REL = ".repo-memory-kit/zvec/recall"
+ZVEC_ROOT_REL = ".repo-memory-kit/zvec"
+LEGACY_STORE_REL = ".repo-memory-kit/zvec/recall"
 EXCLUDE_SUFFIXES = ("01-索引/README.md", "docs/memory/README.md")
 
 TYPE_BY_PREFIX = (
@@ -122,25 +136,106 @@ def require_zvec():
     return True
 
 
-def cmd_rebuild(repo):
-    require_zvec()
+def compute_corpus_hash(docs):
+    lines = [json.dumps(d, ensure_ascii=False, sort_keys=True) for d in docs]
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
+# ── generation 发布协议（§15；与 installer/zvec.py 同一 on-disk 格式）──
+
+def _validate_generation_name(name):
+    parsed = uuid.UUID(name)                      # 非 UUID → ValueError
+    if str(parsed) != name or parsed.version != 4:
+        raise ValueError(f"generation 名非法: {name!r}")
+
+
+def read_current(repo):
+    """读路径：验证 pointer 安全后返回 generation 目录（§15.4 reader 第一步）。"""
+    zvec_dir = repo / ZVEC_ROOT_REL
+    pointer = json.loads((zvec_dir / "current.json").read_text())
+    gen_name = pointer.get("generation", "")
+    _validate_generation_name(gen_name)
+    gen_dir = (zvec_dir / "generations" / gen_name).resolve()
+    generations_root = (zvec_dir / "generations").resolve()
+    if os.path.commonpath([str(gen_dir), str(generations_root)]) != str(generations_root):
+        raise ValueError("Generation path escaped")
+    return gen_dir
+
+
+def open_current_generation(repo, retries=3):
+    """reader 必须持共享锁打开 generation，否则可能被并发清理回收。
+    返回 (gen_dir, lock_fd)；查询期间保持 fd 打开，结束后 close（即释放）。"""
+    for _ in range(retries):
+        gen_dir = read_current(repo)                 # pointer 校验（UUID + 逃逸检查）
+        lock_file = gen_dir / ".lock"
+        try:
+            fd = os.open(lock_file, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            continue                                 # 正被回收 → 重读 pointer
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            continue                                 # 清理方持 EX → 重读 pointer
+        if (gen_dir / ".metadata.json").exists():
+            return gen_dir, fd                       # 锁有效且数据在 → 安全查询
+        os.close(fd)                                 # 锁到手但数据已删 → 重来
+    raise RuntimeError("zvec 索引正在重建，稍后重试")
+
+
+def cleanup_old_generations(zvec_dir, keep, min_age_seconds):
+    """删除前必须对该 generation 的 .lock 取排他锁：取不到 = 有 reader 在用 → 跳过。
+    min_age（第二道防线）之后仍会再次尝试，但正确性不依赖它。"""
+    pointer = json.loads((zvec_dir / "current.json").read_text())
+    current_name = pointer.get("generation", "")
+    entries = []
+    for g in (zvec_dir / "generations").iterdir():
+        try:
+            _validate_generation_name(g.name)
+        except (ValueError, AttributeError, TypeError):
+            continue
+        meta_path = g / ".metadata.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            entries.append((meta.get("built_at", ""), g))
+
+    entries.sort(key=lambda x: x[0], reverse=True)
+    cutoff = time.time() - min_age_seconds
+    for built_at, g in entries[keep:]:
+        if g.name == current_name:
+            continue
+        if g.stat().st_mtime > cutoff:
+            continue
+        lock_file = g / ".lock"
+        try:
+            fd = os.open(lock_file, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            continue
+        try:
+            shutil.rmtree(g)
+        finally:
+            os.close(fd)
+
+
+def _rebuild_gen_main(gen_dir, snapshot):
+    """子进程：只读语料快照构建索引；写 .build-metadata.json（正式 .metadata.json
+    由父进程验证后首次创建）。"""
     import zvec
     from zvec import (CollectionOption, DataType, Doc, FieldSchema,
                       FtsIndexParam, CollectionSchema)
 
-    docs = build_docs(repo)
+    data = snapshot.read_bytes()
+    corpus_hash = hashlib.sha256(data).hexdigest()
+    docs = [json.loads(line) for line in data.decode("utf-8").split("\n") if line]
     if not docs:
-        sys.exit("✗ docs/ 下没有可索引的 Markdown 文档")
-    store = repo / STORE_REL
-    tmp_store = repo / (STORE_REL + ".tmp")
-    if tmp_store.exists():
-        shutil.rmtree(tmp_store)  # 清理旧版原子替换方案的残留
-    # generation 目录方案:每次构建写入新 generation,成功后原子切换指针
-    # 失败时旧 generation 完整保留(不先删旧索引)
-    _gen_dir = store.parent / f"gen-{os.getpid()}"
-    if _gen_dir.exists():
-        shutil.rmtree(_gen_dir)
-    store = _gen_dir  # 构建到新 generation
+        print("✗ 语料为空，不发布 generation", file=sys.stderr)
+        return 1
+
     jieba = FtsIndexParam(tokenizer_name="jieba")
     schema = CollectionSchema(
         name="recall",
@@ -155,11 +250,11 @@ def cmd_rebuild(repo):
             FieldSchema("content", DataType.STRING, nullable=True, index_param=jieba),
         ],
     )
-    coll = zvec.create_and_open(str(store), schema,
+    coll = zvec.create_and_open(str(gen_dir), schema,
                                 CollectionOption(read_only=False, enable_mmap=True))
-    # zvec 文档 ID 只接受受限字符集：用路径哈希做 ID，真实路径存字段。
+    # zvec 文档 ID 只接受受限字符集：用完整 SHA-256 路径哈希做 ID（§15.3 防碰撞）
     payload = [
-        Doc(id=hashlib.sha1(d["rel"].encode("utf-8")).hexdigest()[:16], fields={
+        Doc(id=hashlib.sha256(d["rel"].encode("utf-8")).hexdigest(), fields={
             "path": d["rel"], "title": d["title"], "type": d["type"],
             "status": d["status"], "module": d["module"], "verified": d["verified"],
             "meta": d["meta"], "content": d["content"][:20000],
@@ -170,8 +265,7 @@ def cmd_rebuild(repo):
     bad = [str(s) for s in statuses if s and not getattr(s, "ok", lambda: True)()]
     if bad:
         print(f"✗ {len(bad)} 条写入异常——索引不发布,旧索引保留", file=sys.stderr)
-        shutil.rmtree(_gen_dir, ignore_errors=True)
-        sys.exit(1)
+        return 1
     # 关闭 collection(RocksDB 内部有多个子实例)
     # zvec 0.7.0 已知限制:小数据集的 flush/close 有 stderr 噪音,数据在 mmap 中
     for _attr in ("flush", "close"):
@@ -180,30 +274,147 @@ def cmd_rebuild(repo):
         except Exception:
             pass
     del coll
-    import gc
     gc.collect()  # 强制 GC 触发 C++ 析构
-    import time as _time
-    _time.sleep(0.3)  # 等 LSM 后台线程
+    time.sleep(0.3)  # 等 LSM 后台线程
+    (gen_dir / ".build-metadata.json").write_text(
+        json.dumps({"corpus_hash": corpus_hash}), encoding="utf-8")
+    return 0
 
-    # 安全切换:先 rename 旧 → backup,再 rename 新 → 最终位置
-    # 任何时刻至少有一个可用索引;失败时恢复 backup
-    _final = repo / STORE_REL
-    _backup = store.parent / "recall.old"
-    if _backup.exists():
-        shutil.rmtree(_backup)
-    if _final.exists():
-        _final.rename(_backup)  # 旧 → backup(原子 rename)
+
+def cmd_rebuild(repo):
+    require_zvec()
+
+    zvec_dir = repo / ZVEC_ROOT_REL
+    gen_name = str(uuid.uuid4())
+    gen_dir = zvec_dir / "generations" / gen_name
+
+    # 基础设施目录（zvec/ 与 generations/；generation 叶子由 create_and_open 创建）
+    (zvec_dir / "generations").mkdir(parents=True, exist_ok=True)
+
+    # 构建方进程锁（无 O_TRUNC——open(path, "w") 会截断外部文件）
+    lock_fd = os.open(zvec_dir / "rebuild.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        _gen_dir.rename(_final)  # 新 gen → 最终位置
-    except OSError:
-        if _backup.exists():
-            _backup.rename(_final)  # 恢复
-        raise
-    if _backup.exists():
-        shutil.rmtree(_backup)  # 成功后清理 backup
-    print(f"✓ 语义索引已重建：{len(docs)} 篇文档 → {_final.relative_to(repo)}")
-    # 写文档计数,供 session-reminder 检测删除(不只是 mtime 变化)
-    (_final / ".doc-count").write_text(str(len(docs)), encoding="utf-8")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock_fd)
+        sys.exit("另一个 rebuild 正在运行")
+    try:
+        # 1. 父进程固定完整语料快照（JSONL，含所有索引字段）
+        docs = build_docs(repo)
+        if not docs:
+            sys.exit("✗ docs/ 下没有可索引的 Markdown 文档")
+        snapshot_hash = compute_corpus_hash(docs)
+
+        snapshot = zvec_dir / f"snapshot-{gen_name}.jsonl"
+        snap_fd = os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            payload = "\n".join(
+                json.dumps(d, ensure_ascii=False, sort_keys=True) for d in docs).encode()
+            os.write(snap_fd, payload)
+            os.fsync(snap_fd)
+        finally:
+            os.close(snap_fd)
+
+        try:
+            # 2. 子进程构建（只读快照，不读源 docs/）
+            proc = __import__("subprocess").run(
+                [sys.executable, __file__, "--rebuild-gen", str(gen_dir), str(snapshot)],
+                check=False, timeout=120)
+        finally:
+            os.unlink(snapshot)
+        if proc.returncode != 0:
+            shutil.rmtree(gen_dir, ignore_errors=True)
+            sys.exit(f"✗ 子进程构建失败（exit={proc.returncode}），旧索引保留")
+
+        # 3. 验证：三方 hash 比对 + 索引路径集合
+        try:
+            build_meta = json.loads((gen_dir / ".build-metadata.json").read_text())
+            if build_meta["corpus_hash"] != snapshot_hash:
+                shutil.rmtree(gen_dir, ignore_errors=True)
+                sys.exit("子进程语料 hash 与父进程不一致，旧索引保留")
+            if compute_corpus_hash(build_docs(repo)) != snapshot_hash:
+                shutil.rmtree(gen_dir, ignore_errors=True)
+                sys.exit("语料在构建期间变化，旧索引保留")
+
+            import zvec
+            coll = zvec.open(str(gen_dir))
+            indexed_paths = set()
+            for doc in coll.iter_docs(output_fields=["path"], include_vector=False):
+                indexed_paths.add(doc.fields.get("path"))
+            coll.close()
+            del coll
+            gc.collect()
+            expected_paths = {d["rel"] for d in docs}
+            if indexed_paths != expected_paths:
+                shutil.rmtree(gen_dir, ignore_errors=True)
+                sys.exit("索引路径集不匹配，旧索引保留")
+        except BaseException:
+            shutil.rmtree(gen_dir, ignore_errors=True)
+            raise
+
+        # 4. 父进程首次创建正式元数据 + 协议锁
+        meta = json.dumps({
+            "generation": gen_name,
+            "docs": len(docs),
+            "corpus_hash": snapshot_hash,
+            "paths_sha": hashlib.sha256(
+                "\n".join(sorted(expected_paths)).encode()).hexdigest(),
+            "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }).encode()
+        for name, content, mode in (
+                (".metadata.json", meta, 0o600),
+                (".doc-count", str(len(docs)).encode(), 0o644),
+                (".lock", b"", 0o600)):
+            fd = os.open(gen_dir / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+            try:
+                os.write(fd, content)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        os.unlink(gen_dir / ".build-metadata.json")   # 校验完成，删除构建中间物
+        dir_fd = os.open(gen_dir, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)                          # generation 落盘完成后才能发布
+        finally:
+            os.close(dir_fd)
+
+        # 5. 原子切换 pointer
+        tmp = zvec_dir / f"current.json.{uuid.uuid4()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        try:
+            os.write(fd, json.dumps({"generation": gen_name, "docs": len(docs)}).encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, zvec_dir / "current.json")
+        dir_fd = os.open(zvec_dir, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+        # 6. 延迟回收 + 旧布局退役（current.json 已指向新代，旧 recall 不再被读取）
+        cleanup_old_generations(zvec_dir, keep=2, min_age_seconds=600)
+        legacy = repo / LEGACY_STORE_REL
+        if legacy.exists():
+            shutil.rmtree(legacy, ignore_errors=True)
+        print(f"✓ 语义索引已重建：{len(docs)} 篇文档 → generations/{gen_name}")
+    finally:
+        os.close(lock_fd)
+
+
+def _open_index(repo):
+    """查询侧索引打开：新布局（reader 共享锁协议）优先，旧 recall 目录只读兼容。
+    返回 (coll, lock_fd|None)——查询结束后调用方 close 两者。"""
+    import zvec
+    if (repo / ZVEC_ROOT_REL / "current.json").is_file():
+        gen_dir, fd = open_current_generation(repo)
+        try:
+            return zvec.open(str(gen_dir)), fd
+        except BaseException:
+            os.close(fd)
+            raise
+    return zvec.open(str(repo / LEGACY_STORE_REL)), None
 
 
 def cmd_query(repo, text, top, types, status, module):
@@ -213,50 +424,101 @@ def cmd_query(repo, text, top, types, status, module):
     from zvec.extension.multi_vector_reranker import RrfReRanker
     from zvec.model.param.query import Fts
 
-    store = repo / STORE_REL
-    if not store.exists():
-        sys.exit("✗ 语义索引不存在，先运行 memory-recall --rebuild")
-    coll = zvec.open(str(store))
-    # 构建过滤表达式:过滤下推到查询层,先取够结果再过滤(防止类型多时漏召回)
-    filter_expr = ""
-    if types:
-        type_list = ", ".join(f'"{x}"' for x in types)
-        filter_expr = f"type in ({type_list})"
-    if status:
-        s = f'status == "{status}"'
-        filter_expr = f"{filter_expr} and {s}" if filter_expr else s
+    try:
+        coll, lock_fd = _open_index(repo)
+    except (FileNotFoundError, RuntimeError, ValueError) as e:
+        sys.exit(f"✗ 语义索引不可用（{e}）——先运行 memory-recall --rebuild")
+    try:
+        # 构建过滤表达式:过滤下推到查询层,先取够结果再过滤(防止类型多时漏召回)
+        filter_expr = ""
+        if types:
+            type_list = ", ".join(f'"{x}"' for x in types)
+            filter_expr = f"type in ({type_list})"
+        if status:
+            s = f'status == "{status}"'
+            filter_expr = f"{filter_expr} and {s}" if filter_expr else s
 
-    results = coll.query(
-        queries=[
-            Query(field_name="meta", fts=Fts(match_string=text)),
-            Query(field_name="content", fts=Fts(match_string=text)),
-        ],
-        topk=max(top * 4, 20),
-        reranker=RrfReRanker(rank_constant=60),
-        filter=filter_expr if filter_expr else None,
-    )
-    shown = 0
-    print(f'语义检索: "{text}"')
-    for d in results:
-        f = d.fields
-        if types and f.get("type") not in types:
-            continue
-        if status and f.get("status") != status:
-            continue
-        if module and module not in f.get("module", ""):
-            continue
-        shown += 1
-        tag = f.get("type") or "doc"
-        st = f.get("status") or "—"
-        print(f"{shown}. [score {d.score:.3f}] [{tag}/{st}] {f.get('title', '')}")
-        print(f"   {f.get('path') or d.id}")
-        if shown >= top:
-            break
-    if not shown:
-        print("无命中。可尝试去掉 --type/--status 过滤，或检查关键词。")
+        results = coll.query(
+            queries=[
+                Query(field_name="meta", fts=Fts(match_string=text)),
+                Query(field_name="content", fts=Fts(match_string=text)),
+            ],
+            topk=max(top * 4, 20),
+            reranker=RrfReRanker(rank_constant=60),
+            filter=filter_expr if filter_expr else None,
+        )
+        shown = 0
+        print(f'语义检索: "{text}"')
+        for d in results:
+            f = d.fields
+            if types and f.get("type") not in types:
+                continue
+            if status and f.get("status") != status:
+                continue
+            if module and module not in f.get("module", ""):
+                continue
+            shown += 1
+            tag = f.get("type") or "doc"
+            st = f.get("status") or "—"
+            print(f"{shown}. [score {d.score:.3f}] [{tag}/{st}] {f.get('title', '')}")
+            print(f"   {f.get('path') or d.id}")
+            if shown >= top:
+                break
+        if not shown:
+            print("无命中。可尝试去掉 --type/--status 过滤，或检查关键词。")
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+
+
+def cmd_check(repo):
+    zvec_dir = repo / ZVEC_ROOT_REL
+    current = zvec_dir / "current.json"
+    if current.is_file():
+        # 新布局：语料 hash 与发布元数据比对（比 mtime 计数更强的新鲜度判定）
+        try:
+            gen_dir, fd = open_current_generation(repo)
+        except (RuntimeError, ValueError) as e:
+            print(f"✗ 语义索引不可用（{e}）")
+            sys.exit(1)
+        try:
+            meta = json.loads((gen_dir / ".metadata.json").read_text())
+            current_hash = compute_corpus_hash(build_docs(repo))
+            if current_hash != meta.get("corpus_hash"):
+                print("✗ 语义索引过期：语料已变化（运行 --rebuild）")
+                sys.exit(1)
+            print(f"✓ 语义索引 generations/{gen_dir.name}：{meta.get('docs')} 篇（与语料一致）")
+            return
+        finally:
+            os.close(fd)
+    # 旧布局（只读兼容）
+    store = repo / LEGACY_STORE_REL
+    if not store.exists():
+        print("✗ 语义索引不存在（运行 memory-recall --rebuild）")
+        sys.exit(1)
+    try:
+        import zvec
+        coll = zvec.open(str(store))
+        n = len(coll.query(topk=100000))
+        current_docs = build_docs(repo)
+        if n != len(current_docs):
+            print(f"✗ 语义索引过期：索引 {n} 篇，当前语料 {len(current_docs)} 篇（运行 --rebuild）")
+            sys.exit(1)
+        print(f"✓ 语义索引 {store.relative_to(repo)}：{n} 篇（与语料一致）")
+    except ImportError:
+        print(f"✓ 索引文件存在（{store.relative_to(repo)}）；未安装 zvec，无法打开")
 
 
 def main():
+    argv = sys.argv[1:]
+    # 子进程模式（--rebuild-gen <gen_dir> <snapshot>）：内部接口，不进 argparse
+    if argv and argv[0] == "--rebuild-gen":
+        if len(argv) != 3:
+            print("用法（内部）: memory-recall --rebuild-gen <gen_dir> <snapshot>",
+                  file=sys.stderr)
+            return 2
+        return _rebuild_gen_main(Path(argv[1]), Path(argv[2]))
+
     ap = argparse.ArgumentParser(description="docs/ 语义检索层（zvec jieba 全文 + RRF）")
     ap.add_argument("query", nargs="?", help="检索文本")
     ap.add_argument("target", nargs="?", default=".", help="目标仓库")
@@ -267,7 +529,7 @@ def main():
     ap.add_argument("--type", help="按类型过滤（逗号分隔：pitfall,decision,playbook,domain,sdd,receipt）")
     ap.add_argument("--status", help="按状态过滤（如 confirmed）")
     ap.add_argument("--module", help="按模块过滤（子串匹配）")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     # --rebuild/--check/--list 模式下，单个位置参数视为目标仓库而非查询文本。
     if args.rebuild or args.check or args.list:
@@ -287,33 +549,19 @@ def main():
         print(f"语料 {len(docs)} 篇：")
         for d in docs:
             print(f"  [{d['type']}/{d['status'] or '—'}] {d['rel']}")
-        return
+        return 0
     if args.check:
-        store = repo / STORE_REL
-        if not store.exists():
-            print("✗ 语义索引不存在（运行 memory-recall --rebuild）")
-            sys.exit(1)
-        try:
-            import zvec
-            coll = zvec.open(str(store))
-            n = len(coll.query(topk=100000))
-            # 新鲜度:索引内文档数 vs 当前语料数
-            current_docs = build_docs(repo)
-            if n != len(current_docs):
-                print(f"✗ 语义索引过期：索引 {n} 篇，当前语料 {len(current_docs)} 篇（运行 --rebuild）")
-                sys.exit(1)
-            print(f"✓ 语义索引 {store.relative_to(repo)}：{n} 篇（与语料一致）")
-        except ImportError:
-            print(f"✓ 索引文件存在（{store.relative_to(repo)}）；未安装 zvec，无法打开")
-        return
+        cmd_check(repo)
+        return 0
     if args.rebuild:
         cmd_rebuild(repo)
-        return
+        return 0
     if not args.query:
         ap.error("提供检索文本，或 --rebuild/--check/--list")
     types = [t.strip() for t in args.type.split(",")] if args.type else None
     cmd_query(repo, args.query, args.top, types, args.status, args.module)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

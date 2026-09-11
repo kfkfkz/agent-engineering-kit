@@ -14,7 +14,7 @@ cd agent-engineering-kit
 ./install.sh /path/to/your-project
 ```
 
-安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。
+安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+**（其余无外部依赖；`sha256sum`/`shasum` 都不再需要）。
 
 先预览、不写入：
 
@@ -347,14 +347,17 @@ PROFILE 在有效 `confirmed` 条目达到 10 条时创建；后续积累达到�
 .claude/skills/                 Claude Code 项目技能
 .agents/skills/                 Codex 项目技能
 .repo-memory-kit/bin/           校验器、生成器和 Spec 迁移器
-.repo-memory-kit/manifest       版本与受管文件指纹
+.repo-memory-kit/manifest.json  安装清单（Manifest v2：版本与受管资源记录）
+.repo-memory-kit/zvec/          语义索引派生数据（generation + current.json 指针）
 docs/memory/RULES.md            记忆规则
 docs/memory/*/_TEMPLATE.md      条目模板
 CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 .cbmignore                      代码图谱索引托管区块
 ```
 
-所有记忆条目、`docs/memory/README.md` 索引和 `.anchors.json` 属于项目用户。更新和卸载不会删除它们。受管文件被手工修改时，安装器会报告漂移；卸载只删除路径和内容指纹都匹配的 kit 产物。
+所有记忆条目、`docs/memory/README.md` 索引和 `.anchors.json` 属于项目用户。更新和卸载不会删除它们。
+
+安装器是事务化的（崩溃安全）：安装/卸载先在内存生成完整计划并落盘事务日志（HMAC 保护），再以内容 CAS 提交；中断后再次运行会自动恢复现场（回滚或补完）。删除授权要求 Manifest 记录与内容血统**双条件匹配**——被手工修改过的受管内容按 conflict 保护并报告，`--repair` 只恢复有 kit 血统的漂移文件；容器型文件（CLAUDE.md、`.mcp.json`、`settings.json` 等）只移除 kit 片段，即使移除后为空也不删容器，跳过的条目会保留在缩减版清单里。
 
 为兼容已经接入的项目，内部状态目录 `.repo-memory-kit` 以及托管区块标记继续使用旧命名。它们只是稳定的安装协议，不代表当前项目名称；请勿在业务仓库中手工改名。
 
@@ -393,14 +396,28 @@ git pull
 ./install.sh --update /path/to/your-project
 ```
 
-检查安装漂移或缺失，并恢复受管产物：
+检查安装健康度并恢复受管产物：
 
 ```bash
 ./install.sh --doctor /path/to/your-project
 ./install.sh --repair /path/to/your-project
 ```
 
-使用 workspace 符号链接的项目不必再次填写 `--codex-root`，安装器会读取已记录的位置；也可以显式传入以便复核。
+`--doctor` 是只读检查，输出六种状态（HEALTHY / OUTDATED / DRIFTED / DEGRADED / CONFLICT / INCOMPLETE）。`--repair` 只恢复有 kit 血统的漂移文件；被手工修改过的内容（conflict）不会被自动覆盖，处置方式见报告提示。
+
+安装清单丢失但内容仍是 kit 产物时，可显式登记（不修改任何文件）：
+
+```bash
+./install.sh --adopt-legacy /path/to/your-project
+```
+
+极少数情况（如崩溃后留下 needs_human 事务）按报告提示人工选择恢复策略：
+
+```bash
+./install.sh --recover=rollback /path/to/your-project    # 或 --recover=roll-forward
+```
+
+使用 workspace 符号链接的项目：更新时建议再次传入 `--codex-root`（新链接的创建与核验只认显式参数）；卸载会自动读取已记录的位置，也可显式传入以便复核。
 
 卸载：
 
@@ -408,22 +425,24 @@ git pull
 ./install.sh --uninstall /path/to/your-project
 ```
 
-卸载会移除 kit 管辖且未漂移的文件及 workspace 技能链接，不会移除用户记忆，也不会卸载机器级的 `codebase-memory-mcp`。
+卸载只移除 Manifest 记录且内容血统双条件匹配的 kit 产物及 workspace 技能链接，不会移除用户记忆，也不会卸载机器级的 `codebase-memory-mcp`。
 
 ## 依赖边界
 
-- 基础安装：POSIX shell 以及 `sha256sum` 或 `shasum`；仓库存在 `.specify/specs` 或需要记忆构建/Spec 迁移时另需 Python 3。
+- 安装器：Python 3.10+（`install.sh` 首步检测）；无其他外部依赖。
 - 语义检索层：可选，`pip install zvec`（预编译轮子，无模型下载、零 API key）；未安装时其余功能不受影响。
-- 代码图谱增强：仅在使用 `--with-codebase-memory` 时需要网络和 `curl`。
+- 代码图谱增强：仅在使用 `--with-codebase-memory` 时需要网络。
 - git 不是目标项目的硬要求；SVN 或纯本地项目也可以使用记忆系统和显式文件清单检查。
 
 ## 开发与验证
 
 ```bash
-./tests/install.test.sh
-./tests/build.test.sh
-./tests/spec-migrate.test.sh
-shellcheck install.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh
+./tests/installer.test.sh     # 安装器生命周期（§20.1 冻结版清单：事务/恢复/存量迁移）
+./tests/install.test.sh      # wrapper 全链路（安装/更新/卸载/安全清理）
+./tests/build.test.sh        # 记忆构建与语义检索层
+./tests/skill-sync.test.sh   # 技能副本一致性
+./tests/spec-migrate.test.sh  # Spec Kit 迁移
+shellcheck install.sh tests/*.test.sh
 ```
 
 ## License

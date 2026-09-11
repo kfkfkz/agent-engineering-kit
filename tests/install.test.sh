@@ -41,8 +41,9 @@ assert_eq "cbmignore 托管区块数=1" "$(grep -c 'repo-memory-kit:start' "$P/.
 assert_eq "CLAUDE.md 区块标记=1"  "$(grep -cF '<!-- repo-memory-kit:start -->' "$P/CLAUDE.md")" "1"
 if grep -q '/repo-delivery' "$P/CLAUDE.md"; then ok "CLAUDE.md 含 slash 工作流入口"; else bad "CLAUDE.md 缺 slash 工作流入口"; fi
 if grep -qF "\$repo-delivery" "$P/CLAUDE.md"; then ok "CLAUDE.md 含 Codex 工作流入口"; else bad "CLAUDE.md 缺 Codex 工作流入口"; fi
-assert_exists "安装清单"                  "$P/.repo-memory-kit/manifest"
-if grep -q '^kit_version=' "$P/.repo-memory-kit/manifest"; then ok "清单含 kit_version"; else bad "清单缺 kit_version"; fi
+assert_exists "安装清单 v2（manifest.json）" "$P/.repo-memory-kit/manifest.json"
+assert_grep "清单为 Manifest v2" '"manifest_version": 2' "$P/.repo-memory-kit/manifest.json"
+if grep -q '"kit_version"' "$P/.repo-memory-kit/manifest.json"; then ok "清单含 kit_version"; else bad "清单缺 kit_version"; fi
 
 # ── T2 幂等：区块/段落不重复，用户文件不覆盖 ──
 echo "CUSTOM INDEX LINE" >> "$P/docs/memory/README.md"
@@ -51,10 +52,22 @@ assert_eq "二次安装 cbmignore 区块仍=1" "$(grep -c 'repo-memory-kit:start
 assert_eq "二次安装 CLAUDE.md 段落仍=1" "$(grep -c '^## 项目记忆（坑与流程）' "$P/CLAUDE.md")" "1"
 if grep -q "CUSTOM INDEX LINE" "$P/docs/memory/README.md"; then ok "README 用户内容保留"; else bad "README 被覆盖"; fi
 
-# ── T3 --update：kit 文件刷新、用户文件不动 ──
+# ── T3 用户修改 kit 管辖文件 → conflict 保护（update/repair 均不覆盖）；
+#      kit 历史版本内容（drifted）→ --repair 显式恢复 ──
 echo "# local hack" >> "$P/docs/memory/RULES.md"
 "$KIT/install.sh" --update "$P" >/dev/null
-if grep -q "local hack" "$P/docs/memory/RULES.md"; then bad "RULES.md（kit 管辖）未被刷新"; else ok "RULES.md 刷新为最新"; fi
+if grep -q "local hack" "$P/docs/memory/RULES.md"; then ok "用户修改的 RULES.md 受 conflict 保护（--update 不覆盖）"; else bad "用户修改被 --update 覆盖"; fi
+"$KIT/install.sh" --repair "$P" >/dev/null
+if grep -q "local hack" "$P/docs/memory/RULES.md"; then ok "--repair 不绕过 conflict（无绕过入口）"; else bad "--repair 覆盖了 conflict 内容"; fi
+# drifted（kit 血统的历史版本）→ --repair 恢复
+old_rev="$(git -C "$KIT" log --format=%H -- templates/memory-RULES.md | tail -1)"
+git -C "$KIT" show "$old_rev:templates/memory-RULES.md" > "$P/docs/memory/RULES.md"
+"$KIT/install.sh" --update "$P" >/dev/null
+git -C "$KIT" show "$old_rev:templates/memory-RULES.md" | cmp -s - "$P/docs/memory/RULES.md" \
+    && ok "drifted 文件默认跳过（--update 不覆盖）" || bad "drifted 文件被 --update 覆盖"
+"$KIT/install.sh" --repair "$P" >/dev/null
+cmp -s "$KIT/templates/memory-RULES.md" "$P/docs/memory/RULES.md" \
+    && ok "--repair 恢复 kit 当前版本（drifted 显式恢复）" || bad "--repair 未恢复 drifted 文件"
 if grep -q "CUSTOM INDEX LINE" "$P/docs/memory/README.md"; then ok "README（用户所有）未被覆盖"; else bad "README 被覆盖"; fi
 
 # ── T4 路径含空格 ──
@@ -71,14 +84,11 @@ assert_eq "残缺修复：区块=1" "$(grep -c 'repo-memory-kit:start' "$P3/.cbm
 assert_eq "残缺修复：区块含 !docs/" "$(sed -n '/repo-memory-kit:start/,/repo-memory-kit:end/p' "$P3/.cbmignore" | grep -c '^!docs/$')" "1"
 assert_eq "残缺修复：区块含 docs/*" "$(sed -n '/repo-memory-kit:start/,/repo-memory-kit:end/p' "$P3/.cbmignore" | grep -c '^docs/\*$')" "1"
 
-# ── T6 安全清理：全局技能仅指纹匹配才删 ──
+# ── T6（全局 ~/.codex/skills 指纹清理）与 T17（空文件保护）：随 install.sh
+#    wrapper 化退役——v12 设计将生命周期范围收缩至 target + --codex-root（§16），
+#    全局技能清理不再属于安装器职责。相关断言移除，行为以 installer 包为准。──
 P4="$T/proj4"; mkdir -p "$P4"; printf '# P\n' > "$P4/CLAUDE.md"
-mkdir -p "$HOME/.codex/skills/memory-check" "$HOME/.codex/skills/memory-capture"
-cp "$KIT/skills/memory-check/SKILL.md" "$HOME/.codex/skills/memory-check/SKILL.md"       # 与 kit 一致 → 应删
-printf '# 用户自定义技能，提到了 docs/memory 但不是 kit 产物\n' > "$HOME/.codex/skills/memory-capture/SKILL.md"  # 不一致 → 应保留
 "$KIT/install.sh" "$P4" >/dev/null
-assert_gone  "指纹匹配的全局技能已清理"     "$HOME/.codex/skills/memory-check"
-assert_exists "指纹不匹配的全局技能被保留" "$HOME/.codex/skills/memory-capture/SKILL.md"
 
 # ── T7 旧版段落自动迁移（内容与 kit 模板一致 → 托管区块）──
 P5="$T/proj5"; mkdir -p "$P5"
@@ -128,7 +138,8 @@ for tool in reuse-research security-review delivery-gate spec-migrate task-hando
     assert_gone "卸载：$tool 技能移除" "$P4/.agents/skills/$tool"
 done
 assert_gone     "卸载：bin 目录移除"       "$P4/.repo-memory-kit/bin"
-assert_gone     "卸载：manifest 移除"       "$P4/.repo-memory-kit/manifest"
+assert_exists   "卸载：manifest.json 缩减保留（seed 残留条目）" "$P4/.repo-memory-kit/manifest.json"
+assert_grep     "缩减清单只含 seed"        '"spec_id": "memory-readme-seed"' "$P4/.repo-memory-kit/manifest.json"
 assert_gone     "卸载：_TEMPLATE.md（清单内）移除" "$P4/docs/memory/pitfalls/_TEMPLATE.md"
 if grep -qF '<!-- repo-memory-kit:start -->' "$P4/CLAUDE.md"; then bad "卸载后 CLAUDE.md 仍含区块"; else ok "卸载：CLAUDE.md 区块移除"; fi
 if [ -f "$P4/CLAUDE.md" ]; then ok "卸载：CLAUDE.md 本体保留"; else bad "卸载误删 CLAUDE.md 本体"; fi
@@ -143,7 +154,7 @@ echo "# 手工修改" >> "$P7/docs/memory/RULES.md"
 assert_exists "卸载漂移保护：修改过的 RULES.md 保留" "$P7/docs/memory/RULES.md"
 assert_gone     "卸载：未修改的技能正常移除" "$P7/.claude/skills/memory-check"
 
-# ── T16 卸载路径安全：篡改清单的越界路径被拒 ──
+# ── T16 卸载路径安全：伪造的 v1 清单（越界路径）不被采纳清理，标记文件不删 ──
 P8="$T/proj8"; mkdir -p "$P8"; printf '# P\n' > "$P8/CLAUDE.md"
 "$KIT/install.sh" "$P8" >/dev/null
 printf 'deadbeef  docs/../escape-marker\ndeadbeef  %s\n' "$T/abs-escape-marker" >> "$P8/.repo-memory-kit/manifest"
@@ -151,13 +162,10 @@ touch "$P8/escape-marker" "$T/abs-escape-marker"
 "$KIT/install.sh" --uninstall "$P8" >/dev/null
 assert_exists "篡改清单：../ 路径未越界删除" "$P8/escape-marker"
 assert_exists "篡改清单：绝对路径未删除"    "$T/abs-escape-marker"
+assert_exists "伪造 v1 清单不被清理（格式校验拒收）" "$P8/.repo-memory-kit/manifest"
 
-# ── T17 空文件不再误判为 kit 产物（历史指纹的空哈希修复）──
-P9="$T/proj9"; mkdir -p "$P9"
-mkdir -p "$HOME/.codex/skills/memory-check"
-: > "$HOME/.codex/skills/memory-check/SKILL.md"
-"$KIT/install.sh" "$P9" >/dev/null
-assert_exists "空的同名用户技能文件被保留" "$HOME/.codex/skills/memory-check/SKILL.md"
+# ── T17（空文件不再误判为 kit 产物）：全局技能清理已随 wrapper 化退役（见 T6 注），
+#    其核心断言对象（~/.codex/skills 指纹比对删除）不再存在——移除。──
 
 # ── T18 历史版本段落自动迁移（哈希口径统一修复）──
 P10="$T/proj10"; mkdir -p "$P10"
@@ -180,7 +188,7 @@ if sh "$KIT/validate-memory.sh" "$P11" >/dev/null 2>&1; then bad "校验器接�
 rm -f "$P11/docs/memory/pitfalls/2026-01-01-tpl.md"
 
 # ── T20 Codex 工作区与记忆仓库分离时，技能仍可被发现 ──
-W="$T/workspace"; P12="$W/backend"; mkdir -p "$P12"
+W="$T/workspace"; P12="$W/subproj"; mkdir -p "$P12"
 if "$KIT/install.sh" --codex-root "$W" "$P12" >/dev/null 2>&1; then
     if [ -L "$W/.agents/skills/memory-capture" ] &&
        [ "$(readlink "$W/.agents/skills/memory-capture")" = "$P12/.agents/skills/memory-capture" ]; then
@@ -240,8 +248,15 @@ P15="$T/proj15"; mkdir -p "$P15"; printf '# P\n' > "$P15/CLAUDE.md"
 "$KIT/install.sh" "$P15" >/dev/null
 if "$KIT/install.sh" --doctor "$P15" >/dev/null 2>&1; then ok "doctor 对健康安装通过"; else bad "doctor 对健康安装失败"; fi
 rm "$P15/.agents/skills/tdd/SKILL.md"
-# 即使清单中的对应行也被删，doctor 仍应按当前 kit 必备集合发现缺失。
-sed -i '\|\.agents/skills/tdd/SKILL.md$|d' "$P15/.repo-memory-kit/manifest"
+# 即使清单中的对应条目也被删，doctor 仍应按 Registry 必备集合发现缺失。
+python3 - "$P15/.repo-memory-kit/manifest.json" <<'PY' || true
+import json, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+d = json.loads(p.read_text())
+d["entries"] = [e for e in d["entries"] if e["spec_id"] != "skill-agents-tdd"]
+p.write_text(json.dumps(d, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+PY
 if "$KIT/install.sh" --doctor "$P15" >/dev/null 2>&1; then bad "doctor 未发现缺失文件"; else ok "doctor 发现缺失受管文件（不盲信清单）"; fi
 "$KIT/install.sh" --repair "$P15" >/dev/null
 assert_exists "repair 恢复缺失文件" "$P15/.agents/skills/tdd/SKILL.md"
@@ -288,40 +303,9 @@ fi
 assert_gone "符号链接阻断后未向仓库外安装技能" "$ESC17/skills"
 
 
-# ── T26 退役技能清理：update 移除 kit 已合并的旧技能，非 kit 内容保留 ──
-P19="$T/proj19"; mkdir -p "$P19"
-"$KIT/install.sh" "$P19" >/dev/null
-old_rev=""
-for rev_candidate in $(git -C "$KIT" log --all --format=%H -- skills/delivery-review/SKILL.md); do
-    if git -C "$KIT" show "$rev_candidate:skills/delivery-review/SKILL.md" >/dev/null 2>&1; then
-        old_rev="$rev_candidate"
-        break
-    fi
-done
-if [ -z "$old_rev" ]; then
-    if [ -f "$KIT/.git/shallow" ]; then
-        ok "浅克隆无历史，跳过退役清理用例"
-    else
-        bad "找不到历史版本 delivery-review"
-    fi
-fi
-if [ -n "$old_rev" ]; then
-    mkdir -p "$P19/.claude/skills/delivery-review" "$P19/.agents/skills/delivery-review"
-    git -C "$KIT" show "$old_rev:skills/delivery-review/SKILL.md" > "$P19/.claude/skills/delivery-review/SKILL.md"
-    cp "$P19/.claude/skills/delivery-review/SKILL.md" "$P19/.agents/skills/delivery-review/SKILL.md"
-    old_hash="$(sha256sum "$P19/.claude/skills/delivery-review/SKILL.md" | cut -d' ' -f1)"
-    printf '%s  %s\n' "$old_hash" ".claude/skills/delivery-review/SKILL.md" >> "$P19/.repo-memory-kit/manifest"
-    printf '%s  %s\n' "$old_hash" ".agents/skills/delivery-review/SKILL.md" >> "$P19/.repo-memory-kit/manifest"
-    mkdir -p "$P19/.claude/skills/custom-skill"
-    echo "user custom" > "$P19/.claude/skills/custom-skill/SKILL.md"
-    printf '%s  %s\n' "0000" ".claude/skills/custom-skill/SKILL.md" >> "$P19/.repo-memory-kit/manifest"
-    "$KIT/install.sh" --update "$P19" >/dev/null
-    assert_gone "update 清理退役技能（.claude）" "$P19/.claude/skills/delivery-review"
-    assert_gone "update 清理退役技能（.agents）" "$P19/.agents/skills/delivery-review"
-    assert_exists "新技能 delivery-gate 在位" "$P19/.claude/skills/delivery-gate/SKILL.md"
-    assert_exists "非 kit 内容的技能目录保留" "$P19/.claude/skills/custom-skill/SKILL.md"
-    if "$KIT/install.sh" --doctor "$P19" >/dev/null 2>&1; then ok "清理后 doctor 健康"; else bad "清理后 doctor 失败"; fi
-fi
+# ── T26（退役技能清理）：随 wrapper 化退役——v12 模型里删除授权只来自
+#    Manifest v2 条目 + 双条件血统（§5/§18），不在 Registry 的路径一律不碰；
+#    退役技能目录属旧迁移场景，由 v1 清单格式校验路径兜底（T16），不再自动清理。──
 
 # ── T27 会话提醒钩子：注册进 settings.json、保留既有配置、卸载清理 ──
 P20="$T/proj20"; mkdir -p "$P20/.claude"
@@ -337,6 +321,35 @@ fi
 "$KIT/install.sh" --uninstall "$P20" >/dev/null
 if grep -q "session-reminder" "$P20/.claude/settings.json" 2>/dev/null; then bad "卸载未清理钩子"; else ok "卸载清理钩子"; fi
 assert_grep "卸载保留既有配置" "demo@x" "$P20/.claude/settings.json"
+
+# ── T28 存量 .codex/config.toml 无标记段落 → 采纳升级为标记区块（不产生重复节）──
+P21="$T/proj21"; mkdir -p "$P21/.codex"
+printf '# user toml\nmodel = "gpt"\n\n[mcp_servers.agent-engineering]\ncommand = "'"$P21"'/.repo-memory-kit/bin/agent-engineering-mcp"\n' > "$P21/.codex/config.toml"
+"$KIT/install.sh" "$P21" >/dev/null
+assert_eq "旧 TOML 节采纳后仍只有 1 个节头" "$(grep -c '^\[mcp_servers.agent-engineering\]' "$P21/.codex/config.toml")" "1"
+assert_grep "旧 TOML 节升级为标记区块" 'kit:agent-engineering:start' "$P21/.codex/config.toml"
+assert_grep "用户 TOML 内容保留" 'model = "gpt"' "$P21/.codex/config.toml"
+"$KIT/install.sh" --uninstall "$P21" >/dev/null
+assert_eq "卸载后 TOML 节移除" "$(grep -c '^\[mcp_servers.agent-engineering\]' "$P21/.codex/config.toml")" "0"
+assert_grep "卸载后用户 TOML 保留" 'model = "gpt"' "$P21/.codex/config.toml"
+
+# ── T29 用户自有 codex 节（command 不同）→ conflict 保护，不追加不覆盖 ──
+P22="$T/proj22"; mkdir -p "$P22/.codex"
+printf '[mcp_servers.agent-engineering]\ncommand = "/usr/local/bin/other-mcp"\n' > "$P22/.codex/config.toml"
+"$KIT/install.sh" "$P22" >/dev/null
+assert_eq "用户自有 codex 节保持 1 个" "$(grep -c '^\[mcp_servers.agent-engineering\]' "$P22/.codex/config.toml")" "1"
+if grep -q 'kit:agent-engineering:start' "$P22/.codex/config.toml"; then bad "对用户自有节追加了标记区块"; else ok "用户自有 codex 节不被追加/覆盖"; fi
+
+# ── T30 合法 v1 文本清单在安装后被格式校验清理；伪造内容保留 ──
+P23="$T/proj23"; mkdir -p "$P23"
+"$KIT/install.sh" "$P23" >/dev/null
+V1HASH="$(printf 'v1' | sha256sum | cut -d' ' -f1)"
+printf 'kit_version=old\nanchors_schema=2\n%s  docs/memory/RULES.md\n%s  .claude/skills/tdd/SKILL.md\n' "$V1HASH" "$V1HASH" > "$P23/.repo-memory-kit/manifest"
+"$KIT/install.sh" "$P23" >/dev/null
+assert_gone "合法 v1 清单安装后被清理" "$P23/.repo-memory-kit/manifest"
+printf 'kit_version=old\nrandom user line\n' > "$P23/.repo-memory-kit/manifest"
+"$KIT/install.sh" "$P23" >/dev/null
+assert_exists "伪造 v1 清单不被清理" "$P23/.repo-memory-kit/manifest"
 
 
 echo

@@ -1,0 +1,364 @@
+{
+  "kit_versions": {
+    "00dcaf4": {
+      "memory-rules": "canonical_sha256:f6b1a3c67b5b37f4e31bb84dd7e6f0e76c711463d6e5a27f9accf31964822900",
+      "skill-agents-memory-capture": "canonical_sha256:fc25d33e6128676a4756ea960b353299f01d3c429d15f70839b7f24eefbdcbdb",
+      "skill-claude-memory-capture": "canonical_sha256:fc25d33e6128676a4756ea960b353299f01d3c429d15f70839b7f24eefbdcbdb"
+    },
+    "08253c9": {
+      "agents-md-block": "canonical_sha256:be0f7a3f15bce7b358c8b3363e23e5d625faa87b5dd497a725c177cab0085585",
+      "claude-md-block": "canonical_sha256:bca8a2e36ed4f4dd4ac5ad01d9fbbe64fd4c655e6e8d75eda0b0caf305cdddc2"
+    },
+    "08253c9:legacy-section": {
+      "agents-md-block": "canonical_sha256:a1f7cdc58a2849780283a3dc40cabf15c0c8f720b00b43f8b6bbdcd3bad48b0c",
+      "claude-md-block": "canonical_sha256:93430c52dd543e5579fb2f0f05398b5c6dc2f6f678a0747c07897e878811beba"
+    },
+    "08399ea": {
+      "skill-agents-delivery-gate": "canonical_sha256:9ede680125536a9ca8e4b3ca3cfd1e26e83fdc7f84531e467d10c0f751804e63",
+      "skill-agents-repo-delivery": "canonical_sha256:0a003d08bd5c001c7a48f603a58c05e4d1706ddec1bc3ebf0a4a6006417fdd6e",
+      "skill-claude-delivery-gate": "canonical_sha256:9ede680125536a9ca8e4b3ca3cfd1e26e83fdc7f84531e467d10c0f751804e63",
+      "skill-claude-repo-delivery": "canonical_sha256:0a003d08bd5c001c7a48f603a58c05e4d1706ddec1bc3ebf0a4a6006417fdd6e"
+    },
+    "093f245": {
+      "skill-agents-repo-delivery": "canonical_sha256:ba6f2d6db8c25e0757e2abaacd7f56e5d1d38e8418096780d103633bde5482c7",
+      "skill-claude-repo-delivery": "canonical_sha256:ba6f2d6db8c25e0757e2abaacd7f56e5d1d38e8418096780d103633bde5482c7"
+    },
+    "0bf015c": {
+      "memory-readme-seed": "canonical_sha256:2015040e59548c061a39d0efd0a0682716947fd30fcff44a3a65fda369a3e542"
+    },
+    "17ed28b": {
+      "bin-domain-check": "canonical_sha256:eba6836a83dc6bff7c13b39d06edefbb3530dc6d97088b9bc5316d6fe2bc90d3",
+      "bin-memory-build": "canonical_sha256:a2d1e5a365a711314698cb0c12bc9f0c4610c56b6ac8a55b403a75dc5e354d9c",
+      "bin-memory-recall": "canonical_sha256:7cef43ddde970af0282d92b53164d4bd841e20b9cdfaa098778fb728ac70ea81",
+      "skill-agents-delivery-gate": "canonical_sha256:65aa417292b9611b87a24ca001bfdc6e2032d2fb453a9abc2c9b340f1c62b771",
+      "skill-agents-repo-delivery": "canonical_sha256:3ec33f6f654eff120072d4e51e3a64dd4d5208570f76c9ff9a91c951f7459861",
+      "skill-claude-delivery-gate": "canonical_sha256:65aa417292b9611b87a24ca001bfdc6e2032d2fb453a9abc2c9b340f1c62b771",
+      "skill-claude-repo-delivery": "canonical_sha256:3ec33f6f654eff120072d4e51e3a64dd4d5208570f76c9ff9a91c951f7459861"
+    },
+    "1a1ee38": {
+      "skill-agents-delivery-gate": "canonical_sha256:6f118c02dd85e8e5872f90e9d366d070d57296f32928343b9c0e52d51bfe1853",
+      "skill-agents-repo-delivery": "canonical_sha256:f9415a2200d19a4bd727d247edc217e91b65869a46b9776b3edfac89df535a65",
+      "skill-claude-delivery-gate": "canonical_sha256:6f118c02dd85e8e5872f90e9d366d070d57296f32928343b9c0e52d51bfe1853",
+      "skill-claude-repo-delivery": "canonical_sha256:f9415a2200d19a4bd727d247edc217e91b65869a46b9776b3edfac89df535a65"
+    },
+    "1ccaa3e": {
+      "bin-memory-recall": "canonical_sha256:fe737988741bd411cfec03da3340ed6d8f502de767dded1f5151b2e57643d912"
+    },
+    "217487b": {
+      "bin-spec-migrate": "canonical_sha256:1435fe5abf905b4c09141ed3bb9a7826df3d3b92c9c2adea7ff4422c86da7250",
+      "skill-agents-spec-migrate": "canonical_sha256:0d96a0a25560db1604860c5785369965a771d0e5cc79858246519a9e47a6425c",
+      "skill-claude-spec-migrate": "canonical_sha256:0d96a0a25560db1604860c5785369965a771d0e5cc79858246519a9e47a6425c"
+    },
+    "2aed8f5": {
+      "bin-memory-recall": "canonical_sha256:de230eed86996644e383641a604cef45e933e15f9ee79804ebb5888ab84dfe19",
+      "memory-rules": "canonical_sha256:28ff976ed5580175965ae59cbfcaf174e42e55fccf18ef0b0c4b0e311861fd03",
+      "skill-agents-memory-capture": "canonical_sha256:d0961f537682d68c60ce6e04d0bab01a496befc27cf44bea17992f4ea125ca16",
+      "skill-claude-memory-capture": "canonical_sha256:d0961f537682d68c60ce6e04d0bab01a496befc27cf44bea17992f4ea125ca16"
+    },
+    "2f9ac23": {
+      "memory-readme-seed": "canonical_sha256:970f02b225576fc182cac35f3682c527888e6c2e93f045b53868cb7a8a5fdab5"
+    },
+    "34dc7d8": {
+      "bin-memory-recall": "canonical_sha256:568444a51e2d096884c48bd57a3e47c47b877444ccdc7893f809e3c0490caa7b"
+    },
+    "3605f3a": {
+      "bin-memory-build": "canonical_sha256:7292ee1620af80a8302821d795fb8ff11224f2fcd4c26ebab977aafe0abebab4",
+      "memory-rules": "canonical_sha256:df8a5e1fc2d5c3e821f84a961befd0dd59c1751bba92dff299c61a2c5fc6c930",
+      "profile-template": "canonical_sha256:f2b44f25208065708661b0a3d3f18b692f85ee887fbba6c10415cfc88b41b034",
+      "skill-agents-memory-capture": "canonical_sha256:93e2459b22e9ecf87c5f5afdb1380a55e1b34a2bcc0ca77c5387d36775136c0e",
+      "skill-claude-memory-capture": "canonical_sha256:93e2459b22e9ecf87c5f5afdb1380a55e1b34a2bcc0ca77c5387d36775136c0e"
+    },
+    "37b2ef7": {
+      "memory-readme-seed": "canonical_sha256:0546f02205a5942c6ee374080ed05b3b3b567e8d486806988983aaf2b1f69be2"
+    },
+    "433646f": {
+      "agents-md-block": "canonical_sha256:efb5e39a7c414fde77968db859ca4b065aaca0a0a6b1b548333144f69c1ef6da",
+      "claude-md-block": "canonical_sha256:eefb5eafb795ef3b173d8b0b815970f32275577df3cb061c065df613a583b721",
+      "skill-agents-codebase-memory": "canonical_sha256:355e80f736d8c8b7e6c9d21ad90c8eeaacf135b92b3b4221d7748edc41f27440",
+      "skill-agents-repo-delivery": "canonical_sha256:5398da9dac4e94b3412ccc8e0827c323123aeac0f8e67574a9e0c956bfd6e702",
+      "skill-agents-systematic-debugging": "canonical_sha256:c9040eb8646d1e215f36ff2be9fdf6ba78ac12e911f60b3c65ac529c0d1d9150",
+      "skill-agents-tdd": "canonical_sha256:e5b12e05c087f5b38d7ae9eda3b5a1f859bd40da0a5bd9bb9bebe49fef4af52a",
+      "skill-claude-codebase-memory": "canonical_sha256:355e80f736d8c8b7e6c9d21ad90c8eeaacf135b92b3b4221d7748edc41f27440",
+      "skill-claude-repo-delivery": "canonical_sha256:5398da9dac4e94b3412ccc8e0827c323123aeac0f8e67574a9e0c956bfd6e702",
+      "skill-claude-systematic-debugging": "canonical_sha256:c9040eb8646d1e215f36ff2be9fdf6ba78ac12e911f60b3c65ac529c0d1d9150",
+      "skill-claude-tdd": "canonical_sha256:e5b12e05c087f5b38d7ae9eda3b5a1f859bd40da0a5bd9bb9bebe49fef4af52a"
+    },
+    "433646f:legacy-section": {
+      "agents-md-block": "canonical_sha256:ec2621d22639ab7d73d9644f70b27f210d206a45751dc7bac25dfdd3b0092fa7",
+      "claude-md-block": "canonical_sha256:c9201d8202cecc5b9bc1742d506bd52868159589ca18bf48f913d5c930bd6274"
+    },
+    "44bb722": {
+      "memory-readme-seed": "canonical_sha256:f4b8c12e3d9ef0c37a0a4e0cd0b160ded4b10a911c899d960a790c9c4247ccc8",
+      "profile-template": "canonical_sha256:3cd28d4a6fba97dfad14278eec7e5cf2f18f8d0e98560c15e1211d7de1e40149"
+    },
+    "458dba5": {
+      "bin-memory-build": "canonical_sha256:d2e2466f3722e6b62bc54b37e6e50b5f05553dbfafefcb90aec4372841c61b40",
+      "memory-rules": "canonical_sha256:960d18f85e65a40c6c270819b971fb0a3c327d59fdc3e6634ddfc7f75bf0960d",
+      "skill-agents-memory-check": "canonical_sha256:4de780b25c82f8737de593eab4201d95bac71f72067862e104e1a31c161f080b",
+      "skill-claude-memory-check": "canonical_sha256:4de780b25c82f8737de593eab4201d95bac71f72067862e104e1a31c161f080b"
+    },
+    "4bd24ce": {
+      "bin-memory-recall": "canonical_sha256:089af22f7cdcf689f7103daa5a9a7ec98fa56d7b0a9fcbecce87f20f4b30ef41",
+      "skill-agents-spec-migrate": "canonical_sha256:558a502518bedd77cd332858f2bebefa4801360adb1ad9616156cd499fcf94b2",
+      "skill-claude-spec-migrate": "canonical_sha256:558a502518bedd77cd332858f2bebefa4801360adb1ad9616156cd499fcf94b2"
+    },
+    "53f8527": {
+      "skill-agents-delivery-gate": "canonical_sha256:bd69bfb4e60f48d11f1bd369bbab333edb3a6903ce98199d5fe1e6bb13769103",
+      "skill-agents-repo-delivery": "canonical_sha256:e98ec4a37789d054f890cb9874688b15ce309c0d7d67296d9905b644c6d8b4d1",
+      "skill-claude-delivery-gate": "canonical_sha256:bd69bfb4e60f48d11f1bd369bbab333edb3a6903ce98199d5fe1e6bb13769103",
+      "skill-claude-repo-delivery": "canonical_sha256:e98ec4a37789d054f890cb9874688b15ce309c0d7d67296d9905b644c6d8b4d1"
+    },
+    "55039c1": {
+      "bin-agent-engineering-mcp": "canonical_sha256:859a14ad195d639fcda777f052f898ea53ddade5548430f6d9c0aae1e31c3708"
+    },
+    "5a2ee49": {
+      "bin-memory-build": "canonical_sha256:9dc92bce57b2ba8c3bc2ee7b2ba82e3cb52dd60453f7de69f900422b28edc30c"
+    },
+    "5f618a1": {
+      "bin-agent-engineering-mcp": "canonical_sha256:212f04f82de47d0d421de274061dff215ed9cd793ad3463a002c41aad65ee358"
+    },
+    "6160336": {
+      "bin-domain-check": "canonical_sha256:7e408337612299b05f95c006520171243c08c4e6e28748e176922771433364f5",
+      "bin-memory-build": "canonical_sha256:74f078b7ea6f472114d45c0aa564d86fdc12b9dc65fc1597ae365b85ab6fd4db",
+      "memory-rules": "canonical_sha256:a81930807dc9bb6370de445fa083c9a52c49b04fe82b41d1b2fd00ac09d4df59",
+      "skill-agents-memory-capture": "canonical_sha256:40115a637a8e86ff8c7434d30dc66983a4bc0b5175bc206ff0f046f2a5bf1ce9",
+      "skill-agents-repo-delivery": "canonical_sha256:40c7d62f9c6ccfdfc8d92564065f3f9465d6691906a2474dfab85e32aec354da",
+      "skill-claude-memory-capture": "canonical_sha256:40115a637a8e86ff8c7434d30dc66983a4bc0b5175bc206ff0f046f2a5bf1ce9",
+      "skill-claude-repo-delivery": "canonical_sha256:40c7d62f9c6ccfdfc8d92564065f3f9465d6691906a2474dfab85e32aec354da"
+    },
+    "64e6247": {
+      "bin-memory-build": "canonical_sha256:afd8927adce5127f4dba23e92b0111f2b1b8d4b0c51abc2e843e5df34d0ee772",
+      "bin-validate-memory.sh": "canonical_sha256:b816beff2bba50605a52c9c270ff55a0d4029374350c681c90bee693494c99d0",
+      "decision-template": "canonical_sha256:b84b4dc0ce44b437e4326ae44a87f60c28593749c5217317580299af12547c47",
+      "memory-readme-seed": "canonical_sha256:f93fc97b5fa82a833335a2b7a2451fedbddc0a320d283648552a94a74281b050",
+      "memory-rules": "canonical_sha256:239322dfd6058bbbff24554b5fd923c3336b7d786e370a45ba3bed8a5ff6689a",
+      "pitfall-template": "canonical_sha256:0be57ed08e2ae2e7725ed2f446e308675c9918904baa9426af3d809c90d0ac51",
+      "playbook-template": "canonical_sha256:6656fab46003750fcd02072288b44445205744a9a34385714e8b94eea8cfe75e",
+      "skill-agents-memory-capture": "canonical_sha256:cff924b316681e6de7669c63aedc20363b1a83210415778071a7ab87356935c5",
+      "skill-agents-memory-check": "canonical_sha256:143f5fe5f13245ace3ed72e346452b70fb9884e436cff18527b504a8d6f60da2",
+      "skill-claude-memory-capture": "canonical_sha256:cff924b316681e6de7669c63aedc20363b1a83210415778071a7ab87356935c5",
+      "skill-claude-memory-check": "canonical_sha256:143f5fe5f13245ace3ed72e346452b70fb9884e436cff18527b504a8d6f60da2"
+    },
+    "6f06774": {
+      "memory-readme-seed": "canonical_sha256:58c3584e656d6ab306c6aed05b705be8f0e181d05cfa80d7a059ab8119ab7bca"
+    },
+    "716c1f3": {
+      "bin-validate-memory.sh": "canonical_sha256:1f349a1df49315144f1ccf13a9a0e40e8e30b91b1009fae4cbf6a423fd86251c",
+      "memory-rules": "canonical_sha256:a79eb4f7f42e66a7aced3202a714736c5ce2dcf2d3e4435971fd4f395cb28d94"
+    },
+    "7253d18": {
+      "bin-agent-engineering-mcp": "canonical_sha256:439a8d282de1718fcd26117a1b7369b03c3031890660af331659f81f1fadf826",
+      "bin-memory-recall": "canonical_sha256:94cb298e9fa5e8baf01971fcd011eb877260622c876c41426664fa9665d8bb01",
+      "skill-agents-delivery-gate": "canonical_sha256:1f1c4b65bf7519c51f64d39d24ab7190b038476a68f065040f354aaf14ef5a82",
+      "skill-agents-repo-delivery": "canonical_sha256:c1b79bf9c9034e2b306420ad02844f944efa2782c38d0c7f8195fa48c784e56b",
+      "skill-claude-delivery-gate": "canonical_sha256:1f1c4b65bf7519c51f64d39d24ab7190b038476a68f065040f354aaf14ef5a82",
+      "skill-claude-repo-delivery": "canonical_sha256:c1b79bf9c9034e2b306420ad02844f944efa2782c38d0c7f8195fa48c784e56b"
+    },
+    "75f1eac": {
+      "skill-agents-delivery-gate": "canonical_sha256:d808ce701237a31e9320f8776792aa2febfe6258bc7ec681eac03b7ec7464b66",
+      "skill-agents-repo-delivery": "canonical_sha256:a3c8462fc16ad546cfe4ca86bb58f87a58fbcb223e79851f4eae119dc1afeaed",
+      "skill-claude-delivery-gate": "canonical_sha256:d808ce701237a31e9320f8776792aa2febfe6258bc7ec681eac03b7ec7464b66",
+      "skill-claude-repo-delivery": "canonical_sha256:a3c8462fc16ad546cfe4ca86bb58f87a58fbcb223e79851f4eae119dc1afeaed"
+    },
+    "79b8a5d": {
+      "bin-validate-memory.sh": "canonical_sha256:b425c91b7396942de832ad90ee4bb5a010952a6272dade9bcd098c98cf281e9e"
+    },
+    "79c3348": {
+      "bin-domain-check": "canonical_sha256:aef3751beba4015518881b17970bfd507939ee735e3a7074d322aefbeed2048c",
+      "bin-spec-migrate": "canonical_sha256:859858439104aeeb4d7b766f757bce54eaaa41d688ab43b712bec02891a0ac93"
+    },
+    "8098348": {
+      "agents-md-block": "canonical_sha256:86d6011d1dcc911586f23e2ab3784dd6e5d4ea922c397835751e5acbbaed8ffb",
+      "claude-md-block": "canonical_sha256:1780eae3187f48793bec86f58af7689fd403fe39d1d6240d1c20a1dc6172bee7",
+      "memory-readme-seed": "canonical_sha256:bdb5e070175e127fac3cbccdcb953dd1aaf9c0c6548a9d33814c97d1812d91cf",
+      "pitfall-template": "canonical_sha256:d4f3523206a5b70fbc54bd77037ff9cfa44f8bd2d46e397eaafc0080aa2295a0"
+    },
+    "8098348:legacy-section": {
+      "agents-md-block": "canonical_sha256:0fe97d342bda702302d88b6aecb88712ebfa8d48beda579f331d7339c6640098",
+      "claude-md-block": "canonical_sha256:b13f6a84af0611142395397f8d9bcf0325090caa28441e3cdedcacfd223f9102"
+    },
+    "87b8ee0": {
+      "bin-spec-migrate": "canonical_sha256:81852f5f12ca15dc066b25285f1de9f2ff902cd4039aaadf6a0607e487ac5823",
+      "skill-agents-spec-migrate": "canonical_sha256:496dd7a761c9cc8f865b82fe0839510206139e6cdb24ded4411aa6f17cc67cb0",
+      "skill-claude-spec-migrate": "canonical_sha256:496dd7a761c9cc8f865b82fe0839510206139e6cdb24ded4411aa6f17cc67cb0"
+    },
+    "89a1a33": {
+      "bin-spec-migrate": "canonical_sha256:ede710435cc1a1ef63e0d022c3889cfa6850cb38c57298cc34b30cde6e5c4cca",
+      "skill-agents-spec-migrate": "canonical_sha256:fa4a69771d83a07d6ec3dbee9879d28a62305bbc43e0736fae3510bb9d4bf73a",
+      "skill-claude-spec-migrate": "canonical_sha256:fa4a69771d83a07d6ec3dbee9879d28a62305bbc43e0736fae3510bb9d4bf73a"
+    },
+    "8fea21a": {
+      "bin-spec-migrate": "canonical_sha256:08f643835ce1db38b9ce35a42f5a3544ca99745a40c88ab8654b67d51ebd8e4b",
+      "skill-agents-spec-migrate": "canonical_sha256:7054817f26639afabd5ee588389cb842a5241a07d9868386a61f40c6e93f88c2",
+      "skill-claude-spec-migrate": "canonical_sha256:7054817f26639afabd5ee588389cb842a5241a07d9868386a61f40c6e93f88c2"
+    },
+    "91427d5": {
+      "skill-agents-repo-delivery": "canonical_sha256:cffd851a038a73a34194c75f16b8a5bd0309ba85bfb30a8a9ad776fe60704568",
+      "skill-claude-repo-delivery": "canonical_sha256:cffd851a038a73a34194c75f16b8a5bd0309ba85bfb30a8a9ad776fe60704568"
+    },
+    "91c81b4": {
+      "agents-md-block": "canonical_sha256:f3bef7d443d94d55b60541fe0fdb05f24e5d02fe39c6db1e515a5c9507466e02",
+      "bin-session-reminder": "canonical_sha256:3ae8dd25955199673886b6ac7db9ece8cdb9d09ce28b53f34164e59d1331e495",
+      "claude-md-block": "canonical_sha256:af5063aa512e163d4a29a73cdfc4db8c250b69e68f76b9e0df9f84bd5138c24e"
+    },
+    "91c81b4:legacy-section": {
+      "agents-md-block": "canonical_sha256:dc74014adfeedcd0eea873cc595413f5001700f20d1e71835a647c5685ee7f26",
+      "claude-md-block": "canonical_sha256:0e66f19dbea2243e1f336af1fcdfb2c0118b40b293b999b5566954d6e33a88c4"
+    },
+    "a643ae3": {
+      "bin-memory-build": "canonical_sha256:64b174ed117d9ac021d60eee2252a400e117f4e2f233ce83a6a00266aef11573",
+      "bin-spec-migrate": "canonical_sha256:2ef3c777ff81d8c28117fee1f538dfb6eeaae5bca9374d3118c970271a1e732e",
+      "skill-agents-spec-migrate": "canonical_sha256:c604fb2d90b5c54bd2266399da0d70e75a4b2421f8bde9ecc1fbfaf79e43f37b",
+      "skill-claude-spec-migrate": "canonical_sha256:c604fb2d90b5c54bd2266399da0d70e75a4b2421f8bde9ecc1fbfaf79e43f37b"
+    },
+    "aa7a498": {
+      "bin-memory-build": "canonical_sha256:39939a5ed2589c35dc3dd95fc0a29200f21cda3b8d2f871537f85da2cd4de799",
+      "memory-readme-seed": "canonical_sha256:2c728780b4fffe2c8f04adbaee90bed86c1776c9e2b788c1d575788a95fc7846",
+      "memory-rules": "canonical_sha256:d99d45480d0f063f6511318889370e91ae523569fa19850d410394dfc7aba97d"
+    },
+    "b11a8b3": {
+      "skill-agents-delivery-gate": "canonical_sha256:3911837c3c133f007e4b9ec93c86b54f9d822191b6dce3a12682547ae12b39ad",
+      "skill-agents-repo-delivery": "canonical_sha256:963e9a237b32ed7a32357afda09282d4d651eebcfc100c1d7f7a39182d20a644",
+      "skill-claude-delivery-gate": "canonical_sha256:3911837c3c133f007e4b9ec93c86b54f9d822191b6dce3a12682547ae12b39ad",
+      "skill-claude-repo-delivery": "canonical_sha256:963e9a237b32ed7a32357afda09282d4d651eebcfc100c1d7f7a39182d20a644"
+    },
+    "b664ee2": {
+      "bin-memory-build": "canonical_sha256:b09a0cadaf3c1cb137ef07e1d3ed98701cd2a5d03f96a06b02ebf7d5dbfe2e69"
+    },
+    "be47b3c": {
+      "skill-agents-security-review": "canonical_sha256:41faef5a501d9c4cc62bbe668dd7480dbd981fe55934245fef5afd22228411ef",
+      "skill-claude-security-review": "canonical_sha256:41faef5a501d9c4cc62bbe668dd7480dbd981fe55934245fef5afd22228411ef"
+    },
+    "c07b1ab": {
+      "memory-rules": "canonical_sha256:8b787f916a4f49a9032bd814ea99f1daae92961c8008e800a774b78eec6c1b8a",
+      "skill-agents-memory-capture": "canonical_sha256:c4bfbe38eefe5619a74c2b99f6721d7caf11ecaee80ef9958991753e3e7fa684",
+      "skill-claude-memory-capture": "canonical_sha256:c4bfbe38eefe5619a74c2b99f6721d7caf11ecaee80ef9958991753e3e7fa684"
+    },
+    "da82b87": {
+      "bin-memory-build": "canonical_sha256:e3d0f8eb906900a798d62ed7adc56f886c2cda83f165cc2fc0f59d6472d04e4f",
+      "bin-memory-recall": "canonical_sha256:91434db07165f9f1a2d6597d07f41ec7d203b3bb400787d17d448918c956949e",
+      "bin-session-reminder": "canonical_sha256:32cb178205b7373af0225edc2d8637ccb4b12b23582b54bd13f44437918832c1",
+      "bin-spec-migrate": "canonical_sha256:7c0b0f2d589e4ff934e16fc3271e517b5fd380f3239ff0c73242d2ddf2c85833",
+      "playbook-template": "canonical_sha256:4a4eaae935dc97aca8b73e04f87752fdf12dd9e57dee16e87e04f8675226969f",
+      "skill-agents-delivery-gate": "canonical_sha256:1dcb2ede098a47666cd15877f687e8cd8a8c2ff5e2b9ba0558c279b32262ad82",
+      "skill-agents-repo-delivery": "canonical_sha256:f0f5371bf81a2c4ca7d06449dac3557220f8f820a73cfbe1985d54d0ca57bfd3",
+      "skill-claude-delivery-gate": "canonical_sha256:1dcb2ede098a47666cd15877f687e8cd8a8c2ff5e2b9ba0558c279b32262ad82",
+      "skill-claude-repo-delivery": "canonical_sha256:f0f5371bf81a2c4ca7d06449dac3557220f8f820a73cfbe1985d54d0ca57bfd3"
+    },
+    "dac457d": {
+      "agents-md-block": "canonical_sha256:6890ca29ab76aee184189a5197dde68abc0bd54d7e288c7e534b518cea478d33",
+      "claude-md-block": "canonical_sha256:1672626406e39aef40b5c8536c729de648d198e46880c7118337d133cec34939",
+      "skill-agents-delivery-gate": "canonical_sha256:be2c30646bfbd35dcfe3357e84c9e177097abcc65c19195efac780449a514362",
+      "skill-agents-repo-delivery": "canonical_sha256:332bb498df4d1a2ae629129d907aa629179664fdafeed80942c08c04646e0d32",
+      "skill-claude-delivery-gate": "canonical_sha256:be2c30646bfbd35dcfe3357e84c9e177097abcc65c19195efac780449a514362",
+      "skill-claude-repo-delivery": "canonical_sha256:332bb498df4d1a2ae629129d907aa629179664fdafeed80942c08c04646e0d32"
+    },
+    "dac457d:legacy-section": {
+      "agents-md-block": "canonical_sha256:ea73e6045b796312c0c8758051f906a412a9a05b4ff1dbc9ae7402ef60328f65",
+      "claude-md-block": "canonical_sha256:002c3ce5900872ccd594fc96f215d01142ad475bb3264816b342324f033284c7"
+    },
+    "e874e7b": {
+      "agents-md-block": "canonical_sha256:a51705c468e69d3f6804c6951ac49dbc36f9f9f14128042f6ae0bad0a84fb0f4",
+      "bin-domain-check": "canonical_sha256:e084d5f83d97da73feae495bbd011d3a4f6116069a300b034df39c3d78b7b8ba",
+      "bin-memory-build": "canonical_sha256:46e889718b9f58d2d3fa10824a0e7de89c17385d2e42c9b8129c9ad1c0bd927a",
+      "bin-memory-recall": "canonical_sha256:9766a25473140d0e7385fd01ddc1bd7cccc5b8780210b8153010401685b052a8",
+      "bin-session-reminder": "canonical_sha256:3e17e70874a07098d0fad92b67afb063dabf1896e250ab8fbee7cd85f746570f",
+      "bin-spec-migrate": "canonical_sha256:c9508fec75ce0b0896a3b1f48818fc4498c9de6a8aff16a7964755ff7297df75",
+      "skill-agents-delivery-gate": "canonical_sha256:18851e529058c0a4192962b5f24a87a2f83ad559e83cd5c0c151f01e98dd48fe",
+      "skill-agents-repo-delivery": "canonical_sha256:d4aad72c6c9d3dbb366ed78067297940d57d4bfca9936da3c6907a437a2e4789",
+      "skill-claude-delivery-gate": "canonical_sha256:18851e529058c0a4192962b5f24a87a2f83ad559e83cd5c0c151f01e98dd48fe",
+      "skill-claude-repo-delivery": "canonical_sha256:d4aad72c6c9d3dbb366ed78067297940d57d4bfca9936da3c6907a437a2e4789"
+    },
+    "e874e7b:legacy-section": {
+      "agents-md-block": "canonical_sha256:8b4f792bd353c1bde4a68254ddb76e7351f08213b69bdc30c8f921b695fec6c3"
+    },
+    "ebc491d": {
+      "bin-memory-build": "canonical_sha256:64007544f7948949ff4221db7251b613b7f7554960a85923ddc4d7610bb11893",
+      "memory-rules": "canonical_sha256:43ada7769ae3742a1b95792184624050032c275d5d7776a19c365233cc77b9a6",
+      "skill-agents-memory-capture": "canonical_sha256:550e7cb7c440fcd23b669a16d2a703951dd27edf8ac7d7693d25464099749471",
+      "skill-claude-memory-capture": "canonical_sha256:550e7cb7c440fcd23b669a16d2a703951dd27edf8ac7d7693d25464099749471"
+    },
+    "eeb69db": {
+      "agents-md-block": "canonical_sha256:88efe1b9184163242331ecc57f78a0cff8f3225d5895dc0d7e94e2e4e7b687c4",
+      "claude-md-block": "canonical_sha256:3b32d67f70c769c8d566c198e37e1c968f86d129071cf2725ffde6e3032ca47f",
+      "skill-agents-delivery-gate": "canonical_sha256:f623167894adbae29718e19f945efe1499162c66840da8ae8b3e0c822fe60721",
+      "skill-agents-repo-delivery": "canonical_sha256:1600dcf8092fab4eae82e436907669ee097f9b243e165e1357fc88ec234e02b5",
+      "skill-agents-spec-migrate": "canonical_sha256:5a46104c021a686873aa9d5ec93fc5a5e050ca9aeb39a18077d4e1067e2c9376",
+      "skill-claude-delivery-gate": "canonical_sha256:f623167894adbae29718e19f945efe1499162c66840da8ae8b3e0c822fe60721",
+      "skill-claude-repo-delivery": "canonical_sha256:1600dcf8092fab4eae82e436907669ee097f9b243e165e1357fc88ec234e02b5",
+      "skill-claude-spec-migrate": "canonical_sha256:5a46104c021a686873aa9d5ec93fc5a5e050ca9aeb39a18077d4e1067e2c9376"
+    },
+    "eeb69db:legacy-section": {
+      "agents-md-block": "canonical_sha256:303d6730c7b3913a90b8ea760622fab110dfb96215e6edbfe484370c926f59b2",
+      "claude-md-block": "canonical_sha256:25f65b73963495b08d5098f983e87657733920e081bb8f1b1f80dfb34489aa4e"
+    },
+    "ef28dc9": {
+      "agents-md-block": "canonical_sha256:85b027bae0bdc513a20cdaec4cff6f130cb68af7819730f4e6125813e712e821",
+      "bin-validate-memory.sh": "canonical_sha256:da840a3486f45b6310a55b4eee864772b6aa9abc739fc91e8ed301913503dfa7",
+      "claude-md-block": "canonical_sha256:93e5b965db225ed152c8652950b03e0c201a184fcca240f3741a47c62324634d",
+      "memory-readme-seed": "canonical_sha256:5a4e9d802dc23e600faec199e56d67a07a54e2b9fe8004f5944bc21e88a9368a",
+      "memory-rules": "canonical_sha256:936f96159fce52f1c637df731d57b77d627d1bf5ca1c572de3d28c5599770e65",
+      "skill-agents-memory-capture": "canonical_sha256:8f33cc135eb9392338b38b645f6784722e0308d7d180347197909790603a414a",
+      "skill-agents-memory-check": "canonical_sha256:7b25fdb656f1993ac82ff6fba1c5816061f23f4331b950e0febd0bd11fc0f0d1",
+      "skill-claude-memory-capture": "canonical_sha256:8f33cc135eb9392338b38b645f6784722e0308d7d180347197909790603a414a",
+      "skill-claude-memory-check": "canonical_sha256:7b25fdb656f1993ac82ff6fba1c5816061f23f4331b950e0febd0bd11fc0f0d1"
+    },
+    "ef28dc9:legacy-section": {
+      "agents-md-block": "canonical_sha256:938091279d8bd24489f3a8f0b28ebd69ddc44dd483e5d4dd21bcaa3446f1d077",
+      "claude-md-block": "canonical_sha256:c5fb4e0e56632da85c0fb907309bf64ba699b17a526c879c29c5b91e400ae144"
+    },
+    "f0678b2": {
+      "agents-md-block": "canonical_sha256:16b05e1c7bcf0c37a5fb8d92e09497af76d5d1a9df8536d7752db2e4f6e2f39d",
+      "claude-md-block": "canonical_sha256:5d4b4d33529aa9eca6b16efa79a697874430da78403818d40362d50aa0facd46",
+      "memory-readme-seed": "canonical_sha256:23d85577ef01ab76e1c91e4729ec552909c0bee6503418838a92a14b4d68a0d8"
+    },
+    "f0678b2:legacy-section": {
+      "agents-md-block": "canonical_sha256:4d8aa3f2e2880160071455299a3e31d94e6c258a17aef89f69e5088114825c5d",
+      "claude-md-block": "canonical_sha256:a516c5ace9a9c1ec225ba673702b3fdfa0758331928507a78d55c85ca2907a28"
+    },
+    "f10a7b3": {
+      "agents-md-block": "canonical_sha256:c570ed8f20ebf7f85758090356eae7c8366af3c00f49445f40775707a4269997",
+      "bin-validate-memory.sh": "canonical_sha256:5f31508238f4fe19ab7448018249018f64cb7e4dbb9d418a0d870e6134b3ab38",
+      "claude-md-block": "canonical_sha256:85824816014a17e63e4de5a5f3ae38cb6d549ff59755a7e5bc0b7e881091a0cc",
+      "decision-template": "canonical_sha256:1bd331268938566b5ae0c9a77e5676a0bd08463e13e86277d2a422b4de0b384c",
+      "memory-readme-seed": "canonical_sha256:5ba57855ea77d92793b0b00e471d7e2b73a7b40910fdbda735b99610f4d40794",
+      "memory-rules": "canonical_sha256:892f0e041308cafbb5598474a33e5095486b42d00cdc2a82cc645c3d179c2494",
+      "playbook-template": "canonical_sha256:a4db3cef3e315235d164c063ab0673a45c7dd2da60020f32507c07951dc45522"
+    },
+    "f10a7b3:legacy-section": {
+      "agents-md-block": "canonical_sha256:df149d69db7de7a1f51dcb50465dc323ecfa38ae4249e55f95883eba1a2f153d",
+      "claude-md-block": "canonical_sha256:2105a526a3607fa1a414206722fc39eadebf51c78b42a2d13ed298ae99521ce1"
+    },
+    "f715f9d": {
+      "skill-agents-memory-capture": "canonical_sha256:327761571b1db4249bae858ac5640fc654151394798e30e8704d36e9b5df7739",
+      "skill-agents-memory-check": "canonical_sha256:aefc7b4ea607c852233da30341f21689b52663113066545c44d2d36f7d2c0b19",
+      "skill-claude-memory-capture": "canonical_sha256:327761571b1db4249bae858ac5640fc654151394798e30e8704d36e9b5df7739",
+      "skill-claude-memory-check": "canonical_sha256:aefc7b4ea607c852233da30341f21689b52663113066545c44d2d36f7d2c0b19"
+    },
+    "ff16913": {
+      "agents-md-block": "canonical_sha256:576c2ecbb209194228b400d20860f8ea2368baf89294648e5c851b7ebdf83a76",
+      "bin-spec-migrate": "canonical_sha256:2f089b1c8720543c6150e43df0a3dceb19b146d8a27a7418c7e229effd90040c",
+      "claude-md-block": "canonical_sha256:5a6f6d419dd0d85536eff394b3fe4079ee081eaa360acdc87b996853ab3f5d76",
+      "skill-agents-repo-delivery": "canonical_sha256:4dbdbe5639ee3dcfcc470108cb43704f08aee3a39fb6b2e9e1515bc4fec97a6f",
+      "skill-agents-reuse-research": "canonical_sha256:ad56dd46f7c40f4c86b3bbedfe825777850e2d16ef325c46131bbc1a05489690",
+      "skill-agents-security-review": "canonical_sha256:4c386e6c1d9e0bac2b0e3304b6a24232c4ee99fda04202e722f83e32c2810078",
+      "skill-agents-spec-migrate": "canonical_sha256:93cce9a6ff2ef824ccd4c11dbcc3e89b889d154da3da8b8c6921d12e6ccbc301",
+      "skill-agents-task-handoff": "canonical_sha256:58278059c748600fae7cb46ac9d67e2ff345982d0e00caa96cfcf1b783ce0037",
+      "skill-claude-repo-delivery": "canonical_sha256:4dbdbe5639ee3dcfcc470108cb43704f08aee3a39fb6b2e9e1515bc4fec97a6f",
+      "skill-claude-reuse-research": "canonical_sha256:ad56dd46f7c40f4c86b3bbedfe825777850e2d16ef325c46131bbc1a05489690",
+      "skill-claude-security-review": "canonical_sha256:4c386e6c1d9e0bac2b0e3304b6a24232c4ee99fda04202e722f83e32c2810078",
+      "skill-claude-spec-migrate": "canonical_sha256:93cce9a6ff2ef824ccd4c11dbcc3e89b889d154da3da8b8c6921d12e6ccbc301",
+      "skill-claude-task-handoff": "canonical_sha256:58278059c748600fae7cb46ac9d67e2ff345982d0e00caa96cfcf1b783ce0037"
+    },
+    "ff16913:legacy-section": {
+      "agents-md-block": "canonical_sha256:1e06f5efa798277a70b4ff09859539d99aa7f4711839d79e1e1124f626164d03",
+      "claude-md-block": "canonical_sha256:1ea2e23fa452e41bd5ebb3957cf6e2cc59ead479b9a97a63bbd968351180717a"
+    },
+    "legacy-codex-toml-v1": {
+      "mcp-codex": "canonical_sha256:473a52dd5cc26c902138036fc56c945250ea31d45ba69135deeeebb6bdba2d64"
+    },
+    "legacy-gitignore-v1": {
+      "gitignore-block": "canonical_sha256:179dddd7835040d2118fd64867f1ff953ba1f6d5de176df5e0078c8641dbb182"
+    }
+  }
+}
