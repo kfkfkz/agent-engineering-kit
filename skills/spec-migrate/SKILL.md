@@ -24,7 +24,7 @@ description: "检查并迁移已有 Spec Kit 文档到统一交付字段，保�
 - `--dry-run`：展示会修改哪些 feature 与模板，不写文件；
 - `--apply`：只有用户明确要求迁移时使用。它先全局预检，任一 feature 缺 `spec.md`、`plan.md` 或 `tasks.md` 都阻断，避免半迁移；
 - `--feature <目录名>`：只处理指定 feature（可重复传入）；`install.sh --migrate-specify=名字1,名字2` 与之等价。用户只要求迁移部分 feature 时必须使用，不要全仓 apply；
-- `--layout sdd --sdd-version <版本目录名>`：迁移为团队 SDD 目录结构（默认根 `docs/03-SDD/`，可用 `--sdd-root` 改）：`spec.md→02-需求/NN-功能名.md`、`plan.md→03-架构设计`、`tasks.md→06-实现计划`、`data-model.md→04-详细设计/N-功能名/03-数据库设计.md`、`quickstart.md→07-验证指南.md`、`contracts/→02-API设计/契约/`、`research/baseline→07-原始需求材料`，图片类文件进 `04-详细设计/N-功能名/images/`，未知辅助文件进详细设计区保留原名。**同一槽位存在多份文档时归入 `NN-槽位/` 子目录并在内部编号**（如 `02-API设计/01-前端对接.md`、`02-API设计/契约/`），不并列多个 `NN-` 前缀的同号文件——语义核验阶段整理自定义文档时遵守此规则。`01-功能设计`/`04-流程设计`/`05-验收标准` 落结构占位，占位提示软引用项目详细设计模板（如项目的详细设计技能/模板），不复制模板正文。**apply 必须带 `--feature`**（防整仓移动），源 feature 目录移动后移除，功能中文名取自 spec.md 一级标题。等价的安装器入口：`install.sh --migrate-specify=001-demo --sdd-layout --sdd-version V1.0 <目标>`。
+- `--layout sdd --sdd-version <版本目录名>`：迁移为团队 SDD 目录结构（默认根 `docs/03-SDD/`，可用 `--sdd-root` 改）：`spec.md→02-需求/NN-功能名.md`、`plan.md→04-详细设计/N-功能名/01-功能设计-技术概要.md`、`tasks.md→06-实现计划`、`data-model.md→04-详细设计/N-功能名/03-数据库设计.md`、`quickstart.md→07-验证指南.md`、`contracts/→02-API设计/契约/`、`research/baseline→07-原始需求材料`，图片类文件进 `04-详细设计/N-功能名/images/`，未知辅助文件进详细设计区保留原名。**同一槽位存在多份文档时归入 `NN-槽位/` 子目录并在内部编号**（如 `02-API设计/01-前端对接.md`、`02-API设计/契约/`），不并列多个 `NN-` 前缀的同号文件——语义核验阶段整理自定义文档时遵守此规则。`01-功能设计`/`04-流程设计`/`05-验收标准` 落结构占位，占位提示软引用项目详细设计模板（如项目的详细设计技能/模板），不复制模板正文。**apply 必须带 `--feature`**（防整仓移动），源 feature 目录移动后移除，功能中文名取自 spec.md 一级标题。等价的安装器入口：`install.sh --migrate-specify=001-demo --sdd-layout --sdd-version V1.0 <目标>`。
 
 执行前查看版本控制状态，保护用户未提交修改。二进制附件、图片、表格、原型和非 Markdown 设计不自动变更，只在报告中列为人工核验范围。
 

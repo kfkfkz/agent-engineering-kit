@@ -90,7 +90,10 @@ def iter_docs(repo):
         fm, body = parse_frontmatter(text)
         m = re.search(r"^# (.+)$", body, re.M)
         title = (m.group(1).strip() if m else p.stem)
-        anchors = " ".join(fm.get("anchors", "").split())
+        _anchors = fm.get("anchors", [])
+        if isinstance(_anchors, str):
+            _anchors = _anchors.split()
+        anchors = " ".join(_anchors)
         meta = " ".join(x for x in (title, str(fm.get("summary") or ""), anchors) if x)
         yield rel, fm, body, title, derive_type(rel), meta
 

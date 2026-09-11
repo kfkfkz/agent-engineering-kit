@@ -264,6 +264,13 @@ preflight_managed_paths() {
     for safe_rel in docs/memory .claude/skills .agents/skills .repo-memory-kit .cbmignore CLAUDE.md AGENTS.md; do
         assert_no_symlink_components "$TARGET" "$safe_rel" || return 1
     done
+    # 文件级检查:manifest/settings.json 本身不能是符号链接(防通过链接写仓库外)
+    for _file in .repo-memory-kit/manifest .claude/settings.json; do
+        if [ -L "$TARGET/$_file" ]; then
+            echo "错误: $TARGET/$_file 是符号链接——拒绝安装(防越界写入)" >&2
+            return 1
+        fi
+    done
     if [ -n "$CODEX_ROOT" ] && [ "$CODEX_ROOT" != "$TARGET" ]; then
         assert_no_symlink_components "$CODEX_ROOT" ".agents/skills" || return 1
     fi
