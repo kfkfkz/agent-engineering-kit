@@ -6,3 +6,7 @@ __pycache__/
 # kit 自身产物(派生数据,不入库)
 .repo-memory-kit/
 .claude/settings.json
+
+# 安装产物由 install.sh 从 skills/ 生成,不跟踪(防三份漂移)
+.claude/skills/
+.agents/skills/

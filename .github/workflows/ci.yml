@@ -24,3 +24,5 @@ jobs:
         run: sh tests/build.test.sh
       - name: Spec Kit 迁移测试
         run: sh tests/spec-migrate.test.sh
+      - name: 技能副本一致性
+        run: sh tests/skill-sync.test.sh
