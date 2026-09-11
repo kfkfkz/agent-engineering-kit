@@ -20,6 +20,9 @@ import subprocess
 import sys
 
 KIT_BIN = os.path.dirname(os.path.abspath(__file__))
+# 绑定目标仓库:MCP 服务器只能操作安装它的仓库,不允许 Agent 传任意路径
+# KIT_BIN 形如 <repo>/.repo-memory-kit/bin,向上三级即仓库根
+_BOUND_REPO = os.path.dirname(os.path.dirname(KIT_BIN))
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "agent-engineering-kit"
@@ -37,8 +40,7 @@ TOOLS = [
                 "type": {"type": "string", "description": "类型过滤(逗号分隔): pitfall,decision,playbook,domain,sdd,receipt"},
                 "status": {"type": "string", "description": "状态过滤: confirmed,unverified"},
                 "top": {"type": "integer", "description": "最大返回数", "default": 8},
-                "target": {"type": "string", "description": "目标仓库路径", "default": "."},
-            },
+                            },
             "required": ["query"],
         },
     },
@@ -46,14 +48,13 @@ TOOLS = [
         "name": "memory_build",
         "description": "重建记忆索引和语义索引（条目变更后调用）。"
                        "mode: build=重建, check=只读校验, changed=变更影响分析。"
-                       "target 不传则用当前工作目录。",
+                       "绑定安装时的仓库。不支持跨仓库操作。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "mode": {"type": "string", "enum": ["build", "check", "changed"],
                          "description": "操作模式", "default": "build"},
-                "target": {"type": "string", "description": "目标仓库路径", "default": "."},
-            },
+                            },
         },
     },
     {
@@ -64,8 +65,7 @@ TOOLS = [
             "type": "object",
             "properties": {
                 "strict": {"type": "boolean", "description": "警告也计为失败", "default": False},
-                "target": {"type": "string", "description": "目标仓库路径", "default": "."},
-            },
+                            },
         },
     },
     {
@@ -76,8 +76,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "target": {"type": "string", "description": "目标仓库路径", "default": "."},
-            },
+                            },
         },
     },
 ]
@@ -100,7 +99,7 @@ def tool_memory_recall(args):
     query = args.get("query", "")
     if not query:
         return {"error": "query is required"}
-    target = args.get("target", ".")
+    target = _BOUND_REPO
     cmd_args = [query, target]
     if args.get("type"):
         cmd_args.extend(["--type", args["type"]])
@@ -113,7 +112,7 @@ def tool_memory_recall(args):
 
 
 def tool_memory_build(args):
-    target = args.get("target", ".")
+    target = _BOUND_REPO
     mode = args.get("mode", "build")
     if mode == "build":
         rc, out, err = run_cli("memory-build", [target], target)
@@ -127,7 +126,7 @@ def tool_memory_build(args):
 
 
 def tool_domain_check(args):
-    target = args.get("target", ".")
+    target = _BOUND_REPO
     cmd_args = [target]
     if args.get("strict"):
         cmd_args.append("--strict")
@@ -136,7 +135,7 @@ def tool_domain_check(args):
 
 
 def tool_kit_status(args):
-    target = os.path.abspath(args.get("target", "."))
+    target = os.path.abspath(_BOUND_REPO)
     status = {"target": target, "kit_version": None, "semantic_index": None, "domain_map": None}
 
     # manifest
@@ -218,11 +217,12 @@ def handle_request(req):
 
         try:
             result = TOOL_HANDLERS[tool_name](arguments)
+            is_error = bool(result.get("error")) or result.get("returncode", 0) != 0
             return {
                 "jsonrpc": "2.0", "id": req_id,
                 "result": {
                     "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
-                    "isError": result.get("returncode", 0) != 0,
+                    "isError": is_error,
                 },
             }
         except Exception as e:

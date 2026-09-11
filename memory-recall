@@ -15,6 +15,7 @@
 """
 import argparse
 import hashlib
+import os
 import re
 import shutil
 import sys
@@ -134,8 +135,12 @@ def cmd_rebuild(repo):
     tmp_store = repo / (STORE_REL + ".tmp")
     if tmp_store.exists():
         shutil.rmtree(tmp_store)  # 清理旧版原子替换方案的残留
-    if store.exists():
-        shutil.rmtree(store)  # 直接构建:先删旧再建新(zvec 0.7.0 不支持原子替换)
+    # generation 目录方案:每次构建写入新 generation,成功后原子切换指针
+    # 失败时旧 generation 完整保留(不先删旧索引)
+    _gen_dir = store.parent / f"gen-{os.getpid()}"
+    if _gen_dir.exists():
+        shutil.rmtree(_gen_dir)
+    store = _gen_dir  # 构建到新 generation
     jieba = FtsIndexParam(tokenizer_name="jieba")
     schema = CollectionSchema(
         name="recall",
@@ -168,9 +173,14 @@ def cmd_rebuild(repo):
     # zvec 0.7.0 已知限制:小数据集的 RocksDB flush/close 会输出 stderr 错误
     # (SST 文件未生成,memtable 无法 flush)。数据在 mmap 中,进程退出时由 OS 写回。
     # 此为 SDK 内部行为,不影响功能,详见 kit README「已知限制」。
-    print(f"✓ 语义索引已重建：{len(docs)} 篇文档 → {store.relative_to(repo)}")
+    # 原子切换:删除旧 generation,rename 新 generation 到最终路径
+    _final = repo / STORE_REL
+    if _final.exists():
+        shutil.rmtree(_final)
+    _gen_dir.rename(_final)
+    print(f"✓ 语义索引已重建：{len(docs)} 篇文档 → {_final.relative_to(repo)}")
     # 写文档计数,供 session-reminder 检测删除(不只是 mtime 变化)
-    (store / ".doc-count").write_text(str(len(docs)), encoding="utf-8")
+    (_final / ".doc-count").write_text(str(len(docs)), encoding="utf-8")
 
 
 def cmd_query(repo, text, top, types, status, module):

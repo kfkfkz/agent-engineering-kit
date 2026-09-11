@@ -264,8 +264,8 @@ preflight_managed_paths() {
     for safe_rel in docs/memory .claude/skills .agents/skills .repo-memory-kit .cbmignore CLAUDE.md AGENTS.md; do
         assert_no_symlink_components "$TARGET" "$safe_rel" || return 1
     done
-    # 文件级检查:manifest/settings.json 本身不能是符号链接(防通过链接写仓库外)
-    for _file in .repo-memory-kit/manifest .claude/settings.json; do
+    # 文件级检查:所有受管文件不能是符号链接(防通过链接写仓库外)
+    for _file in $MANAGED_FILES .claude/settings.json; do
         if [ -L "$TARGET/$_file" ]; then
             echo "错误: $TARGET/$_file 是符号链接——拒绝安装(防越界写入)" >&2
             return 1
@@ -466,22 +466,66 @@ check_block_markers "$TARGET/.cbmignore" "$BLOCK_START" "$BLOCK_END" || exit 1
 # 卸载 ────────────────────────────────────────────────────────────
 mcp_server_uninstall() {
     command -v python3 >/dev/null 2>&1 || return 0
-    [ -f "$TARGET/.claude/settings.json" ] || return 0
-    python3 - "$TARGET" <<'PYUNMCP' || true
+    python3 - "$TARGET" <<'PYUNMCP'
 import json, sys
 from pathlib import Path
-sp = Path(sys.argv[1]) / ".claude" / "settings.json"
-try:
-    data = json.loads(sp.read_text(encoding="utf-8"))
-except Exception:
-    sys.exit(0)
-mcp = data.get("mcpServers", {})
-if "agent-engineering" in mcp:
-    del mcp["agent-engineering"]
-    if not mcp:
-        del data["mcpServers"]
-    sp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print("已移除 MCP 服务器注册（settings.json 其余内容保留）")
+target = Path(sys.argv[1])
+
+# 清理 .mcp.json
+mcp_json = target / ".mcp.json"
+if mcp_json.exists():
+    try:
+        data = json.loads(mcp_json.read_text(encoding="utf-8"))
+        mcp = data.get("mcpServers", {})
+        if "agent-engineering" in mcp:
+            # 只删除我们注册的(检查 command 路径)
+            cmd = mcp["agent-engineering"].get("command", "")
+            if ".repo-memory-kit" in cmd:
+                del mcp["agent-engineering"]
+                if not mcp:
+                    del data["mcpServers"]
+                mcp_json.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                print("已移除 .mcp.json 中的 agent-engineering")
+    except Exception:
+        pass
+
+# 清理 .codex/config.toml
+config_toml = target / ".codex" / "config.toml"
+if config_toml.exists():
+    try:
+        content = config_toml.read_text(encoding="utf-8")
+        if "[mcp_servers.agent-engineering]" in content:
+            # 删除 [mcp_servers.agent-engineering] 段及其 command 行
+            lines = content.splitlines()
+            keep = []
+            in_our_section = False
+            for ln in lines:
+                if ln.strip().startswith("[mcp_servers.agent-engineering]"):
+                    in_our_section = True
+                    continue
+                if in_our_section and ln.strip().startswith("["):
+                    in_our_section = False
+                if not in_our_section:
+                    keep.append(ln)
+            config_toml.write_text("\n".join(keep).rstrip() + "\n", encoding="utf-8")
+            print("已移除 .codex/config.toml 中的 agent-engineering")
+    except Exception:
+        pass
+
+# 清理 settings.json 里可能残留的旧格式
+settings = target / ".claude" / "settings.json"
+if settings.exists():
+    try:
+        sdata = json.loads(settings.read_text(encoding="utf-8"))
+        mcp = sdata.get("mcpServers", {})
+        if "agent-engineering" in mcp:
+            del mcp["agent-engineering"]
+            if not mcp:
+                del sdata["mcpServers"]
+            settings.write_text(json.dumps(sdata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print("已移除 settings.json 中的旧格式 mcpServers 条目")
+    except Exception:
+        pass
 PYUNMCP
 }
 
@@ -769,31 +813,63 @@ echo "已安装校验器、生成器、Spec 迁移器、语义检索器与域地
 
 # MCP 服务器注册(合并式写入 .claude/settings.json,同 hook 逻辑)
 mcp_server_install() {
-    command -v python3 >/dev/null 2>&1 || { echo "提示: 无 python3，跳过 MCP 服务器注册"; return 0; }
-    [ -L "$TARGET/.claude/settings.json" ] && { echo "提示: settings.json 为符号链接，跳过 MCP 注册"; return 0; }
-    python3 - "$TARGET" <<'PYMCP' || echo "提示: MCP 服务器注册失败"
-import json, sys
+    # Claude Code:项目级 MCP 写 .mcp.json(不是 settings.json 里的 mcpServers)
+    # Codex:写 .codex/config.toml
+    command -v python3 >/dev/null 2>&1 || { echo "提示: 无 python3，跳过 MCP 注册"; return 0; }
+    python3 - "$TARGET" <<'PYMCP'
+import json, os, sys
 from pathlib import Path
 target = Path(sys.argv[1])
-sp = target / ".claude" / "settings.json"
-sp.parent.mkdir(parents=True, exist_ok=True)
+
+# ── Claude Code: .mcp.json ──
+mcp_json = target / ".mcp.json"
 data = {}
-if sp.exists():
+if mcp_json.exists():
     try:
-        data = json.loads(sp.read_text(encoding="utf-8"))
+        data = json.loads(mcp_json.read_text(encoding="utf-8"))
     except Exception:
-        print("提示: .claude/settings.json 不是合法 JSON，跳过 MCP 注册"); sys.exit(0)
-if not isinstance(data, dict):
-    print("提示: .claude/settings.json 结构异常，跳过 MCP 注册"); sys.exit(0)
-mcp = data.setdefault("mcpServers", {})
-server_name = "agent-engineering"
+        print("提示: .mcp.json 不是合法 JSON，跳过 MCP 注册"); sys.exit(0)
+servers = data.setdefault("mcpServers", {})
 server_cmd = str(target / ".repo-memory-kit" / "bin" / "agent-engineering-mcp")
-# 已注册且路径一致→幂等返回
-if server_name in mcp and mcp[server_name].get("command") == server_cmd:
-    sys.exit(0)
-mcp[server_name] = {"command": server_cmd, "args": [], "env": {}}
-sp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-print("已注册 MCP 服务器 agent-engineering (" + server_cmd + ")")
+ours = {"command": server_cmd, "args": [], "env": {}}
+if "agent-engineering" in servers and servers["agent-engineering"] != ours:
+    # 用户已有同名 MCP:不覆盖,提示
+    print(f"提示: .mcp.json 已有 agent-engineering 条目(非 kit 产物)，跳过注册")
+else:
+    servers["agent-engineering"] = ours
+    mcp_json.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"已注册 Claude Code MCP: .mcp.json → agent-engineering")
+
+# ── Codex: .codex/config.toml ──
+codex_dir = target / ".codex"
+codex_dir.mkdir(parents=True, exist_ok=True)
+config_toml = codex_dir / "config.toml"
+server_name = "agent-engineering"
+entry = f'\n[mcp_servers.{server_name}]\ncommand = "{server_cmd}"\n'
+if config_toml.exists():
+    content = config_toml.read_text(encoding="utf-8")
+    if f"[mcp_servers.{server_name}]" not in content:
+        config_toml.write_text(content.rstrip() + "\n" + entry, encoding="utf-8")
+        print(f"已注册 Codex MCP: .codex/config.toml → {server_name}")
+    # 已存在则幂等跳过
+else:
+    config_toml.write_text(entry.lstrip(), encoding="utf-8")
+    print(f"已创建 Codex MCP 配置: .codex/config.toml → {server_name}")
+
+# ── 清理:从 settings.json 里移除错误的 mcpServers(如果之前写入了) ──
+settings = target / ".claude" / "settings.json"
+if settings.exists():
+    try:
+        sdata = json.loads(settings.read_text(encoding="utf-8"))
+        mcp = sdata.get("mcpServers", {})
+        if "agent-engineering" in mcp:
+            del mcp["agent-engineering"]
+            if not mcp:
+                del sdata["mcpServers"]
+            settings.write_text(json.dumps(sdata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            print("已从 settings.json 移除错误的 mcpServers 条目(正确位置是 .mcp.json)")
+    except Exception:
+        pass
 PYMCP
 }
 
