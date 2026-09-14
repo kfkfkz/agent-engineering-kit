@@ -24,16 +24,37 @@ mcp_rpc_multi() {  # $1=请求1 $2=请求2 → 输出合并响应
     { printf '%s\n%s\n' "$1" "$2"; } | python3 "$MCP" "$P" 2>/dev/null
 }
 
-# ── T1 initialize ──
+# ── T1 initialize + 版本协商 ──
+# T1a: 无版本参数 → 默认版本
 RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')
 printf '%s\n' "$RESP" | python3 -c "
 import json,sys; r=json.load(sys.stdin)
-assert r['jsonrpc']=='2.0' and r['id']==1
 res=r['result']
-assert res['protocolVersion']=='2024-11-05'
+assert res['protocolVersion']=='2026-07-28'  # 无参数→默认
 assert res['serverInfo']['name']=='agent-engineering-kit'
 assert 'tools' in res['capabilities']
-" && ok "initialize：协议版本/服务器名/能力声明" || bad "initialize 响应异常: $RESP"
+" && ok "T1a initialize（默认版本 2026-07-28）" || bad "T1a: $RESP"
+
+# T1b: 客户端发送支持版本 → 回显
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['result']['protocolVersion']=='2025-06-18'  # 回显
+" && ok "T1b 版本协商：回显客户端版本" || bad "T1b: $RESP"
+
+# T1c: 客户端发送未知版本 → 默认版本
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['result']['protocolVersion']=='2026-07-28'  # 不认识→默认
+" && ok "T1c 版本协商：未知版本→默认" || bad "T1c: $RESP"
+
+# T1d: 旧版本 2024-11-05 → 回显（向后兼容）
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['result']['protocolVersion']=='2024-11-05'  # 旧版也支持
+" && ok "T1d 版本协商：2024-11-05 向后兼容" || bad "T1d: $RESP"
 
 # ── T2 tools/list ──
 RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')

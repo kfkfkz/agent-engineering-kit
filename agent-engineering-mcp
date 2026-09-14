@@ -24,9 +24,15 @@ KIT_BIN = os.path.dirname(os.path.abspath(__file__))
 # KIT_BIN 形如 <repo>/.repo-memory-kit/bin,向上三级即仓库根
 _BOUND_REPO = os.path.dirname(os.path.dirname(KIT_BIN))
 
-PROTOCOL_VERSION = "2024-11-05"
+# MCP 协议版本协商：支持列表按时间正序，DEFAULT 是我们测试过的最新版。
+# 客户端在 initialize.params.protocolVersion 发来版本号：
+#   - 在支持列表内 → 回显该版本（客户端继续）
+#   - 不在列表内 → 回 DEFAULT（客户端自行决定是否继续）
+# 参考：https://modelcontextprotocol.io/specification
+SUPPORTED_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2026-07-28"]
+DEFAULT_PROTOCOL_VERSION = "2026-07-28"
 SERVER_NAME = "agent-engineering-kit"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 
 TOOLS = [
     {
@@ -201,11 +207,15 @@ def handle_request(req):
     req_id = req.get("id")
 
     if method == "initialize":
+        params = req.get("params", {})
+        client_version = params.get("protocolVersion", "")
+        negotiated = (client_version if client_version in SUPPORTED_VERSIONS
+                      else DEFAULT_PROTOCOL_VERSION)
         return {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": negotiated,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
             },
