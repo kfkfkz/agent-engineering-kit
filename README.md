@@ -2,7 +2,7 @@
 
 给 Claude Code、Codex 和其他仓库级 AI Agent 使用的一体化工程工作流包。
 
-安装一次后，团队成员会使用同一套项目宪章、复用调研、代码取证、系统调试、TDD、安全审查、交付验证、Spec Kit 迁移和项目记忆规则，减少“不同 Agent 各写一套设计、各走一套流程”的偏差。代码审查与交付验证由内置工作流闭环完成，不要求额外的审查 CLI。
+安装一次后，团队成员会使用同一套项目宪章、复用调研、代码取证、系统调试、TDD、安全审查、交付验证、Spec Kit 迁移和项目记忆规则，减少"不同 Agent 各写一套设计、各走一套流程"的偏差。代码审查与交付验证由内置工作流闭环完成，不要求额外的审查 CLI。
 
 ## 三分钟接入
 
@@ -14,7 +14,7 @@ cd agent-engineering-kit
 ./install.sh /path/to/your-project
 ```
 
-安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+**（其余无外部依赖；`sha256sum`/`shasum` 都不再需要）。
+安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+**（其余无外部依赖）。
 
 先预览、不写入：
 
@@ -52,14 +52,6 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 
 ```bash
 ./install.sh --codex-root /path/to/workspace /path/to/workspace/your-project
-```
-
-也可以同时启用代码图谱：
-
-```bash
-./install.sh --with-codebase-memory \
-  --codex-root /path/to/workspace \
-  /path/to/workspace/your-project
 ```
 
 安装器会在 workspace 建立指向目标项目技能的受管符号链接，技能内容仍由目标项目统一维护。
@@ -106,14 +98,15 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 1. 读取项目指令、constitution 和相关记忆，提取安全、依赖、测试、文档及人工确认门禁。
 2. **需求拆分**：用 `codebase-memory` 找到订单查询入口、权限过滤、导出能力、调用链和受影响测试；`memory-recall` 检索相关的坑与域知识；把需求拆成功能点并列出待澄清问题。
 3. **需求确认**：把"加个导出"衍生为具体场景（如"运营在订单列表页筛选后导出当日对账单"），每个场景定义可观察产出（谁在哪个页面拿到什么）；场景与产出确认后作为验收依据；导出方式、异步任务、文件存储等会改公共契约的细节一并交用户裁决。
-4. **概要设计**：先对齐项目内同类已认可文档的骨架；功能设计按能力逐节写界面（菜单落位+原型）、前端展示清单（④接口的验收依据）与业务逻辑；导出入口落在订单列表页工具栏、导出记录查询落在新页面；页面文案与菜单树取真实依据，原型渲染 PNG 嵌入；需要新 CSV 组件时用 `reuse-research` 比较现有依赖、扩展点和新库。
-5. **详细设计**：产出《订单列表导出-详细设计》——每个接口、表结构、流程改动指到具体页面与功能点；验收要点逐条溯源到场景与产出；测试与验证设计给出接缝分层（导出服务层单测+权限过滤集成测）、120 环境与测试数据、导出失败日志点与错误码、回归范围（现有导出接口不动）；随后过 `delivery-gate` 文档门禁（结构/字段/一致性/可验证性），发现缺漏回补后落回执。
+4. **概要设计**：先对齐项目内同类已认可文档的骨架；功能设计按能力逐节写界面（菜单落位+原型）、前端展示清单（④接口的验收依据）与业务逻辑；需要新 CSV 组件时用 `reuse-research` 比较现有依赖、扩展点和新库。
+5. **详细设计**：产出《订单列表导出-详细设计》——每个接口、表结构、流程改动指到具体功能点；验收要点逐条溯源到场景与产出；测试与验证设计给出接缝分层与回归范围；随后过 `delivery-gate` 文档门禁（结构/字段/一致性/可验证性），发现缺漏回补后落回执。
 6. **任务拆分 + 编码**：`tdd` 按纵向切片推进——
    - RED：有权限的筛选结果应导出指定字段；
    - GREEN：完成最小导出链路；
    - RED：超过 5 万条时返回已确认的限制行为；
    - GREEN：补齐容量保护；
    - REFACTOR：在测试保持绿色时整理重复代码。
+
    期间对导出权限、公式注入、敏感字段和临时文件执行 `security-review`。
 7. 执行 `delivery-gate`，处理阻塞发现、落验证回执，并把真实实现和验证结果回写原设计文档。
 8. 如果形成了可复用经验，调用 `memory-capture` 展示候选，等待人确认后再写入。
@@ -142,7 +135,7 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 假设生产环境偶发重复扣减库存：
 
 ```text
-/repo-delivery 修复“支付回调重试时偶发重复扣减库存”。
+/repo-delivery 修复"支付回调重试时偶发重复扣减库存"。
 已知现象：同一个支付单收到两次回调后，少量订单会产生两条扣减记录。
 期望：同一个业务回调只允许成功扣减一次，并保留正常重试能力。
 ```
@@ -160,31 +153,13 @@ systematic-debugging 根因定位
 
 具体过程：
 
-1. 稳定复现或收集足够反证，区分“消息重复”“幂等判断失效”“事务边界错误”等不同原因。
+1. 稳定复现或收集足够反证，区分"消息重复""幂等判断失效""事务边界错误"等不同原因。
 2. 使用 `codebase-memory` 追踪支付回调、订单状态、库存服务、消息重试和事务调用链。
-3. 写出一个单一假设，例如：“幂等记录与库存扣减不在同一事务边界，因此并发回调都通过了前置检查。”
+3. 写出一个单一假设，例如："幂等记录与库存扣减不在同一事务边界，因此并发回调都通过了前置检查。"
 4. 用最小实验验证假设；不成立就撤回，不叠加试错补丁。
 5. 根因确认后，使用 `tdd` 在稳定接口建立并发回调回归测试，确认 RED 是因为重复扣减而不是测试环境问题。
 6. 只修改根因所需代码，再验证单次回调、重复回调、并发回调、失败重试及事务回滚。
 7. 更新原故障记录或设计文档，并把真正可复用的坑点作为记忆候选交给人确认。
-
-一次合格的最终汇报应类似：
-
-```text
-根因：幂等判断与库存扣减分属两个事务，并发回调可同时通过检查
-证据：并发测试稳定复现；调用链和事务日志确认了竞态窗口
-修复：在库存扣减的原子边界内写入业务幂等键，未改变正常重试协议
-回归：单次、串行重复、并发重复、失败重试和回滚测试通过
-影响：支付回调到库存扣减链；未修改其他库存入口
-残余风险：历史重复记录需单独数据治理，本次未自动清理
-文档/记忆：故障记录已回写；提出“跨事务前置幂等失效”pitfall 候选
-```
-
-如果当前只允许排查、不允许修改：
-
-```text
-/systematic-debugging 排查支付回调重复扣减，只给出根因、证据和建议，不修改代码。
-```
 
 ### 其他常见用法
 
@@ -199,7 +174,7 @@ systematic-debugging 根因定位
 /codebase-memory 如果修改 OrderService.confirm，会影响哪些入口、消息和测试？
 
 # 对已定位问题测试先行
-/tdd 为“优惠券只能核销一次”增加并发回归测试并完成最小实现。
+/tdd 为"优惠券只能核销一次"增加并发回归测试并完成最小实现。
 
 # 功能完成后提取经验；仍需人工确认才会入库
 /memory-capture 从本次订单导出交付中提取可复用的坑点和流程。
@@ -228,7 +203,7 @@ repo-delivery
 
 工作流只做门禁、路由和收口，不另建一套平行的设计体系：
 
-- 项目 `AGENTS.md`、`CLAUDE.md` 和 constitution 是约束来源；
+- 项目 `AGENTS.md`、`CLAU.md` 和 constitution 是约束来源；
 - 已有 spec、SDD、版本文档和代码是事实来源；
 - 项目专属技术栈、覆盖率、数据禁区等以当前项目为准；
 - 高风险决策仍需人工确认，AI 草稿不能自行标记为已确认。
@@ -287,7 +262,7 @@ repo-delivery
 
 ### security-review
 
-覆盖两类风险：应用代码中的认证授权、注入、SSRF、路径/文件、敏感数据、支付回调和供应链；以及 Agent 指令、skills、MCP、hooks、安装脚本中的提示注入、过宽权限、秘密泄露和危险执行。HIGH/CRITICAL 必须给出可达路径，并由 `delivery-gate` 逆向验证。
+覆盖两类风险：应用代码中的认证授权、注入、SSRF、路径/文件、敏感数据、支付回调与供应链；以及 Agent 指令、skills、MCP、hooks、安装脚本中的提示注入、过宽权限、秘密泄露和危险执行。HIGH/CRITICAL 必须给出可达路径，并由 `delivery-gate` 逆向验证。
 
 ### delivery-gate
 
@@ -301,39 +276,54 @@ repo-delivery
 
 `memory-check` 负责全量或增量巡检；`memory-capture` 负责把已验证的工程经验转成候选条目。候选必须经人确认后才能写入，避免未经验证的 AI 总结污染项目记忆。
 
-## 项目记忆
+## 项目记忆（按模块分目录）
+
+记忆条目按**接口入口所属业务模块**分目录存放（模块名以项目业务域地图的登记为准），条目类型在 frontmatter 的 `type` 字段：
 
 ```text
-L3  docs/memory/PROFILE.md              会话开始先读的项目画像
-L2  docs/memory/playbooks/              场景化操作（环境访问/测试数据/执行套路/构建）
-L1  docs/memory/pitfalls/ + decisions/  原子坑点与技术决定
+docs/memory/
+  <模块名>/YYYY-MM-DD-<中文标题>.md   原子条目（pitfall 坑 / decision 决定 / playbook 场景流程）
+  RULES.md                            记忆规则（kit 管辖）
+  README.md                           用户笔记（纯 seed：首次创建后归用户）
+  _PITFALL_TEMPLATE.md 等             三类条目模板 + PROFILE 模板（kit 管辖）
+.repo-memory-kit/                      每机本地派生物（不入版本库）
+  memory-index.md                     本地索引（人肉浏览用）
+  .anchors.json                       符号 → 条目映射（增量巡检/变更影响）
+  zvec/                               语义索引（generation + current.json 指针）
+```
+
+分层是逻辑概念而非物理目录：
+
+```text
+L3  PROFILE.md（项目画像）      会话开始先读：风险域地图/稳定约定/反模式
+L2  playbook 条目             场景流程：某功能/环境怎么跑通
+L1  pitfall / decision 条目   原子经验：坑（缺陷/陷阱）与决定（背景/取舍/后果）
 L0  代码（第一事实源）、业务域地图、spec/SDD、接口文档
 ```
 
-规则位于 `docs/memory/RULES.md`。条目 frontmatter 是唯一事实源，`memory-build` 自动维护 README 索引和 `.anchors.json`：
+**匹配首选语义检索**：`memory-recall` 直扫 `docs/**/*.md` 与 frontmatter 建全文索引（zvec jieba 双字段 + RRF），不依赖目录结构——功能点多了以后靠人工翻索引表必然漏召回；`memory-index.md` 只服务人肉浏览。条目 frontmatter 是唯一事实源（`type`/`status`/`module`/`created`/`verified`/`anchors`…），本地索引与锚点表全部由它生成、禁止手改。
+
+常用命令：
 
 ```bash
-# 校验条目、索引和锚点是否一致
-.repo-memory-kit/bin/validate-memory.sh .
+# 语义检索（匹配首选）
+.repo-memory-kit/bin/memory-recall "任务描述" .
+.repo-memory-kit/bin/memory-recall --list .      # 语料清单（不依赖 zvec）
 
-# 重新生成索引与锚点
+# 校验条目并重建本地索引/锚点（zvec 可用时语义索引随动刷新）
+.repo-memory-kit/bin/validate-memory.sh .
 .repo-memory-kit/bin/memory-build .
 
-# 检查当前 git/svn 变更影响了哪些记忆
+# 变更影响：当前 git/svn 工作区改动波及哪些记忆（可 --since <ref> / --files）
 .repo-memory-kit/bin/memory-build --changed .
 
-# 存量英文命名条目按标题批量转为中文名
+# 条目按标题批量重命名（交叉引用联动）；v3 存量类型目录迁入模块目录
 .repo-memory-kit/bin/memory-build --rename-by-title .
-
-# 语义检索：docs/ 全量（记忆/域地图/SDD/回执）混合检索，可选层
-# memory-build 构建时 zvec 可用即自动随动刷新，单独重建用 --rebuild
-.repo-memory-kit/bin/memory-recall "任务描述" .
+.repo-memory-kit/bin/memory-build --migrate-to-modules .
 
 # 域地图守卫：索引登记/状态/证据路径核验（回写域条目后运行）
 .repo-memory-kit/bin/domain-check .
 ```
-
-条目命名 `YYYY-MM-DD-<中文标题>.md`，纯代码符号名可保留英文。
 
 **业务域地图是业务流的登记处**：项目建立业务域地图（如 `docs/02-业务域地图/`）后，开发完/测试完的业务流总结（含跨域端到端链路）、能力入口、调用链登记为域地图条目，不在 playbook 里复制；playbook 只保留场景化操作并以指针链接域地图。事实以代码为准，域地图与代码冲突时修正域地图。
 
@@ -347,17 +337,17 @@ PROFILE 在有效 `confirmed` 条目达到 10 条时创建；后续积累达到�
 .claude/skills/                 Claude Code 项目技能
 .agents/skills/                 Codex 项目技能
 .repo-memory-kit/bin/           校验器、生成器和 Spec 迁移器
-.repo-memory-kit/manifest.json  安装清单（Manifest v2：版本与受管资源记录）
-.repo-memory-kit/zvec/          语义索引派生数据（generation + current.json 指针）
 docs/memory/RULES.md            记忆规则
-docs/memory/*/_TEMPLATE.md      条目模板
+docs/memory/_*_TEMPLATE.md      条目模板（pitfall/decision/playbook/PROFILE）
+docs/memory/README.md           用户笔记种子（首次创建，此后归用户）
 CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
-.cbmignore                      代码图谱索引托管区块
+.cbmignore / .gitignore         图谱索引与语义索引的忽略区块
+.mcp.json / .codex/config.toml  MCP 注册（kit 片段，含本机路径）
 ```
 
-所有记忆条目、`docs/memory/README.md` 索引和 `.anchors.json` 属于项目用户。更新和卸载不会删除它们。
+`.repo-memory-kit/` 下的 `manifest.json`（Manifest v2：版本与受管资源记录）、`install.lock`、事务目录与 zvec 索引都是**每机状态/派生物**，不提交进版本库。
 
-安装器是事务化的（崩溃安全）：安装/卸载先在内存生成完整计划并落盘事务日志（HMAC 保护），再以内容 CAS 提交；中断后再次运行会自动恢复现场（回滚或补完）。删除授权要求 Manifest 记录与内容血统**双条件匹配**——被手工修改过的受管内容按 conflict 保护并报告，`--repair` 只恢复有 kit 血统的漂移文件；容器型文件（CLAUDE.md、`.mcp.json`、`settings.json` 等）只移除 kit 片段，即使移除后为空也不删容器，跳过的条目会保留在缩减版清单里。
+所有记忆条目与 `docs/memory/README.md` 属于项目用户，更新和卸载不会删除它们。安装器是事务化的（崩溃安全）：安装/卸载先在内存生成完整计划并落盘事务日志（HMAC 保护），再以内容 CAS 提交；中断后再次运行会自动恢复现场（回滚或补完）。删除授权要求 Manifest 记录与内容血统**双条件匹配**——被手工修改过的受管内容按 conflict 保护并报告，`--repair` 只恢复有 kit 血统的漂移文件；容器型文件（CLAUDE.md、`.mcp.json`、`settings.json` 等）只移除 kit 片段，即使移除后为空也不删容器，跳过的条目会保留在缩减版清单里。
 
 为兼容已经接入的项目，内部状态目录 `.repo-memory-kit` 以及托管区块标记继续使用旧命名。它们只是稳定的安装协议，不代表当前项目名称；请勿在业务仓库中手工改名。
 
@@ -385,7 +375,7 @@ cd /path/to/your-project && .repo-memory-kit/bin/spec-migrate --check .
 ./install.sh --migrate-specify=001-demo --sdd-layout --sdd-version V1.0 /path/to/your-project
 ```
 
-此时 feature 目录整体移动到 `docs/03-SDD/V<版本>/` 并按团队命名规范重排（`02-需求`、`03-架构设计`、`04-详细设计/N-功能名`、`06-实现计划`、`07-原始需求材料`），`01-索引` 自动登记，原 feature 目录随之移除（`.specify/specs` 下不保留副本）。安装器入口必须用 `--migrate-specify=feature名` 显式指定（等价于迁移器的 `--apply --feature`），防止整仓移动。
+此时 feature 目录整体移动到 `docs/03-SDD/V<版本>/` 并按团队命名规范重排，`01-索引` 自动登记，原 feature 目录随之移除。安装器入口必须用 `--migrate-specify=feature名` 显式指定，防止整仓移动。
 
 ## SVN 多人协作
 
@@ -397,21 +387,13 @@ cd /path/to/your-project && .repo-memory-kit/bin/spec-migrate --check .
 
 它会自动完成（幂等，可重复执行）：
 
-- **svn:ignore 轻提交清单**：`.repo-memory-kit`、`.mcp.json`、`.codex`（每机状态/本机配置），
-  `.claude/settings.json`（hook 含本机路径），`docs/memory/` 下的 `README.md` 与
-  `.anchors.json`（memory-build 全量重写的生成物）——这些文件每台机器必然不同，
-  入库即成永久冲突源；合并追加，不覆盖既有 ignore 项；
+- **svn:ignore 轻提交清单**：`.repo-memory-kit`（每机状态与派生物）、`.mcp.json`、`.codex`（含本机路径）——这些文件每台机器必然不同，入库即成永久冲突源；合并追加，不覆盖既有 ignore 项；
 - **需求目录种子**：创建 `docs/01-需求/README.md` 指派索引（seed 式，此后不再改写）；
-- **svn add 内容确定文件**（技能/模板/RULES/托管区块等，递归时自动跳过上述每机文件）；
-- **`svn:eol-style=LF`**：已版本化的 kit 文本文件统一 LF，防 Windows 提交 CRLF 化
-  导致与 kit 血统脱钩；
+- **svn add 内容确定文件**（技能/模板/RULES/托管区块/记忆条目等，递归时自动跳过每机文件）；
+- **`svn:eol-style=LF`**：已版本化的 kit 文本文件统一 LF，防 Windows 提交 CRLF 化导致与 kit 血统脱钩；
 - 已被版本控制的每机文件给出 `svn rm --keep-local` 整改提示。
 
-多人协作约定：**需求目录结构（含指派索引）由需求维护者唯一维护**；实现人只在
-自己被指派的需求目录内补充与撰写（一个需求一个目录，验证通过后整理终稿），
-交付回执集中于 `docs/delivery-receipts/` 按功能命名。每个需求目录的文档骨架
-从 kit 仓库 `templates/requirements/` 复制（维护者操作）。kit 版本升级由
-维护者统一执行——同版本重跑 install 不产生任何本地差异。
+多人协作约定：**需求目录结构（含指派索引）由需求维护者唯一维护**；实现人只在自己被指派的需求目录内补充与撰写（一个需求一个目录，验证通过后整理终稿），交付回执集中于 `docs/delivery-receipts/` 按功能命名。每个需求目录的文档骨架从 kit 仓库 `templates/requirements/` 复制（维护者操作）。kit 版本升级由维护者统一执行——同版本重跑 install 不产生任何本地差异。
 
 ## 更新与卸载
 
@@ -463,10 +445,10 @@ git pull
 ## 开发与验证
 
 ```bash
-./tests/installer.test.sh     # 安装器生命周期（§20.1 冻结版清单：事务/恢复/存量迁移）
-./tests/install.test.sh      # wrapper 全链路（安装/更新/卸载/安全清理）
-./tests/build.test.sh        # 记忆构建与语义检索层
-./tests/skill-sync.test.sh   # 技能副本一致性
+./tests/installer.test.sh      # 安装器生命周期（事务/崩溃恢复/存量迁移/--svn 治理）
+./tests/install.test.sh       # wrapper 全链路（安装/更新/卸载/安全清理）
+./tests/build.test.sh         # 记忆构建与语义检索层（模块目录/迁移/锚点）
+./tests/skill-sync.test.sh    # 技能副本一致性
 ./tests/spec-migrate.test.sh  # Spec Kit 迁移
 shellcheck install.sh tests/*.test.sh
 ```
