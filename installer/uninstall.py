@@ -27,6 +27,7 @@ from .registry import (
     ContainerUnreadableError,
     CodexLinkSpec,
     ResourceSpec,
+    SecurityError,
     _SPEC_ORDER,
     cleanup_legacy_state,
     determine_status,
@@ -244,6 +245,11 @@ def run_uninstall(target: Path, *, codex_root_cli: Path | None = None) -> int:
                 status = determine_status(target, spec, entry, codex_root_cli)
             except ContainerUnreadableError as e:
                 residual.append((entry, f"容器不可读（漂移保护）: {e}"))
+                continue
+            except SecurityError as e:
+                # codex link 派生校验失败（workspace 结构异常）→ 漂移保护保留，
+                # 不让单个资源把整个卸载打崩
+                residual.append((entry, f"路径/权限校验失败（漂移保护）: {e}"))
                 continue
             if spec.resource_type == "seed_file":
                 residual.append((entry, "seed_file 永不卸载（用户所有）"))

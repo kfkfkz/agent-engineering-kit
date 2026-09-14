@@ -27,4 +27,7 @@ fi
 
 PYTHONPATH="$KIT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONPATH
-exec python3 -m installer "$@"
+# 注意不能用 `python3 -m installer`：-m 会把调用方 CWD 置于 sys.path 首位，
+# 目标项目自带的 installer/ 包（常见目录名）会遮蔽 kit 的安装器包。
+# 经 -c 把 KIT_DIR 显式插到 sys.path[0]，CWD 退居其后；main 收到原始参数。
+exec python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from installer import main; sys.exit(main(sys.argv[1:]))' "$KIT_DIR" "$@"

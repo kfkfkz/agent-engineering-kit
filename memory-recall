@@ -320,11 +320,17 @@ def cmd_rebuild(repo):
         finally:
             os.close(snap_fd)
 
+        # 2. 子进程构建（只读快照，不读源 docs/）
+        #    超时必须回收未发布的 generation——否则留下无 .metadata.json 的
+        #    目录，cleanup_old_generations（只回收带 .metadata 的）永不收集
         try:
-            # 2. 子进程构建（只读快照，不读源 docs/）
             proc = __import__("subprocess").run(
                 [sys.executable, __file__, "--rebuild-gen", str(gen_dir), str(snapshot)],
                 check=False, timeout=120)
+        except __import__("subprocess").TimeoutExpired:
+            shutil.rmtree(gen_dir, ignore_errors=True)
+            sys.exit("✗ 子进程构建超时（120s），已回收未发布的 generation——"
+                     "语料过大或磁盘过慢，旧索引保留，可重试")
         finally:
             os.unlink(snapshot)
         if proc.returncode != 0:

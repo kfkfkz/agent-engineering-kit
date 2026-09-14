@@ -20,6 +20,7 @@ from .registry import (
     REGISTRY,
     ContainerUnreadableError,
     ResourceSpec,
+    SecurityError,
     determine_status,
 )
 
@@ -98,6 +99,12 @@ def run_preflight(target: Path, manifest: Manifest | None, *,
         except ContainerUnreadableError as e:
             result.decisions.append(SpecDecision(
                 spec, None, "skip", f"容器不可读，阻断该资源: {e}"))
+            continue
+        except SecurityError as e:
+            # codex link 派生校验失败（workspace 结构异常）：跳过该资源并报告，
+            # 不让单个资源把整个安装打崩
+            result.decisions.append(SpecDecision(
+                spec, None, "skip", f"路径/权限校验失败，跳过该资源: {e}"))
             continue
 
         # 符号链接检查（fatal——校验-写入间越界风险对整个仓库是安全事件，

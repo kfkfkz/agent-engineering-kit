@@ -138,21 +138,34 @@ def tool_kit_status(args):
     target = os.path.abspath(_BOUND_REPO)
     status = {"target": target, "kit_version": None, "semantic_index": None, "domain_map": None}
 
-    # manifest
-    manifest = os.path.join(target, ".repo-memory-kit", "manifest")
+    # manifest（Manifest v2：manifest.json；旧 install.sh 的文本 manifest 已退役）
+    manifest = os.path.join(target, ".repo-memory-kit", "manifest.json")
     if os.path.isfile(manifest):
-        with open(manifest) as f:
-            for line in f:
-                if line.startswith("kit_version="):
-                    status["kit_version"] = line.strip().split("=", 1)[1]
-                    break
+        try:
+            with open(manifest) as f:
+                status["kit_version"] = json.load(f).get("kit_version", "unknown")
+        except (OSError, ValueError):
+            status["kit_version"] = "unknown"
     else:
         status["kit_version"] = "not installed"
 
-    # semantic index
-    recall = os.path.join(target, ".repo-memory-kit", "zvec", "recall")
-    if os.path.isdir(recall):
-        count_file = os.path.join(recall, ".doc-count")
+    # semantic index（v4 布局：zvec/generations/<uuid> + current.json 指针；
+    # 旧 zvec/recall 布局只读兼容）
+    zvec_dir = os.path.join(target, ".repo-memory-kit", "zvec")
+    gen_dir = None
+    pointer = os.path.join(zvec_dir, "current.json")
+    if os.path.isfile(pointer):
+        try:
+            with open(pointer) as f:
+                gen = json.load(f).get("generation", "")
+            if gen:
+                gen_dir = os.path.join(zvec_dir, "generations", gen)
+        except (OSError, ValueError):
+            gen_dir = None
+    if gen_dir is None and os.path.isdir(os.path.join(zvec_dir, "recall")):
+        gen_dir = os.path.join(zvec_dir, "recall")
+    if gen_dir is not None and os.path.isdir(gen_dir):
+        count_file = os.path.join(gen_dir, ".doc-count")
         if os.path.isfile(count_file):
             status["semantic_index"] = {"exists": True, "docs": int(open(count_file).read().strip())}
         else:

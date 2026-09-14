@@ -13,12 +13,6 @@
       "agents-md-block": "canonical_sha256:a1f7cdc58a2849780283a3dc40cabf15c0c8f720b00b43f8b6bbdcd3bad48b0c",
       "claude-md-block": "canonical_sha256:93430c52dd543e5579fb2f0f05398b5c6dc2f6f678a0747c07897e878811beba"
     },
-    "08399ea": {
-      "skill-agents-delivery-gate": "canonical_sha256:9ede680125536a9ca8e4b3ca3cfd1e26e83fdc7f84531e467d10c0f751804e63",
-      "skill-agents-repo-delivery": "canonical_sha256:0a003d08bd5c001c7a48f603a58c05e4d1706ddec1bc3ebf0a4a6006417fdd6e",
-      "skill-claude-delivery-gate": "canonical_sha256:9ede680125536a9ca8e4b3ca3cfd1e26e83fdc7f84531e467d10c0f751804e63",
-      "skill-claude-repo-delivery": "canonical_sha256:0a003d08bd5c001c7a48f603a58c05e4d1706ddec1bc3ebf0a4a6006417fdd6e"
-    },
     "093f245": {
       "skill-agents-repo-delivery": "canonical_sha256:ba6f2d6db8c25e0757e2abaacd7f56e5d1d38e8418096780d103633bde5482c7",
       "skill-claude-repo-delivery": "canonical_sha256:ba6f2d6db8c25e0757e2abaacd7f56e5d1d38e8418096780d103633bde5482c7"
@@ -26,28 +20,38 @@
     "0bf015c": {
       "memory-readme-seed": "canonical_sha256:2015040e59548c061a39d0efd0a0682716947fd30fcff44a3a65fda369a3e542"
     },
-    "17ed28b": {
-      "bin-domain-check": "canonical_sha256:eba6836a83dc6bff7c13b39d06edefbb3530dc6d97088b9bc5316d6fe2bc90d3",
-      "bin-memory-build": "canonical_sha256:a2d1e5a365a711314698cb0c12bc9f0c4610c56b6ac8a55b403a75dc5e354d9c",
-      "bin-memory-recall": "canonical_sha256:7cef43ddde970af0282d92b53164d4bd841e20b9cdfaa098778fb728ac70ea81",
-      "skill-agents-delivery-gate": "canonical_sha256:65aa417292b9611b87a24ca001bfdc6e2032d2fb453a9abc2c9b340f1c62b771",
-      "skill-agents-repo-delivery": "canonical_sha256:3ec33f6f654eff120072d4e51e3a64dd4d5208570f76c9ff9a91c951f7459861",
-      "skill-claude-delivery-gate": "canonical_sha256:65aa417292b9611b87a24ca001bfdc6e2032d2fb453a9abc2c9b340f1c62b771",
-      "skill-claude-repo-delivery": "canonical_sha256:3ec33f6f654eff120072d4e51e3a64dd4d5208570f76c9ff9a91c951f7459861"
+    "0c97756": {
+      "bin-agent-engineering-mcp": "canonical_sha256:212f04f82de47d0d421de274061dff215ed9cd793ad3463a002c41aad65ee358"
     },
-    "1a1ee38": {
-      "skill-agents-delivery-gate": "canonical_sha256:6f118c02dd85e8e5872f90e9d366d070d57296f32928343b9c0e52d51bfe1853",
-      "skill-agents-repo-delivery": "canonical_sha256:f9415a2200d19a4bd727d247edc217e91b65869a46b9776b3edfac89df535a65",
-      "skill-claude-delivery-gate": "canonical_sha256:6f118c02dd85e8e5872f90e9d366d070d57296f32928343b9c0e52d51bfe1853",
-      "skill-claude-repo-delivery": "canonical_sha256:f9415a2200d19a4bd727d247edc217e91b65869a46b9776b3edfac89df535a65"
-    },
-    "1ccaa3e": {
-      "bin-memory-recall": "canonical_sha256:fe737988741bd411cfec03da3340ed6d8f502de767dded1f5151b2e57643d912"
+    "16bbee7": {
+      "skill-agents-delivery-gate": "canonical_sha256:9ede680125536a9ca8e4b3ca3cfd1e26e83fdc7f84531e467d10c0f751804e63",
+      "skill-agents-repo-delivery": "canonical_sha256:0a003d08bd5c001c7a48f603a58c05e4d1706ddec1bc3ebf0a4a6006417fdd6e",
+      "skill-claude-delivery-gate": "canonical_sha256:9ede680125536a9ca8e4b3ca3cfd1e26e83fdc7f84531e467d10c0f751804e63",
+      "skill-claude-repo-delivery": "canonical_sha256:0a003d08bd5c001c7a48f603a58c05e4d1706ddec1bc3ebf0a4a6006417fdd6e"
     },
     "217487b": {
       "bin-spec-migrate": "canonical_sha256:1435fe5abf905b4c09141ed3bb9a7826df3d3b92c9c2adea7ff4422c86da7250",
       "skill-agents-spec-migrate": "canonical_sha256:0d96a0a25560db1604860c5785369965a771d0e5cc79858246519a9e47a6425c",
       "skill-claude-spec-migrate": "canonical_sha256:0d96a0a25560db1604860c5785369965a771d0e5cc79858246519a9e47a6425c"
+    },
+    "2180573": {
+      "bin-agent-engineering-mcp": "canonical_sha256:439a8d282de1718fcd26117a1b7369b03c3031890660af331659f81f1fadf826",
+      "bin-memory-recall": "canonical_sha256:94cb298e9fa5e8baf01971fcd011eb877260622c876c41426664fa9665d8bb01",
+      "skill-agents-delivery-gate": "canonical_sha256:1f1c4b65bf7519c51f64d39d24ab7190b038476a68f065040f354aaf14ef5a82",
+      "skill-agents-repo-delivery": "canonical_sha256:c1b79bf9c9034e2b306420ad02844f944efa2782c38d0c7f8195fa48c784e56b",
+      "skill-claude-delivery-gate": "canonical_sha256:1f1c4b65bf7519c51f64d39d24ab7190b038476a68f065040f354aaf14ef5a82",
+      "skill-claude-repo-delivery": "canonical_sha256:c1b79bf9c9034e2b306420ad02844f944efa2782c38d0c7f8195fa48c784e56b"
+    },
+    "2a60a42": {
+      "bin-memory-build": "canonical_sha256:e3d0f8eb906900a798d62ed7adc56f886c2cda83f165cc2fc0f59d6472d04e4f",
+      "bin-memory-recall": "canonical_sha256:91434db07165f9f1a2d6597d07f41ec7d203b3bb400787d17d448918c956949e",
+      "bin-session-reminder": "canonical_sha256:32cb178205b7373af0225edc2d8637ccb4b12b23582b54bd13f44437918832c1",
+      "bin-spec-migrate": "canonical_sha256:7c0b0f2d589e4ff934e16fc3271e517b5fd380f3239ff0c73242d2ddf2c85833",
+      "playbook-template": "canonical_sha256:4a4eaae935dc97aca8b73e04f87752fdf12dd9e57dee16e87e04f8675226969f",
+      "skill-agents-delivery-gate": "canonical_sha256:1dcb2ede098a47666cd15877f687e8cd8a8c2ff5e2b9ba0558c279b32262ad82",
+      "skill-agents-repo-delivery": "canonical_sha256:f0f5371bf81a2c4ca7d06449dac3557220f8f820a73cfbe1985d54d0ca57bfd3",
+      "skill-claude-delivery-gate": "canonical_sha256:1dcb2ede098a47666cd15877f687e8cd8a8c2ff5e2b9ba0558c279b32262ad82",
+      "skill-claude-repo-delivery": "canonical_sha256:f0f5371bf81a2c4ca7d06449dac3557220f8f820a73cfbe1985d54d0ca57bfd3"
     },
     "2aed8f5": {
       "bin-memory-recall": "canonical_sha256:de230eed86996644e383641a604cef45e933e15f9ee79804ebb5888ab84dfe19",
@@ -58,8 +62,20 @@
     "2f9ac23": {
       "memory-readme-seed": "canonical_sha256:970f02b225576fc182cac35f3682c527888e6c2e93f045b53868cb7a8a5fdab5"
     },
-    "34dc7d8": {
-      "bin-memory-recall": "canonical_sha256:568444a51e2d096884c48bd57a3e47c47b877444ccdc7893f809e3c0490caa7b"
+    "2fdd3ed": {
+      "bin-domain-check": "canonical_sha256:eba6836a83dc6bff7c13b39d06edefbb3530dc6d97088b9bc5316d6fe2bc90d3",
+      "bin-memory-build": "canonical_sha256:a2d1e5a365a711314698cb0c12bc9f0c4610c56b6ac8a55b403a75dc5e354d9c",
+      "bin-memory-recall": "canonical_sha256:7cef43ddde970af0282d92b53164d4bd841e20b9cdfaa098778fb728ac70ea81",
+      "skill-agents-delivery-gate": "canonical_sha256:65aa417292b9611b87a24ca001bfdc6e2032d2fb453a9abc2c9b340f1c62b771",
+      "skill-agents-repo-delivery": "canonical_sha256:3ec33f6f654eff120072d4e51e3a64dd4d5208570f76c9ff9a91c951f7459861",
+      "skill-claude-delivery-gate": "canonical_sha256:65aa417292b9611b87a24ca001bfdc6e2032d2fb453a9abc2c9b340f1c62b771",
+      "skill-claude-repo-delivery": "canonical_sha256:3ec33f6f654eff120072d4e51e3a64dd4d5208570f76c9ff9a91c951f7459861"
+    },
+    "3482cef": {
+      "skill-agents-delivery-gate": "canonical_sha256:6f118c02dd85e8e5872f90e9d366d070d57296f32928343b9c0e52d51bfe1853",
+      "skill-agents-repo-delivery": "canonical_sha256:f9415a2200d19a4bd727d247edc217e91b65869a46b9776b3edfac89df535a65",
+      "skill-claude-delivery-gate": "canonical_sha256:6f118c02dd85e8e5872f90e9d366d070d57296f32928343b9c0e52d51bfe1853",
+      "skill-claude-repo-delivery": "canonical_sha256:f9415a2200d19a4bd727d247edc217e91b65869a46b9776b3edfac89df535a65"
     },
     "3605f3a": {
       "bin-memory-build": "canonical_sha256:7292ee1620af80a8302821d795fb8ff11224f2fcd4c26ebab977aafe0abebab4",
@@ -97,34 +113,38 @@
       "skill-agents-memory-check": "canonical_sha256:4de780b25c82f8737de593eab4201d95bac71f72067862e104e1a31c161f080b",
       "skill-claude-memory-check": "canonical_sha256:4de780b25c82f8737de593eab4201d95bac71f72067862e104e1a31c161f080b"
     },
-    "4bd24ce": {
-      "bin-memory-recall": "canonical_sha256:089af22f7cdcf689f7103daa5a9a7ec98fa56d7b0a9fcbecce87f20f4b30ef41",
-      "skill-agents-spec-migrate": "canonical_sha256:558a502518bedd77cd332858f2bebefa4801360adb1ad9616156cd499fcf94b2",
-      "skill-claude-spec-migrate": "canonical_sha256:558a502518bedd77cd332858f2bebefa4801360adb1ad9616156cd499fcf94b2"
-    },
-    "53f8527": {
+    "4efbf7a": {
       "skill-agents-delivery-gate": "canonical_sha256:bd69bfb4e60f48d11f1bd369bbab333edb3a6903ce98199d5fe1e6bb13769103",
       "skill-agents-repo-delivery": "canonical_sha256:e98ec4a37789d054f890cb9874688b15ce309c0d7d67296d9905b644c6d8b4d1",
       "skill-claude-delivery-gate": "canonical_sha256:bd69bfb4e60f48d11f1bd369bbab333edb3a6903ce98199d5fe1e6bb13769103",
       "skill-claude-repo-delivery": "canonical_sha256:e98ec4a37789d054f890cb9874688b15ce309c0d7d67296d9905b644c6d8b4d1"
     },
-    "55039c1": {
-      "bin-agent-engineering-mcp": "canonical_sha256:859a14ad195d639fcda777f052f898ea53ddade5548430f6d9c0aae1e31c3708"
+    "56131a2": {
+      "agents-md-block": "canonical_sha256:a51705c468e69d3f6804c6951ac49dbc36f9f9f14128042f6ae0bad0a84fb0f4",
+      "bin-domain-check": "canonical_sha256:e084d5f83d97da73feae495bbd011d3a4f6116069a300b034df39c3d78b7b8ba",
+      "bin-memory-build": "canonical_sha256:46e889718b9f58d2d3fa10824a0e7de89c17385d2e42c9b8129c9ad1c0bd927a",
+      "bin-memory-recall": "canonical_sha256:9766a25473140d0e7385fd01ddc1bd7cccc5b8780210b8153010401685b052a8",
+      "bin-session-reminder": "canonical_sha256:3e17e70874a07098d0fad92b67afb063dabf1896e250ab8fbee7cd85f746570f",
+      "bin-spec-migrate": "canonical_sha256:c9508fec75ce0b0896a3b1f48818fc4498c9de6a8aff16a7964755ff7297df75",
+      "skill-agents-delivery-gate": "canonical_sha256:18851e529058c0a4192962b5f24a87a2f83ad559e83cd5c0c151f01e98dd48fe",
+      "skill-agents-repo-delivery": "canonical_sha256:d4aad72c6c9d3dbb366ed78067297940d57d4bfca9936da3c6907a437a2e4789",
+      "skill-claude-delivery-gate": "canonical_sha256:18851e529058c0a4192962b5f24a87a2f83ad559e83cd5c0c151f01e98dd48fe",
+      "skill-claude-repo-delivery": "canonical_sha256:d4aad72c6c9d3dbb366ed78067297940d57d4bfca9936da3c6907a437a2e4789"
+    },
+    "56131a2:legacy-section": {
+      "agents-md-block": "canonical_sha256:8b4f792bd353c1bde4a68254ddb76e7351f08213b69bdc30c8f921b695fec6c3"
     },
     "5a2ee49": {
       "bin-memory-build": "canonical_sha256:9dc92bce57b2ba8c3bc2ee7b2ba82e3cb52dd60453f7de69f900422b28edc30c"
     },
-    "5f618a1": {
-      "bin-agent-engineering-mcp": "canonical_sha256:212f04f82de47d0d421de274061dff215ed9cd793ad3463a002c41aad65ee358"
+    "5cac786": {
+      "bin-memory-recall": "canonical_sha256:fe737988741bd411cfec03da3340ed6d8f502de767dded1f5151b2e57643d912"
     },
-    "6160336": {
-      "bin-domain-check": "canonical_sha256:7e408337612299b05f95c006520171243c08c4e6e28748e176922771433364f5",
-      "bin-memory-build": "canonical_sha256:74f078b7ea6f472114d45c0aa564d86fdc12b9dc65fc1597ae365b85ab6fd4db",
-      "memory-rules": "canonical_sha256:a81930807dc9bb6370de445fa083c9a52c49b04fe82b41d1b2fd00ac09d4df59",
-      "skill-agents-memory-capture": "canonical_sha256:40115a637a8e86ff8c7434d30dc66983a4bc0b5175bc206ff0f046f2a5bf1ce9",
-      "skill-agents-repo-delivery": "canonical_sha256:40c7d62f9c6ccfdfc8d92564065f3f9465d6691906a2474dfab85e32aec354da",
-      "skill-claude-memory-capture": "canonical_sha256:40115a637a8e86ff8c7434d30dc66983a4bc0b5175bc206ff0f046f2a5bf1ce9",
-      "skill-claude-repo-delivery": "canonical_sha256:40c7d62f9c6ccfdfc8d92564065f3f9465d6691906a2474dfab85e32aec354da"
+    "5f37daf": {
+      "skill-agents-delivery-gate": "canonical_sha256:3911837c3c133f007e4b9ec93c86b54f9d822191b6dce3a12682547ae12b39ad",
+      "skill-agents-repo-delivery": "canonical_sha256:963e9a237b32ed7a32357afda09282d4d651eebcfc100c1d7f7a39182d20a644",
+      "skill-claude-delivery-gate": "canonical_sha256:3911837c3c133f007e4b9ec93c86b54f9d822191b6dce3a12682547ae12b39ad",
+      "skill-claude-repo-delivery": "canonical_sha256:963e9a237b32ed7a32357afda09282d4d651eebcfc100c1d7f7a39182d20a644"
     },
     "64e6247": {
       "bin-memory-build": "canonical_sha256:afd8927adce5127f4dba23e92b0111f2b1b8d4b0c51abc2e843e5df34d0ee772",
@@ -146,13 +166,8 @@
       "bin-validate-memory.sh": "canonical_sha256:1f349a1df49315144f1ccf13a9a0e40e8e30b91b1009fae4cbf6a423fd86251c",
       "memory-rules": "canonical_sha256:a79eb4f7f42e66a7aced3202a714736c5ce2dcf2d3e4435971fd4f395cb28d94"
     },
-    "7253d18": {
-      "bin-agent-engineering-mcp": "canonical_sha256:439a8d282de1718fcd26117a1b7369b03c3031890660af331659f81f1fadf826",
-      "bin-memory-recall": "canonical_sha256:94cb298e9fa5e8baf01971fcd011eb877260622c876c41426664fa9665d8bb01",
-      "skill-agents-delivery-gate": "canonical_sha256:1f1c4b65bf7519c51f64d39d24ab7190b038476a68f065040f354aaf14ef5a82",
-      "skill-agents-repo-delivery": "canonical_sha256:c1b79bf9c9034e2b306420ad02844f944efa2782c38d0c7f8195fa48c784e56b",
-      "skill-claude-delivery-gate": "canonical_sha256:1f1c4b65bf7519c51f64d39d24ab7190b038476a68f065040f354aaf14ef5a82",
-      "skill-claude-repo-delivery": "canonical_sha256:c1b79bf9c9034e2b306420ad02844f944efa2782c38d0c7f8195fa48c784e56b"
+    "73e5f7e": {
+      "bin-agent-engineering-mcp": "canonical_sha256:859a14ad195d639fcda777f052f898ea53ddade5548430f6d9c0aae1e31c3708"
     },
     "75f1eac": {
       "skill-agents-delivery-gate": "canonical_sha256:d808ce701237a31e9320f8776792aa2febfe6258bc7ec681eac03b7ec7464b66",
@@ -163,10 +178,6 @@
     "79b8a5d": {
       "bin-validate-memory.sh": "canonical_sha256:b425c91b7396942de832ad90ee4bb5a010952a6272dade9bcd098c98cf281e9e"
     },
-    "79c3348": {
-      "bin-domain-check": "canonical_sha256:aef3751beba4015518881b17970bfd507939ee735e3a7074d322aefbeed2048c",
-      "bin-spec-migrate": "canonical_sha256:859858439104aeeb4d7b766f757bce54eaaa41d688ab43b712bec02891a0ac93"
-    },
     "8098348": {
       "agents-md-block": "canonical_sha256:86d6011d1dcc911586f23e2ab3784dd6e5d4ea922c397835751e5acbbaed8ffb",
       "claude-md-block": "canonical_sha256:1780eae3187f48793bec86f58af7689fd403fe39d1d6240d1c20a1dc6172bee7",
@@ -176,6 +187,11 @@
     "8098348:legacy-section": {
       "agents-md-block": "canonical_sha256:0fe97d342bda702302d88b6aecb88712ebfa8d48beda579f331d7339c6640098",
       "claude-md-block": "canonical_sha256:b13f6a84af0611142395397f8d9bcf0325090caa28441e3cdedcacfd223f9102"
+    },
+    "86ce789": {
+      "bin-memory-recall": "canonical_sha256:089af22f7cdcf689f7103daa5a9a7ec98fa56d7b0a9fcbecce87f20f4b30ef41",
+      "skill-agents-spec-migrate": "canonical_sha256:558a502518bedd77cd332858f2bebefa4801360adb1ad9616156cd499fcf94b2",
+      "skill-claude-spec-migrate": "canonical_sha256:558a502518bedd77cd332858f2bebefa4801360adb1ad9616156cd499fcf94b2"
     },
     "87b8ee0": {
       "bin-spec-migrate": "canonical_sha256:81852f5f12ca15dc066b25285f1de9f2ff902cd4039aaadf6a0607e487ac5823",
@@ -205,6 +221,18 @@
       "agents-md-block": "canonical_sha256:dc74014adfeedcd0eea873cc595413f5001700f20d1e71835a647c5685ee7f26",
       "claude-md-block": "canonical_sha256:0e66f19dbea2243e1f336af1fcdfb2c0118b40b293b999b5566954d6e33a88c4"
     },
+    "932cb0e": {
+      "agents-md-block": "canonical_sha256:6890ca29ab76aee184189a5197dde68abc0bd54d7e288c7e534b518cea478d33",
+      "claude-md-block": "canonical_sha256:1672626406e39aef40b5c8536c729de648d198e46880c7118337d133cec34939",
+      "skill-agents-delivery-gate": "canonical_sha256:be2c30646bfbd35dcfe3357e84c9e177097abcc65c19195efac780449a514362",
+      "skill-agents-repo-delivery": "canonical_sha256:332bb498df4d1a2ae629129d907aa629179664fdafeed80942c08c04646e0d32",
+      "skill-claude-delivery-gate": "canonical_sha256:be2c30646bfbd35dcfe3357e84c9e177097abcc65c19195efac780449a514362",
+      "skill-claude-repo-delivery": "canonical_sha256:332bb498df4d1a2ae629129d907aa629179664fdafeed80942c08c04646e0d32"
+    },
+    "932cb0e:legacy-section": {
+      "agents-md-block": "canonical_sha256:ea73e6045b796312c0c8758051f906a412a9a05b4ff1dbc9ae7402ef60328f65",
+      "claude-md-block": "canonical_sha256:002c3ce5900872ccd594fc96f215d01142ad475bb3264816b342324f033284c7"
+    },
     "a643ae3": {
       "bin-memory-build": "canonical_sha256:64b174ed117d9ac021d60eee2252a400e117f4e2f233ce83a6a00266aef11573",
       "bin-spec-migrate": "canonical_sha256:2ef3c777ff81d8c28117fee1f538dfb6eeaae5bca9374d3118c970271a1e732e",
@@ -216,14 +244,12 @@
       "memory-readme-seed": "canonical_sha256:2c728780b4fffe2c8f04adbaee90bed86c1776c9e2b788c1d575788a95fc7846",
       "memory-rules": "canonical_sha256:d99d45480d0f063f6511318889370e91ae523569fa19850d410394dfc7aba97d"
     },
-    "b11a8b3": {
-      "skill-agents-delivery-gate": "canonical_sha256:3911837c3c133f007e4b9ec93c86b54f9d822191b6dce3a12682547ae12b39ad",
-      "skill-agents-repo-delivery": "canonical_sha256:963e9a237b32ed7a32357afda09282d4d651eebcfc100c1d7f7a39182d20a644",
-      "skill-claude-delivery-gate": "canonical_sha256:3911837c3c133f007e4b9ec93c86b54f9d822191b6dce3a12682547ae12b39ad",
-      "skill-claude-repo-delivery": "canonical_sha256:963e9a237b32ed7a32357afda09282d4d651eebcfc100c1d7f7a39182d20a644"
-    },
     "b664ee2": {
       "bin-memory-build": "canonical_sha256:b09a0cadaf3c1cb137ef07e1d3ed98701cd2a5d03f96a06b02ebf7d5dbfe2e69"
+    },
+    "baa058c": {
+      "bin-memory-recall": "canonical_sha256:81c9724fe16dd3c2945b095e6f74d5ecb41437353dee4b42610db5ef5a9dcd61",
+      "bin-session-reminder": "canonical_sha256:8a71121802bacd69129b4c2a00d4e15ffd0df2a1b8beb537f6435eec2733834f"
     },
     "be47b3c": {
       "skill-agents-security-review": "canonical_sha256:41faef5a501d9c4cc62bbe668dd7480dbd981fe55934245fef5afd22228411ef",
@@ -234,43 +260,19 @@
       "skill-agents-memory-capture": "canonical_sha256:c4bfbe38eefe5619a74c2b99f6721d7caf11ecaee80ef9958991753e3e7fa684",
       "skill-claude-memory-capture": "canonical_sha256:c4bfbe38eefe5619a74c2b99f6721d7caf11ecaee80ef9958991753e3e7fa684"
     },
-    "da82b87": {
-      "bin-memory-build": "canonical_sha256:e3d0f8eb906900a798d62ed7adc56f886c2cda83f165cc2fc0f59d6472d04e4f",
-      "bin-memory-recall": "canonical_sha256:91434db07165f9f1a2d6597d07f41ec7d203b3bb400787d17d448918c956949e",
-      "bin-session-reminder": "canonical_sha256:32cb178205b7373af0225edc2d8637ccb4b12b23582b54bd13f44437918832c1",
-      "bin-spec-migrate": "canonical_sha256:7c0b0f2d589e4ff934e16fc3271e517b5fd380f3239ff0c73242d2ddf2c85833",
-      "playbook-template": "canonical_sha256:4a4eaae935dc97aca8b73e04f87752fdf12dd9e57dee16e87e04f8675226969f",
-      "skill-agents-delivery-gate": "canonical_sha256:1dcb2ede098a47666cd15877f687e8cd8a8c2ff5e2b9ba0558c279b32262ad82",
-      "skill-agents-repo-delivery": "canonical_sha256:f0f5371bf81a2c4ca7d06449dac3557220f8f820a73cfbe1985d54d0ca57bfd3",
-      "skill-claude-delivery-gate": "canonical_sha256:1dcb2ede098a47666cd15877f687e8cd8a8c2ff5e2b9ba0558c279b32262ad82",
-      "skill-claude-repo-delivery": "canonical_sha256:f0f5371bf81a2c4ca7d06449dac3557220f8f820a73cfbe1985d54d0ca57bfd3"
+    "c9d0ff5": {
+      "bin-memory-build": "canonical_sha256:68a56dbe1da85e5007cf0546193a5a0f620cbf50d8e65a73888b00169da09a52",
+      "bin-memory-recall": "canonical_sha256:f761486b310846686ffdadea6a0cb63fd40e09f9ea441cc2e3fe938f90062099",
+      "bin-validate-memory.sh": "canonical_sha256:cec972860870ae9b5bda1b619790f7306157608a054750a211773c3554a412c3",
+      "memory-rules": "canonical_sha256:f0586cf5b4851fb5641fb74f81ef3f9c5d56cee6d6f6d64a2ca248cd414c5ce3",
+      "skill-agents-memory-capture": "canonical_sha256:223a00486e21681973c60278a9bc0822ab200dd91fff806c53cb7e01fe653011",
+      "skill-agents-memory-check": "canonical_sha256:1df28d49c9b0d805374c2ee862b10b2f50104f49665653e4b45cee29e04ff885",
+      "skill-claude-memory-capture": "canonical_sha256:223a00486e21681973c60278a9bc0822ab200dd91fff806c53cb7e01fe653011",
+      "skill-claude-memory-check": "canonical_sha256:1df28d49c9b0d805374c2ee862b10b2f50104f49665653e4b45cee29e04ff885"
     },
-    "dac457d": {
-      "agents-md-block": "canonical_sha256:6890ca29ab76aee184189a5197dde68abc0bd54d7e288c7e534b518cea478d33",
-      "claude-md-block": "canonical_sha256:1672626406e39aef40b5c8536c729de648d198e46880c7118337d133cec34939",
-      "skill-agents-delivery-gate": "canonical_sha256:be2c30646bfbd35dcfe3357e84c9e177097abcc65c19195efac780449a514362",
-      "skill-agents-repo-delivery": "canonical_sha256:332bb498df4d1a2ae629129d907aa629179664fdafeed80942c08c04646e0d32",
-      "skill-claude-delivery-gate": "canonical_sha256:be2c30646bfbd35dcfe3357e84c9e177097abcc65c19195efac780449a514362",
-      "skill-claude-repo-delivery": "canonical_sha256:332bb498df4d1a2ae629129d907aa629179664fdafeed80942c08c04646e0d32"
-    },
-    "dac457d:legacy-section": {
-      "agents-md-block": "canonical_sha256:ea73e6045b796312c0c8758051f906a412a9a05b4ff1dbc9ae7402ef60328f65",
-      "claude-md-block": "canonical_sha256:002c3ce5900872ccd594fc96f215d01142ad475bb3264816b342324f033284c7"
-    },
-    "e874e7b": {
-      "agents-md-block": "canonical_sha256:a51705c468e69d3f6804c6951ac49dbc36f9f9f14128042f6ae0bad0a84fb0f4",
-      "bin-domain-check": "canonical_sha256:e084d5f83d97da73feae495bbd011d3a4f6116069a300b034df39c3d78b7b8ba",
-      "bin-memory-build": "canonical_sha256:46e889718b9f58d2d3fa10824a0e7de89c17385d2e42c9b8129c9ad1c0bd927a",
-      "bin-memory-recall": "canonical_sha256:9766a25473140d0e7385fd01ddc1bd7cccc5b8780210b8153010401685b052a8",
-      "bin-session-reminder": "canonical_sha256:3e17e70874a07098d0fad92b67afb063dabf1896e250ab8fbee7cd85f746570f",
-      "bin-spec-migrate": "canonical_sha256:c9508fec75ce0b0896a3b1f48818fc4498c9de6a8aff16a7964755ff7297df75",
-      "skill-agents-delivery-gate": "canonical_sha256:18851e529058c0a4192962b5f24a87a2f83ad559e83cd5c0c151f01e98dd48fe",
-      "skill-agents-repo-delivery": "canonical_sha256:d4aad72c6c9d3dbb366ed78067297940d57d4bfca9936da3c6907a437a2e4789",
-      "skill-claude-delivery-gate": "canonical_sha256:18851e529058c0a4192962b5f24a87a2f83ad559e83cd5c0c151f01e98dd48fe",
-      "skill-claude-repo-delivery": "canonical_sha256:d4aad72c6c9d3dbb366ed78067297940d57d4bfca9936da3c6907a437a2e4789"
-    },
-    "e874e7b:legacy-section": {
-      "agents-md-block": "canonical_sha256:8b4f792bd353c1bde4a68254ddb76e7351f08213b69bdc30c8f921b695fec6c3"
+    "d3b3fc8": {
+      "bin-domain-check": "canonical_sha256:aef3751beba4015518881b17970bfd507939ee735e3a7074d322aefbeed2048c",
+      "bin-spec-migrate": "canonical_sha256:859858439104aeeb4d7b766f757bce54eaaa41d688ab43b712bec02891a0ac93"
     },
     "ebc491d": {
       "bin-memory-build": "canonical_sha256:64007544f7948949ff4221db7251b613b7f7554960a85923ddc4d7610bb11893",
@@ -329,11 +331,23 @@
       "agents-md-block": "canonical_sha256:df149d69db7de7a1f51dcb50465dc323ecfa38ae4249e55f95883eba1a2f153d",
       "claude-md-block": "canonical_sha256:2105a526a3607fa1a414206722fc39eadebf51c78b42a2d13ed298ae99521ce1"
     },
+    "f5cd454": {
+      "bin-domain-check": "canonical_sha256:7e408337612299b05f95c006520171243c08c4e6e28748e176922771433364f5",
+      "bin-memory-build": "canonical_sha256:74f078b7ea6f472114d45c0aa564d86fdc12b9dc65fc1597ae365b85ab6fd4db",
+      "memory-rules": "canonical_sha256:a81930807dc9bb6370de445fa083c9a52c49b04fe82b41d1b2fd00ac09d4df59",
+      "skill-agents-memory-capture": "canonical_sha256:40115a637a8e86ff8c7434d30dc66983a4bc0b5175bc206ff0f046f2a5bf1ce9",
+      "skill-agents-repo-delivery": "canonical_sha256:40c7d62f9c6ccfdfc8d92564065f3f9465d6691906a2474dfab85e32aec354da",
+      "skill-claude-memory-capture": "canonical_sha256:40115a637a8e86ff8c7434d30dc66983a4bc0b5175bc206ff0f046f2a5bf1ce9",
+      "skill-claude-repo-delivery": "canonical_sha256:40c7d62f9c6ccfdfc8d92564065f3f9465d6691906a2474dfab85e32aec354da"
+    },
     "f715f9d": {
       "skill-agents-memory-capture": "canonical_sha256:327761571b1db4249bae858ac5640fc654151394798e30e8704d36e9b5df7739",
       "skill-agents-memory-check": "canonical_sha256:aefc7b4ea607c852233da30341f21689b52663113066545c44d2d36f7d2c0b19",
       "skill-claude-memory-capture": "canonical_sha256:327761571b1db4249bae858ac5640fc654151394798e30e8704d36e9b5df7739",
       "skill-claude-memory-check": "canonical_sha256:aefc7b4ea607c852233da30341f21689b52663113066545c44d2d36f7d2c0b19"
+    },
+    "fed6d47": {
+      "bin-memory-recall": "canonical_sha256:568444a51e2d096884c48bd57a3e47c47b877444ccdc7893f809e3c0490caa7b"
     },
     "ff16913": {
       "agents-md-block": "canonical_sha256:576c2ecbb209194228b400d20860f8ea2368baf89294648e5c851b7ebdf83a76",
@@ -359,6 +373,9 @@
     },
     "legacy-gitignore-v1": {
       "gitignore-block": "canonical_sha256:179dddd7835040d2118fd64867f1ff953ba1f6d5de176df5e0078c8641dbb182"
+    },
+    "legacy-gitignore-v2": {
+      "gitignore-block": "canonical_sha256:2ea670aff85fe14b517911328d619bf294bc538595181221b69086dc821471dd"
     }
   }
 }

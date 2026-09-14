@@ -73,8 +73,12 @@ def merge_fragment(container: dict, fragment: Any, locator: str) -> dict:
     keys = locator.split(".")
     current = container
     for key in keys[:-1]:
-        if not isinstance(current.get(key), dict):
+        existing = current.get(key)
+        if existing is None:
             current[key] = {}
+        elif not isinstance(existing, dict):
+            raise ValueError(f"容器路径 {'.'.join(keys)} 的 {key} 不是对象"
+                             f"（是 {type(existing).__name__}），拒绝覆盖用户内容")
         current = current[key]
     current[keys[-1]] = fragment
     return container
@@ -87,16 +91,22 @@ def merge_hook(container: dict, hook: dict, spec: ResourceSpec) -> dict:
     if not isinstance(hooks, dict):
         raise ValueError(f"hooks 不是对象: {spec.destination_path}")
     ss = hooks.setdefault("SessionStart", [])
+    if not isinstance(ss, list):
+        raise ValueError(f"hooks.SessionStart 不是数组: {spec.destination_path}")
     for entry in ss:
-        for h in entry.get("hooks", []):
-            if h.get("command") == spec.expected_hook_command:
+        if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+            continue
+        for h in entry["hooks"]:
+            if isinstance(h, dict) and h.get("command") == spec.expected_hook_command:
                 h.clear()
                 h.update(hook)
                 return container
     for entry in ss:
-        if entry.get("matcher") == HOOK_MATCHER:
-            entry.setdefault("hooks", []).append(hook)
-            return container
+        if isinstance(entry, dict) and entry.get("matcher") == HOOK_MATCHER:
+            entry_hooks = entry.get("hooks")
+            if isinstance(entry_hooks, list):
+                entry_hooks.append(hook)
+                return container
     ss.append({"matcher": HOOK_MATCHER, "hooks": [hook]})
     return container
 

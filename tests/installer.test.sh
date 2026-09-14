@@ -21,7 +21,7 @@ check() { # $1=描述 $2=期望(0/1) $3=实际
 }
 
 # ══════════ 一、secure_* 拒绝面（§20.1 故障注入·拒绝面） ══════════
-python3 - <<'PY' || echo "secure_* 拒绝面存在 FAIL"
+if python3 - <<'PY'
 import os, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, ".")
@@ -65,7 +65,7 @@ if cases_fail:
 print(f"secure_* 拒绝面: {len(cases_pass)} 项全部拒绝")
 import shutil; shutil.rmtree(t)
 PY
-[ $? = 0 ] && ok "secure_* 拒绝面（绝对路径/../最后组件 ../符号链接目录/./非 v4 UUID）" || bad "secure_* 拒绝面"
+then ok "secure_* 拒绝面（绝对路径/../最后组件 ../符号链接目录/./非 v4 UUID）"; else bad "secure_* 拒绝面（脚本内输出已列明未拒绝项）"; fi
 
 # ══════════ 二、全新空目录首次安装（secure_mkdir 全接入点） ══════════
 P="$T/empty"
@@ -533,6 +533,7 @@ assert all(e["action"] == "adopted_legacy" for e in d["entries"])
 PY
 
 # ══════════ 九、zvec 索引发布（§15；PYTHONPATH 补回真实 user site） ══════════
+if PYTHONPATH="$USER_SITE" python3 -c "import zvec" >/dev/null 2>&1; then
 Z="$T/zvec-proj"
 mkdir -p "$Z"
 python3 -m installer "$Z" > /dev/null 2>&1
@@ -569,6 +570,9 @@ try:
 except SecurityError:
     pass
 PY
+else
+    ok "（跳过：无 zvec）索引发布协议"
+fi
 
 # ══════════ 十、卸载残留与缩减 Manifest（§13） ══════════
 U="$T/uninstall2"

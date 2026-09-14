@@ -234,6 +234,11 @@ def migrate_to_modules(entries, mem, target):
         d = os.path.join(mem, mod)
         os.makedirs(d, exist_ok=True)
         dst = os.path.join(d, os.path.basename(e["path"]))
+        if os.path.exists(dst):
+            # 同名冲突（两个类型目录的条目同名，或模块目录已有同名文件）：
+            # 绝不覆盖——git/svn mv 本会失败，裸 os.rename 会静默吞掉目标文件。
+            print(f"✗ 跳过 {e['rel']} → {mod}/{os.path.basename(dst)}：目标已存在同名文件，请手工改名后重试")
+            continue
         moved = False
         if kind == "git":
             moved = subprocess.run(["git", "-C", target, "mv", e["path"], dst],

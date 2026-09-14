@@ -95,13 +95,16 @@ class Manifest:
                 f"manifest_version 非法: {data.get('manifest_version')!r}（期望 {MANIFEST_VERSION}）")
         try:
             entries = [ManifestEntry.from_dict(e) for e in data["entries"]]
+            kit_version = str(data["kit_version"])
+            target_repo = str(data["target_repo"])
+            installed_at = str(data["installed_at"])
         except KeyError as e:
             raise ManifestCorruptError(f"manifest 缺字段: {e}")
         return cls(
             manifest_version=MANIFEST_VERSION,
-            kit_version=str(data["kit_version"]),
-            target_repo=str(data["target_repo"]),
-            installed_at=str(data["installed_at"]),
+            kit_version=kit_version,
+            target_repo=target_repo,
+            installed_at=installed_at,
             entries=entries,
         )
 

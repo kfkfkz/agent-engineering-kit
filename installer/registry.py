@@ -276,7 +276,11 @@ def legacy_state_owned(target: Path, rel: str) -> bool:
     if rel == STATE_REGISTRY["state.legacy-manifest-v1"].destination_path:
         v1_paths = ({s.destination_path for s in REGISTRY
                     if s.resource_type == "owned_file"}
-                    | {STATE_REGISTRY["state.codex-workspace-marker"].destination_path})
+                    | {STATE_REGISTRY["state.codex-workspace-marker"].destination_path}
+                    # v3 时代的模板路径（按类型目录布局）——存量 v1 清单里有这些行
+                    | {"docs/memory/pitfalls/_TEMPLATE.md",
+                       "docs/memory/decisions/_TEMPLATE.md",
+                       "docs/memory/playbooks/_TEMPLATE.md"})
         for line in text.splitlines():
             line = line.rstrip("\n")
             if not line:
@@ -688,12 +692,17 @@ def fragment_from_bytes(spec: ResourceSpec, data: bytes):
             data_obj = json.loads(data.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             raise ContainerUnreadableError(Path(spec.destination_path), e)
-        hooks = (data_obj.get("hooks", {}) if isinstance(data_obj, dict)
-                 else {}).get("SessionStart", [])
-        for entry in hooks:
-            for h in entry.get("hooks", []):
-                if h.get("command") == spec.expected_hook_command:  # 精确匹配
-                    return h
+        hooks = data_obj.get("hooks") if isinstance(data_obj, dict) else None
+        ss = hooks.get("SessionStart") if isinstance(hooks, dict) else None
+        if not isinstance(ss, list):
+            return FRAGMENT_ABSENT        # 结构异常（非数组）按片段缺失处理，不崩溃
+        for entry in ss:
+            entry_hooks = entry.get("hooks") if isinstance(entry, dict) else None
+            if not isinstance(entry_hooks, list):
+                continue
+            for h in entry_hooks:
+                if isinstance(h, dict) and h.get("command") == spec.expected_hook_command:
+                    return h              # 精确匹配
         return FRAGMENT_ABSENT
 
     raise ValueError(f"Unknown type: {spec.resource_type}")
@@ -770,7 +779,11 @@ def _generate_block(spec: ResourceSpec, target: Path) -> str:
     if spec.id == "cbmignore-block":
         content = "!docs/\ndocs/*\n!docs/memory/\n"
     elif spec.id == "gitignore-block":
-        content = ".repo-memory-kit/zvec/\n"
+        # v4 起索引/锚点是 .repo-memory-kit/ 下的每机派生物（双跑必冲突），
+        # 与语义索引一并 ignore——git 仓库防误提交
+        content = (".repo-memory-kit/zvec/\n"
+                   ".repo-memory-kit/memory-index.md\n"
+                   ".repo-memory-kit/.anchors.json\n")
     elif spec.id == "mcp-codex":
         content = (f"[mcp_servers.agent-engineering]\n"
                    f"command = \"{target / '.repo-memory-kit' / 'bin' / 'agent-engineering-mcp'}\"\n")

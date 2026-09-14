@@ -13,6 +13,7 @@ from .manifest import Manifest, ManifestCorruptError, read_manifest
 from .registry import (
     REGISTRY,
     ContainerUnreadableError,
+    SecurityError,
     current_kit_version,
     determine_status,
 )
@@ -43,6 +44,15 @@ def run_doctor(target: Path, *, codex_root_cli: Path | None = None) -> int:
     if not target.is_dir():
         print(f"✗ 目标目录不存在: {target}")
         return 1
+    # codex_root 未显式传入时退回已记录的 workspace marker（与卸载同口径，
+    # 沿用旧 install.sh 行为）——否则装过链接的项目 doctor 永远 unverifiable
+    if codex_root_cli is None:
+        from .registry import read_codex_workspace_marker
+        marker_root = read_codex_workspace_marker(target)
+        if marker_root is not None:
+            codex_root_cli = marker_root
+            print(f"提示: 使用已记录的 Codex workspace: {marker_root}"
+                  f"（来自 .repo-memory-kit/codex-workspace-root）")
     fd = try_open_install_lock_shared(target)      # §14.0（只读，绝不创建）
     try:
         if fd == -1:
@@ -106,6 +116,12 @@ def run_doctor_checks(target: Path,
         except ContainerUnreadableError as e:
             add("DRIFTED", Finding(spec.id, spec.destination_path,
                                    "drifted", f"容器不可读: {e}"))
+            continue
+        except SecurityError as e:
+            # codex link 派生校验失败（workspace 结构异常）：报告为 finding，
+            # 不让单个资源把整个 doctor 打崩
+            add("CONFLICT", Finding(spec.id, spec.destination_path,
+                                    "conflict", f"路径/权限校验失败: {e}"))
             continue
 
         # codex_link 无法核验 → unverifiable（不猜状态，不计入优先级）

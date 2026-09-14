@@ -789,10 +789,8 @@ def recover(target: Path) -> RecoveryResult:
         if not classified["OLD"]:
             # 全部已提交 → roll-forward：补收尾
             if tx.kind == "install":
-                from .registry import current_kit_version
-                manifest = build_manifest_from_tx(
-                    target, current_kit_version(), classified["NEW"])
-                _write_manifest(target, manifest)
+                _write_manifest(target, _rollforward_manifest(
+                    target, classified["NEW"]))
             cleanup_staging(target, tx)
             failures = restore_external_links(target, tx)
             if failures:
@@ -820,6 +818,27 @@ def recover(target: Path) -> RecoveryResult:
 def _write_manifest(target: Path, manifest: Manifest) -> None:
     from .manifest import write_manifest_atomic
     write_manifest_atomic(target, manifest)
+
+
+def _rollforward_manifest(target: Path, steps) -> Manifest:
+    """roll-forward 收尾的 Manifest：从已提交步骤重建，并保留既有清单中
+    未被本事务覆盖的残留条目（v9「管理记录不丢失」——install 的正常路径
+    assemble_manifest 会保留残留记录，恢复路径不得丢失它们）。
+    既有清单损坏 → 只用重建结果（不阻断恢复收尾）。"""
+    from .manifest import ManifestCorruptError, read_manifest
+    from .registry import _SPEC_ORDER, current_kit_version
+    rebuilt = build_manifest_from_tx(target, current_kit_version(), steps)
+    try:
+        old = read_manifest(target)
+    except ManifestCorruptError:
+        old = None
+    if old is not None:
+        have = {e.spec_id for e in rebuilt.entries}
+        for e in old.entries:
+            if e.spec_id not in have:
+                rebuilt.entries.append(e)
+        rebuilt.entries.sort(key=lambda e: _SPEC_ORDER.get(e.spec_id, len(_SPEC_ORDER)))
+    return rebuilt
 
 
 def recover_manual(target: Path, strategy: str) -> RecoveryResult:
@@ -871,10 +890,8 @@ def recover_manual(target: Path, strategy: str) -> RecoveryResult:
                 write_transaction_atomic(target, tx)
                 return RecoveryResult("needs_human", detail=tx.detail)
         if tx.kind == "install":
-            from .registry import current_kit_version
-            manifest = build_manifest_from_tx(
-                target, current_kit_version(), classified["NEW"] + classified["OLD"])
-            _write_manifest(target, manifest)
+            _write_manifest(target, _rollforward_manifest(
+                target, classified["NEW"] + classified["OLD"]))
         cleanup_staging(target, tx)
         failures = restore_external_links(target, tx)
         if failures:
