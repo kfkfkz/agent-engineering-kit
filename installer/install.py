@@ -479,6 +479,21 @@ def run_install(target: Path, *, repair: bool = False,
                 tx.write(target)
                 return 1
 
+        # 步骤 8.5：写 codex workspace marker（P1 回归——必须在 committing
+        # 之前：首次安装的链接创建在 done 前发生，若在此处之前崩溃，
+        # recover() 从 marker 读 codex_root 补建链接；marker 晚于 committing
+        # 则首次安装无法恢复）
+        if codex_root is not None:
+            from .registry import (STATE_REGISTRY, secure_open, write_all)
+            marker_rel = STATE_REGISTRY["state.codex-workspace-marker"].destination_path
+            fd = secure_open(target, marker_rel,
+                            os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            try:
+                write_all(fd, (str(codex_root) + "\n").encode())
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
         # 步骤 9：★ committing 落盘（不变量 2：先于首个 os.replace/unlink）
         tx.status = "committing"
         tx.write(target)

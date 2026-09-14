@@ -216,12 +216,16 @@ def _dispatch_install(a: CliArgs, repo: Path, codex: Optional[Path]) -> int:
     if rc != 0:
         return rc
     if not a.dry_run:
-        rc = max(rc, _post_install_extras(
+        _sub_rc = _post_install_extras(
             repo, a.migrate_features, a.sdd_layout, a.sdd_version,
-            a.with_codebase_memory))
+            a.with_codebase_memory)
+        if _sub_rc != 0:
+            rc = rc if rc != 0 else 1   # 信号终止（负数）归一化为 1
     if rc == 0 and a.dry_run and a.migrate_features is not None:
-        rc = max(rc, _spec_migrate_dry_run(
-            repo, a.migrate_features, a.sdd_layout, a.sdd_version))
+        _sub_rc = _spec_migrate_dry_run(
+            repo, a.migrate_features, a.sdd_layout, a.sdd_version)
+        if _sub_rc != 0:
+            rc = rc if rc != 0 else 1
     if rc == 0 and not a.dry_run and a.with_svn:
         rc = _svn_setup(repo)
     return rc

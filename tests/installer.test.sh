@@ -879,22 +879,30 @@ print("恢复路径窗口防护 OK")
 PY
 [ $? = 0 ] && ok "P2.4 rename 隔离原语（正常+窗口+恢复三路径）" || bad "P2.4 TOCTOU 防护失败"
 
-# 14.5 legacy 生成器可用性（P1：上轮引入的回归）
-python3 -m installer.legacy --generate > "$T/p2-gen.log" 2>&1
+# 14.5 legacy 生成器可用性（P1：不修改被测仓库——在临时副本中运行）
+GEN_TMP="$T/legacy-gen-test"
+mkdir -p "$GEN_TMP"
+cp -r "$SRC/installer" "$SRC/templates" "$SRC/skills" "$GEN_TMP/" 2>/dev/null
+(cd "$GEN_TMP" && python3 -m installer.legacy --generate) > "$T/p2-gen.log" 2>&1
 check "P2.5a legacy --generate 退出码 0" 0 $?
 grep -q "已生成" "$T/p2-gen.log" && ok "P2.5b 生成器输出正常" || bad "P2.5b 生成器无输出"
-python3 -c "from installer.legacy import generate_legacy_hashes; generate_legacy_hashes()"     && ok "P2.5c generate_legacy_hashes 可导入调用" || bad "P2.5c 模块级函数不可用"
+python3 -c "from installer.legacy import generate_legacy_hashes; print('ok')" \
+    && ok "P2.5c generate_legacy_hashes 可导入调用" || bad "P2.5c 模块级函数不可用"
+git diff --quiet -- installer/legacy_hashes.json \
+    && ok "P2.5d 生成器测试不修改被测仓库" || bad "P2.5d 生成器污染工作区"
 
-# 14.6 dry-run 迁移退出码传播机制（P1-4b：验证 rc 传播，非 spec-migrate 行为）
-python3 - <<'PYEOF' && ok "P2.6 dry-run 迁移退出码传播机制" || bad "P2.6 传播机制缺失"
-import ast, sys
-# 静态验证：_dispatch_install 中 dry-run+migrate 的返回值被 max() 接收
+# 14.6 旁路步骤退出码传播（P1-4b：信号终止归一化 + 非零传播）
+python3 - <<'PYEOF' && ok "P2.6 旁路退出码传播机制（含信号归一化）" || bad "P2.6 传播机制缺失"
 src = open("installer/__init__.py").read()
-assert "rc = max(rc, _spec_migrate_dry_run(" in src, \
-    "dry-run 迁移退出码未被传播"
-# 验证 _spec_migrate_dry_run 返回 int
+# dry-run + migrate：子进程返回值被检查（不再用 max() 吞负数）
+assert "_sub_rc = _spec_migrate_dry_run(" in src, \
+    "dry-run 迁移退出码未被接收"
+assert "_sub_rc != 0" in src, \
+    "旁路退出码未传播"
 assert "return proc.returncode" in src, \
     "_spec_migrate_dry_run 未返回子进程退出码"
+assert "max(rc," not in src, \
+    "max() 会把信号退出码（负数）吞成成功"
 print("mechanism verified")
 PYEOF
 
