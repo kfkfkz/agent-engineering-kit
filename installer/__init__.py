@@ -42,6 +42,7 @@ class CliArgs:
     with_codebase_memory: bool = False
     with_svn: bool = False
     lightweight: bool = False
+    link_strategy: Optional[str] = None   # auto|symlink|copy（默认 auto=POSIX symlink/Windows copy）
 
 
 def _check_python() -> None:
@@ -67,6 +68,7 @@ _FLAG_ACTIONS = {
 _ARG_ACTIONS = {
     "--codex-root":   ("codex_root", "目录参数"),
     "--sdd-version":  ("sdd_version", "版本目录名参数"),
+    "--link-strategy": ("link_strategy", "auto|symlink|copy"),
 }
 
 _RECOVER_MODES = {"--recover=rollback": "rollback", "--recover=roll-forward": "roll-forward"}
@@ -165,6 +167,8 @@ def _validate(a: CliArgs) -> Path:
          "错误: --lightweight 仅用于安装方向"),
         (a.migrate_features is not None and a.mode != "install",
          "错误: --migrate-specify 仅用于安装方向"),
+        (a.link_strategy is not None and a.link_strategy not in ("auto", "symlink", "copy"),
+         "错误: --link-strategy 只接受 auto|symlink|copy"),
     ]
     for cond, msg in checks:
         if cond:
@@ -211,8 +215,14 @@ def _dispatch_readonly(a: CliArgs, repo: Path, codex: Optional[Path]) -> Optiona
 
 def _dispatch_install(a: CliArgs, repo: Path, codex: Optional[Path]) -> int:
     from .install import run_install
+    # link-strategy 解析：auto → 平台默认
+    _strategy = a.link_strategy
+    if _strategy == "auto" or _strategy is None:
+        import sys as _sys
+        _strategy = "copy" if _sys.platform == "win32" else "symlink"
     rc = run_install(repo, repair=(a.mode == "repair"), codex_root=codex,
-                     dry_run=a.dry_run, lightweight=a.lightweight)
+                     dry_run=a.dry_run, lightweight=a.lightweight,
+                     link_strategy=_strategy)
     if rc != 0:
         return rc
     if not a.dry_run:

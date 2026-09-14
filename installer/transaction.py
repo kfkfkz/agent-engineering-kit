@@ -101,7 +101,7 @@ class ExternalStep:
     spec_id: str
     skill_name: str
     codex_root: str                # 本次卸载 CLI 重传的 --codex-root（HMAC 保护下可回放）
-    prior_state: Literal["absent", "pointing_to_target", "other"]
+    prior_state: Literal["absent", "pointing_to_target", "content_matches", "other"]
     state: Literal["intent", "removed"] = "intent"
 
     def to_dict(self) -> dict:

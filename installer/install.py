@@ -360,26 +360,44 @@ def assemble_manifest(target: Path, preflight: PreflightResult,
 # ══════════════════════════ §16 安装方向的 codex 链接（post-commit 尽力步骤） ══════════════════════════
 
 def ensure_codex_links(target: Path, codex_root: Path,
-                        preflight: PreflightResult) -> list[str]:
-    """安装方向链接创建不在事务内（§12 无外部步骤；§16 仅卸载方向三段式）：
-    validate → 空位创建；已指 target → 无事；他指/被占 → 报告不覆盖。"""
+                       preflight: PreflightResult,
+                       strategy: str = "symlink") -> list[str]:
+    """安装方向技能暴露到 workspace。
+    strategy="symlink"：os.symlink（POSIX 默认——单一事实源）。
+    strategy="copy"：复制 SKILL.md（Windows 默认——不依赖 symlink 权限）。"""
+    import shutil as _shutil
     reports: list[str] = []
     for spec in preflight.external_set:
         link_spec = CodexLinkSpec(skill_name=spec.link_skill_name)
-        link_spec.validate(codex_root, target)      # ★ 任何派生前先验证（v11）
+        link_spec.validate(codex_root, target)
         link = link_spec.derive_link_path(codex_root)
         expected = link_spec.derive_target_path(target)
-        if link.is_symlink():
-            if os.readlink(link) == str(expected):
+        if strategy == "copy":
+            source = expected / "SKILL.md"
+            dest = link / "SKILL.md"
+            if dest.is_file():
+                if dest.read_bytes() == source.read_bytes():
+                    continue
+                reports.append(f"✗ {dest} 已存在且内容不同，拒绝覆盖")
                 continue
-            reports.append(f"✗ {link} 已指向其他目标，拒绝覆盖")
-            continue
-        if link.exists():
-            reports.append(f"✗ {link} 已存在且不是符号链接，拒绝创建")
-            continue
-        link.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(str(expected), link)
-        reports.append(f"✓ 已创建 Codex workspace 技能链接 {link}")
+            if link.exists() and not link.is_dir():
+                reports.append(f"✗ {link} 已存在且不是目录，拒绝创建")
+                continue
+            link.mkdir(parents=True, exist_ok=True)
+            _shutil.copy2(source, dest)
+            reports.append(f"✓ 已复制技能到 Codex workspace {dest}")
+        else:
+            if link.is_symlink():
+                if os.readlink(link) == str(expected):
+                    continue
+                reports.append(f"✗ {link} 已指向其他目标，拒绝覆盖")
+                continue
+            if link.exists():
+                reports.append(f"✗ {link} 已存在且不是符号链接，拒绝创建")
+                continue
+            link.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(str(expected), link)
+            reports.append(f"✓ 已创建 Codex workspace 技能链接 {link}")
     if preflight.external_set:
         from .registry import STATE_REGISTRY, secure_open, write_all
         marker_rel = STATE_REGISTRY["state.codex-workspace-marker"].destination_path
@@ -398,7 +416,8 @@ def ensure_codex_links(target: Path, codex_root: Path,
 def run_install(target: Path, *, repair: bool = False,
                 codex_root: Path | None = None,
                 dry_run: bool = False,
-                lightweight: bool = False) -> int:
+                lightweight: bool = False,
+                link_strategy: str = "symlink") -> int:
     target = target.resolve()
     if not target.is_dir():
         print(f"✗ 目标目录不存在: {target}")
@@ -543,7 +562,8 @@ def run_install(target: Path, *, repair: bool = False,
 
         # 步骤 12：workspace 链接（在 done 之前——P2 回归：done 先写则崩溃
         # 窗口内 recover 无从补偿；链接在 done 前失败 → committing → 可恢复）
-        link_reports = (ensure_codex_links(target, codex_root, preflight)
+        link_reports = (ensure_codex_links(target, codex_root, preflight,
+                                           strategy=link_strategy)
                         if codex_root is not None else [])
 
         # 步骤 13：done + 清理

@@ -175,19 +175,37 @@ def build_removal_content(target: Path, group: list[ResourceSpec],
 
 def plan_external_removal(target: Path, codex_root_cli: Path,
                            spec: ResourceSpec) -> ExternalStep:
-    """只判定（validate + prior_state），不 unlink——intent 由调用方先落盘。"""
+    """只判定（validate + prior_state），不 unlink——intent 由调用方先落盘。
+    支持符号链接（POSIX）和复制模式（Windows）：copy 的 prior_state 为
+    'content_matches'（内容 hash 验证）。"""
     link_spec = CodexLinkSpec(skill_name=spec.link_skill_name)
-    link_spec.validate(codex_root_cli, target)   # ★ 任何派生前先验证（v11）
+    link_spec.validate(codex_root_cli, target)
     link = link_spec.derive_link_path(codex_root_cli)
-    expected = str(link_spec.derive_target_path(target))
+    expected = link_spec.derive_target_path(target)
     step = ExternalStep(spec_id=spec.id, skill_name=spec.link_skill_name,
                         codex_root=str(codex_root_cli), prior_state="absent")
-    if not link.is_symlink():
-        return step                                  # absent：无事可做
-    if os.readlink(link) != expected:
-        step.prior_state = "other"                   # 不属 kit，保留
+
+    # 符号链接判定（POSIX 默认）
+    if link.is_symlink():
+        if os.readlink(link) == str(expected):
+            step.prior_state = "pointing_to_target"
+        else:
+            step.prior_state = "other"
         return step
-    step.prior_state = "pointing_to_target"
+
+    # 复制模式判定（Windows 默认）：检查 SKILL.md 内容 hash
+    skill_md = link / "SKILL.md"
+    if not link.is_dir() or not skill_md.is_file():
+        return step                                  # absent：无事可做
+    source_md = expected / "SKILL.md"
+    if not source_md.is_file():
+        return step                                  # 源已不存在
+    import hashlib as _h
+    if _h.sha256(skill_md.read_bytes()).hexdigest() == \
+       _h.sha256(source_md.read_bytes()).hexdigest():
+        step.prior_state = "content_matches"         # 复制的 kit 内容
+    else:
+        step.prior_state = "other"                   # 被用户修改
     return step
 
 
@@ -275,12 +293,31 @@ def _resolve_orphan(parent_fd: int, iso_name: str,
 
 
 def execute_external_removal(target: Path, step: ExternalStep) -> None:
-    """安全删除外部链接（复用 safe_unlink_external_link 的 rename 隔离原语）。"""
+    """安全删除外部资源：符号链接（rename 隔离）或复制文件（hash 校验后删）。"""
     link_spec = CodexLinkSpec(skill_name=step.skill_name)
     link_spec.validate(Path(step.codex_root), target)
     link = link_spec.derive_link_path(Path(step.codex_root))
-    expected = str(link_spec.derive_target_path(target))
-    safe_unlink_external_link(link, expected)
+    expected = link_spec.derive_target_path(target)
+
+    if step.prior_state == "content_matches":
+        # 复制模式：删除整个技能目录（只含 SKILL.md）
+        skill_md = link / "SKILL.md"
+        source_md = expected / "SKILL.md"
+        if skill_md.is_file():
+            import hashlib as _h
+            src_hash = (_h.sha256(source_md.read_bytes()).hexdigest()
+                        if source_md.is_file() else None)
+            dst_hash = (_h.sha256(skill_md.read_bytes()).hexdigest()
+                        if skill_md.is_file() else None)
+            if src_hash and dst_hash and src_hash == dst_hash:
+                import shutil as _shutil
+                _shutil.rmtree(link)     # 复制模式：删除整个目录
+                return
+        raise OSError(f"复制的技能内容已被修改，拒绝删除: {skill_md}")
+
+    # 符号链接模式
+    expected_str = str(expected)
+    safe_unlink_external_link(link, expected_str)
 
 
 # ══════════════════════════ 主流程（§13） ══════════════════════════

@@ -383,16 +383,27 @@ def current_kit_version() -> str:
 # ══════════════════════════ §6 路径安全 ══════════════════════════
 
 def validate_safe_path(path: Path, target: Path) -> None:
-    """preflight 只读检查：逐级 lstat 无符号链接，最终路径在 target 内。"""
-    current = Path("/")
-    for part in path.parts[1:]:
-        current = current / part
+    """preflight 只读检查：逐级 lstat 无符号链接，最终路径在 target 内。
+    Windows：只检查 target 内的组件（islink+junction 预检），target 外的
+    路径组件不在管辖范围（drive/UNC 路径的 lstat 语义不适用）。"""
+    import sys as _sys
+    if _sys.platform == "win32":
+        # Windows：检查 target 内的路径组件无 reparse point
         try:
-            st = current.lstat()
-            if stat_module.S_ISLNK(st.st_mode):
-                raise SecurityError(f"symlink in path: {current}")
-        except FileNotFoundError:
-            pass
+            rel = path.resolve().relative_to(target.resolve())
+        except ValueError:
+            raise SecurityError(f"path escapes target: {path}")
+        _fs().check_path_safe(target, str(rel).replace(os.sep, "/"))
+    else:
+        current = Path("/")
+        for part in path.parts[1:]:
+            current = current / part
+            try:
+                st = current.lstat()
+                if stat_module.S_ISLNK(st.st_mode):
+                    raise SecurityError(f"symlink in path: {current}")
+            except FileNotFoundError:
+                pass
 
     try:
         common = os.path.commonpath([str(path.resolve()), str(target.resolve())])
@@ -812,13 +823,30 @@ def determine_status(target: Path, spec: ResourceSpec, entry,
         link_spec = CodexLinkSpec(skill_name=spec.link_skill_name)
         link_spec.validate(codex_root_cli, target)   # ★ 任何派生前先验证（v11）
         link = link_spec.derive_link_path(codex_root_cli)
-        expected = str(link_spec.derive_target_path(target))
-        if link.is_symlink() and os.readlink(link) == expected:
-            return "managed"
+        expected = link_spec.derive_target_path(target)
+
+        # 符号链接判定（POSIX）
+        if link.is_symlink():
+            if os.readlink(link) == str(expected):
+                return "managed"
+            if entry is None:
+                return "conflict"
+            return "drifted"
+
+        # 复制模式判定（Windows）：SKILL.md 内容 hash 匹配 → managed
+        skill_md = link / "SKILL.md"
+        if skill_md.is_file():
+            source_md = expected / "SKILL.md"
+            if source_md.is_file():
+                import hashlib as _h
+                if (_h.sha256(skill_md.read_bytes()).hexdigest()
+                        == _h.sha256(source_md.read_bytes()).hexdigest()):
+                    return "managed"      # 复制的 kit 内容，一致
+
         if entry is None:
-            return "conflict" if (link.exists() or link.is_symlink()) else "managed"
-            # 非 kit 链接占位 → conflict（不覆盖）；空位 → 可创建
-        return "drifted"                   # 有记录但链接缺失/不匹配
+            return "conflict" if link.exists() else "managed"
+            # 非 kit 占位 → conflict；空位 → 可创建
+        return "drifted"                   # 有记录但资源缺失/不匹配
 
     # —— 通用片段模型（owned_file / json_fragment / managed_block / hook）——
     dst = target / spec.destination_path
