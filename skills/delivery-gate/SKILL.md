@@ -1,6 +1,6 @@
 ---
 name: delivery-gate
-description: "交付门禁，两种形态：代码变更走 diff 证据化审查+对抗复核+验证闭环+回执；设计文档（需求澄清/业务流程设计/详细设计/任务清单）走结构/字段/一致性/可验证性审查+回执。验证回执是声称验证通过的唯一证据形态；两种形态共用结论枚举 READY / NOT READY / NEEDS HUMAN REVIEW。"
+description: "交付门禁，两种形态：代码变更走 diff 证据化审查+对抗复核+验证闭环+回执；设计文档（需求澄清/业务流程设计/详细设计/任务清单）走结构/字段/一致性/可验证性审查+回执。验证回执是声称验证通过的唯一证据形态（载体由 governance 标记决定）；两种形态共用结论枚举 READY / NOT READY / NEEDS HUMAN REVIEW。"
 ---
 
 # 交付门禁
@@ -62,7 +62,7 @@ description: "交付门禁，两种形态：代码变更走 diff 证据化审查
 
 ## 验证回执（必需产物）
 
-验证结论必须落持久回执，这是**声称验证通过的唯一证据形态**——对话内叙述的验证结果不构成完成依据。回执写入 `docs/delivery-receipts/YYYY-MM-DD-<中文任务名>.md`；**同日同任务重跑时追加 `-2`、`-3` 序号，不覆盖**（目录不存在则创建）：
+验证结论必须落持久回执，这是**声称验证通过的唯一证据形态**——对话内叙述的验证结果不构成完成依据。回执载体由 `.repo-memory-kit/governance` 决定（见「治理等级」节）：strict 写入 `docs/delivery-receipts/YYYY-MM-DD-<中文任务名>.md`，lightweight 低风险允许 commit message 内嵌；**同日同任务重跑时追加 `-2`、`-3` 序号，不覆盖**（目录不存在则创建）：
 
 ```markdown
 ---

@@ -191,25 +191,53 @@ def plan_external_removal(target: Path, codex_root_cli: Path,
     return step
 
 
-def execute_external_removal(target: Path, step: ExternalStep) -> None:
-    """unlink 前经父目录 fd 重新核验（P1 回归：plan 与执行之间的 TOCTOU——
-    链接被换成用户文件/改指他处时拒绝删除，而非误删）。"""
+def safe_unlink_external_link(link: Path, expected_target: str) -> None:
+    """原子安全删除外部符号链接（P1 回归第三轮：dir_fd 只固定父目录，
+    不固定最终目录项——readlink 与 unlink 之间仍可被替换）。
+
+    正确原语：rename 隔离 → 核验被移对象 → 匹配则删除 / 不匹配则恢复。
+    rename 是目录项原子操作，移入隔离名后其他进程无法再通过原名触达。"""
     import stat as stat_module
+    import uuid as _uuid
+    parent_fd = os.open(link.parent,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    iso_name = f".kit-iso-{_uuid.uuid4()}"
+    try:
+        # 1. 原子移入隔离名（其他进程此后无法通过原名触达该目录项）
+        try:
+            os.rename(link.name, iso_name,
+                      src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        except FileNotFoundError:
+            raise OSError(f"链接不存在（已被删除？）: {link}")
+        # 2. 核验被移入隔离名的对象
+        try:
+            st = os.lstat(iso_name, dir_fd=parent_fd)
+            if not stat_module.S_ISLNK(st.st_mode):
+                raise OSError(f"目标不是符号链接（被用户文件替换）: {link}")
+            if os.readlink(iso_name, dir_fd=parent_fd) != expected_target:
+                raise OSError(f"链接已改指其他目标: {link}")
+            # 3. 匹配 → 删除隔离名
+            os.unlink(iso_name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except OSError:
+            # 4. 不匹配 → 恢复原位（不吞用户对象）
+            try:
+                os.rename(iso_name, link.name,
+                          src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            except OSError:
+                pass  # 恢复失败时隔离名留存，人工处理
+            raise
+    finally:
+        os.close(parent_fd)
+
+
+def execute_external_removal(target: Path, step: ExternalStep) -> None:
+    """安全删除外部链接（复用 safe_unlink_external_link 的 rename 隔离原语）。"""
     link_spec = CodexLinkSpec(skill_name=step.skill_name)
     link_spec.validate(Path(step.codex_root), target)
     link = link_spec.derive_link_path(Path(step.codex_root))
     expected = str(link_spec.derive_target_path(target))
-    parent_fd = os.open(link.parent, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
-    try:
-        st = os.lstat(link.name, dir_fd=parent_fd)
-        if not stat_module.S_ISLNK(st.st_mode):
-            raise OSError(f"目标已不是符号链接（被用户文件替换？）: {link}")
-        if os.readlink(link.name, dir_fd=parent_fd) != expected:
-            raise OSError(f"链接已改指其他目标，拒绝删除: {link}")
-        os.unlink(link.name, dir_fd=parent_fd)
-        os.fsync(parent_fd)
-    finally:
-        os.close(parent_fd)
+    safe_unlink_external_link(link, expected)
 
 
 # ══════════════════════════ 主流程（§13） ══════════════════════════

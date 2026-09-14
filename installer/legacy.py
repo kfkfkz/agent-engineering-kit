@@ -123,81 +123,81 @@ def adopt_legacy(target: Path, *, codex_root_cli: Path | None = None) -> int:
 
 # ══════════════════════════ legacy_hashes.json 生成（CI / --generate） ══════════════════════════
 
-    def _git(kit_dir: Path, *args: str) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", "-C", str(kit_dir), *args],
-                              capture_output=True, text=True, timeout=60)
+def _git(kit_dir: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(kit_dir), *args],
+                          capture_output=True, text=True, timeout=60)
 
 
-    def _path_history_blobs(kit_dir: Path, rel: str) -> list[tuple[str, bytes]]:
-        """(commit_short, blob_bytes) 列表——该路径在 git 全历史中的每个版本。"""
-        proc = _git(kit_dir, "log", "--all", "--format=%H", "--", rel)
-        if proc.returncode != 0:
-            return []
-        out: list[tuple[str, bytes]] = []
-        for rev in proc.stdout.split():
-            check = _git(kit_dir, "cat-file", "-e", f"{rev}:{rel}")
-            if check.returncode != 0:
-                continue                     # blob 不存在的提交必须跳过（空内容陷阱）
-            show = _git(kit_dir, "show", f"{rev}:{rel}")
-            if show.returncode != 0:
-                continue
-            short = _git(kit_dir, "rev-parse", "--short", rev)
-            out.append((short.stdout.strip() if short.returncode == 0 else rev[:7],
-                        show.stdout.encode("utf-8")))
-        return out
+def _path_history_blobs(kit_dir: Path, rel: str) -> list[tuple[str, bytes]]:
+    """(commit_short, blob_bytes) 列表——该路径在 git 全历史中的每个版本。"""
+    proc = _git(kit_dir, "log", "--all", "--format=%H", "--", rel)
+    if proc.returncode != 0:
+        return []
+    out: list[tuple[str, bytes]] = []
+    for rev in proc.stdout.split():
+        check = _git(kit_dir, "cat-file", "-e", f"{rev}:{rel}")
+        if check.returncode != 0:
+            continue                     # blob 不存在的提交必须跳过（空内容陷阱）
+        show = _git(kit_dir, "show", f"{rev}:{rel}")
+        if show.returncode != 0:
+            continue
+        short = _git(kit_dir, "rev-parse", "--short", rev)
+        out.append((short.stdout.strip() if short.returncode == 0 else rev[:7],
+                    show.stdout.encode("utf-8")))
+    return out
 
 
-    def generate_legacy_hashes(kit_dir: Path | None = None) -> dict:
-        """生成 legacy_hashes.json 内容：
-        - owned_file / seed_file：源文件 git 全历史各版本的内容 hash
-          （canonical == 内容——kit 源不含目标绝对路径）
-        - 模板型 managed_block（CLAUDE.md / AGENTS.md）：模板历史版本 →
-          区块形态（start + "\n" + 模板内容 + end）的 hash（与 install.sh 追加
-          时的提取形态一致）
-        - .gitignore 旧行组（无 end 标记）：确定性旧格式（LEGACY_GITIGNORE_V1）
-        不含：.mcp.json / hook（形状恒定，无历史差异）；.codex/config.toml 旧
-        无标记段落（extract_block 无法提取，不伪造血统）。"""
-        kit_dir = (kit_dir or KIT_DIR).resolve()
-        kit_versions: dict[str, dict[str, str]] = {}
+def generate_legacy_hashes(kit_dir: Path | None = None) -> dict:
+    """生成 legacy_hashes.json 内容：
+    - owned_file / seed_file：源文件 git 全历史各版本的内容 hash
+      （canonical == 内容——kit 源不含目标绝对路径）
+    - 模板型 managed_block（CLAUDE.md / AGENTS.md）：模板历史版本 →
+      区块形态（start + "\n" + 模板内容 + end）的 hash（与 install.sh 追加
+      时的提取形态一致）
+    - .gitignore 旧行组（无 end 标记）：确定性旧格式（LEGACY_GITIGNORE_V1）
+    不含：.mcp.json / hook（形状恒定，无历史差异）；.codex/config.toml 旧
+    无标记段落（extract_block 无法提取，不伪造血统）。"""
+    kit_dir = (kit_dir or KIT_DIR).resolve()
+    kit_versions: dict[str, dict[str, str]] = {}
 
-        def add(version: str, spec_id: str, digest: str) -> None:
-            kit_versions.setdefault(version, {})[spec_id] = f"canonical_sha256:{digest}"
+    def add(version: str, spec_id: str, digest: str) -> None:
+        kit_versions.setdefault(version, {})[spec_id] = f"canonical_sha256:{digest}"
 
-        for spec in REGISTRY:
-            if spec.resource_type == "codex_link":
-                continue
-            if spec.resource_type in ("json_fragment", "hook"):
-                continue
-            if spec.id == "gitignore-block":
-                for tag, form in (("legacy-gitignore-v1", LEGACY_GITIGNORE_V1),
-                                  ("legacy-gitignore-v2", LEGACY_GITIGNORE_V2),
-                                  ("legacy-gitignore-v3", LEGACY_GITIGNORE_V3)):
-                    add(tag, spec.id, hashlib.sha256(form.encode()).hexdigest())
-                continue
-            if spec.id == "mcp-codex":
-                # 无标记 TOML 节（canonical 形态含 ${TARGET}）
-                add("legacy-codex-toml-v1", spec.id,
-                    hashlib.sha256(LEGACY_CODEX_TOML_V1.encode()).hexdigest())
-                continue
-            if spec.source_path is None:
-                continue
-            if spec.resource_type in ("owned_file", "seed_file"):
-                for version, blob in _path_history_blobs(kit_dir, spec.source_path):
-                    add(version, spec.id, hashlib.sha256(blob).hexdigest())
-            elif spec.resource_type == "managed_block":
-                # 模板历史 → 标记区块形态（start\n<模板>end）
-                for version, blob in _path_history_blobs(kit_dir, spec.source_path):
-                    text = blob.decode("utf-8", errors="replace")
-                    if not text.endswith("\n"):
-                        text += "\n"
-                    block = f"{spec.block_start}\n{text}{spec.block_end}"
-                    add(version, spec.id, hashlib.sha256(block.encode()).hexdigest())
-                    # CLAUDE/AGENTS 旧格式：裸标题段（无标记，提取形态 = 模板原文）
-                    if spec.id in ("claude-md-block", "agents-md-block"):
-                        add(f"{version}:legacy-section", spec.id,
-                            hashlib.sha256(blob).hexdigest())
+    for spec in REGISTRY:
+        if spec.resource_type == "codex_link":
+            continue
+        if spec.resource_type in ("json_fragment", "hook"):
+            continue
+        if spec.id == "gitignore-block":
+            for tag, form in (("legacy-gitignore-v1", LEGACY_GITIGNORE_V1),
+                              ("legacy-gitignore-v2", LEGACY_GITIGNORE_V2),
+                              ("legacy-gitignore-v3", LEGACY_GITIGNORE_V3)):
+                add(tag, spec.id, hashlib.sha256(form.encode()).hexdigest())
+            continue
+        if spec.id == "mcp-codex":
+            # 无标记 TOML 节（canonical 形态含 ${TARGET}）
+            add("legacy-codex-toml-v1", spec.id,
+                hashlib.sha256(LEGACY_CODEX_TOML_V1.encode()).hexdigest())
+            continue
+        if spec.source_path is None:
+            continue
+        if spec.resource_type in ("owned_file", "seed_file"):
+            for version, blob in _path_history_blobs(kit_dir, spec.source_path):
+                add(version, spec.id, hashlib.sha256(blob).hexdigest())
+        elif spec.resource_type == "managed_block":
+            # 模板历史 → 标记区块形态（start\n<模板>end）
+            for version, blob in _path_history_blobs(kit_dir, spec.source_path):
+                text = blob.decode("utf-8", errors="replace")
+                if not text.endswith("\n"):
+                    text += "\n"
+                block = f"{spec.block_start}\n{text}{spec.block_end}"
+                add(version, spec.id, hashlib.sha256(block.encode()).hexdigest())
+                # CLAUDE/AGENTS 旧格式：裸标题段（无标记，提取形态 = 模板原文）
+                if spec.id in ("claude-md-block", "agents-md-block"):
+                    add(f"{version}:legacy-section", spec.id,
+                        hashlib.sha256(blob).hexdigest())
 
-        return {"kit_versions": kit_versions}
+    return {"kit_versions": kit_versions}
 
 
 def main(argv: list[str] | None = None) -> int:

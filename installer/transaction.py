@@ -723,23 +723,14 @@ def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]
             link_spec.validate(codex_root, target)
             link = link_spec.derive_link_path(codex_root)
             expected = str(link_spec.derive_target_path(target))
-            # 与 execute_external_removal 相同的 fd 核验原语
-            parent_fd = os.open(link.parent,
-                               os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
-            try:
-                st = os.lstat(link.name, dir_fd=parent_fd)
-                if not stat_module.S_ISLNK(st.st_mode):
-                    if rec.state != "removed":
-                        rec.state = "removed"  # 被替换或已删，视为完成
-                    continue
-                if os.readlink(link.name, dir_fd=parent_fd) != expected:
-                    failures.append(f"{rec.spec_id}: 链接已改指其他目标，拒绝补删")
-                    continue
-                os.unlink(link.name, dir_fd=parent_fd)
-                os.fsync(parent_fd)
-                rec.state = "removed"
-            finally:
-                os.close(parent_fd)
+            # 复用 uninstall.safe_unlink_external_link 的 rename 隔离原语
+            from .uninstall import safe_unlink_external_link
+            if not link.is_symlink() and not link.exists():
+                if rec.state != "removed":
+                    rec.state = "removed"      # 已消失，视为完成
+                continue
+            safe_unlink_external_link(link, expected)
+            rec.state = "removed"
         except (OSError, SecurityError) as e:
             failures.append(f"{rec.spec_id}: {e}")
     return failures
@@ -838,7 +829,23 @@ def recover(target: Path) -> RecoveryResult:
             if tx.kind == "install":
                 _write_manifest(target, _rollforward_manifest(
                     target, classified["NEW"]))
-            cleanup_staging(target, tx)
+                # P2 回归：roll-forward 补建 workspace 链接（崩溃窗口——
+                # 内部资源已提交但链接创建前崩溃；从 marker 读 codex_root）
+                from .registry import read_codex_workspace_marker
+                marker = read_codex_workspace_marker(target)
+                if marker is not None:
+                    from .uninstall import safe_unlink_external_link
+                    import glob as _glob
+                    from .registry import CodexLinkSpec, KIT_SKILLS
+                    for skill in KIT_SKILLS:
+                        ls = CodexLinkSpec(skill_name=skill)
+                        ls.validate(marker, target)
+                        link = ls.derive_link_path(marker)
+                        expected = str(ls.derive_target_path(target))
+                        if link.is_symlink() or link.exists():
+                            continue         # 已存在（用户处理或部分成功）
+                        link.parent.mkdir(parents=True, exist_ok=True)
+                        os.symlink(expected, link)
             # 外部步骤：install 事务无外部步骤；uninstall 的 roll-forward 只补删
             # （complete_external_removals），绝不重建已删除的链接
             failures = (complete_external_removals(target, tx)
@@ -850,6 +857,7 @@ def recover(target: Path) -> RecoveryResult:
                 return RecoveryResult("needs_human", detail=tx.detail)
             tx.status = "done"
             write_transaction_atomic(target, tx)
+            cleanup_staging(target, tx)   # done 写入后再清理（与 install 一致）
             return RecoveryResult("roll_forward_completed")
 
         # 部分提交 → roll-back（倒序，只回滚 NEW）+ 外部步骤补偿

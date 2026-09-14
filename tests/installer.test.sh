@@ -782,25 +782,26 @@ case "$OUT_DRY" in
 esac
 
 
-# ══════════ 十四、第二轮 P1/P2 回归（独立复核复现场景） ══════════
+# ══════════ 十四、第三轮审查回归（强断言版） ══════════
 
-# 14.1 adopt-legacy 拒绝已有 Manifest（P1：覆盖健康清单）
+# 14.1 adopt-legacy 拒绝已有 Manifest + 清单字节不变（P1）
 P2A="$T/p2-adopt"; mkdir -p "$P2A"
 python3 -m installer "$P2A" >/dev/null 2>&1
-[ -f "$P2A/.repo-memory-kit/manifest.json" ] && ok "前置：已安装" || bad "前置失败"
-python3 -m installer --adopt-legacy "$P2A" >/dev/null 2>&1
-[ $? != 0 ] && grep -q "已存在 Manifest" "$P2A/.repo-memory-kit/manifest.json" 2>/dev/null || true
-# 退出码非零即可（清单存在时拒绝）
-N_ENTRIES=$(python3 -c "import json; print(len(json.load(open('$P2A/.repo-memory-kit/manifest.json'))['entries']))" 2>/dev/null || echo 0)
-[ "$N_ENTRIES" -gt 0 ] && ok "P2.1 adopt-legacy 不覆盖已有清单（$N_ENTRIES 条保留）" || bad "P2.1 清单被覆盖"
+HASH_BEFORE=$(sha256sum "$P2A/.repo-memory-kit/manifest.json" | cut -d' ' -f1)
+python3 -m installer --adopt-legacy "$P2A" > "$T/p2-adopt.log" 2>&1
+ADOPT_RC=$?
+check "P2.1a adopt-legacy 对已有清单退出码非零" 1 "$ADOPT_RC"
+grep -q "已存在 Manifest" "$T/p2-adopt.log" && ok "P2.1b 错误消息正确" || bad "P2.1b 错误消息缺失"
+HASH_AFTER=$(sha256sum "$P2A/.repo-memory-kit/manifest.json" | cut -d' ' -f1)
+[ "$HASH_BEFORE" = "$HASH_AFTER" ] && ok "P2.1c Manifest 字节不变（$HASH_BEFORE）" || bad "P2.1c Manifest 被修改"
 
-# 14.2 模式互斥与顺序无关（P2：--update --uninstall vs --uninstall --update）
+# 14.2 模式互斥与顺序无关（P2）
 python3 -m installer --update --uninstall "$P2A" >/dev/null 2>&1
-[ $? != 0 ] && ok "P2.2 --update --uninstall 互斥（顺序无关）" || bad "P2.2 --update --uninstall 未拒绝"
+[ $? != 0 ] && ok "P2.2 --update --uninstall 互斥" || bad "P2.2 正序未拒绝"
 python3 -m installer --uninstall --update "$P2A" >/dev/null 2>&1
-[ $? != 0 ] && ok "P2.2 --uninstall --update 互斥（顺序无关）" || bad "P2.2 --uninstall --update 未拒绝"
+[ $? != 0 ] && ok "P2.2 --uninstall --update 互斥" || bad "P2.2 逆序未拒绝"
 
-# 14.3 uninstall 先 recover 再读清单（P1：首次安装崩溃后可卸载）
+# 14.3 uninstall 先 recover 再读清单（P1）
 P2C="$T/p2-recover-first"
 mkdir -p "$P2C"
 python3 - "$P2C" <<'PY'
@@ -810,15 +811,13 @@ sys.path.insert(0, ".")
 from installer import transaction as txm
 from installer.install import plan_groups
 from installer.registry import resolve_spec
-
 t = Path(sys.argv[1]).resolve()
 lock = txm.acquire_install_lock(t)
 tx = txm.TransactionRecord.new(t, "install")
 txm.secure_mkdir(t, f".repo-memory-kit/tx/{tx.tx_id}")
 tx.status = "planning"; tx.write(t)
 plans = plan_groups(t, [resolve_spec("memory-rules")])
-tx.plan = [gp.step for gp in plans]
-tx.write(t)
+tx.plan = [gp.step for gp in plans]; tx.write(t)
 tx.status = "staging"; tx.write(t)
 for gp in plans:
     txm.stage_resource(t, gp.step.spec_id, tx.tx_id, gp.content, mode=gp.mode)
@@ -826,13 +825,15 @@ tx.status = "committing"; tx.write(t)
 for gp in plans:
     assert txm.commit_one(t, gp.step, tx.tx_id).status == "committed"
 os.close(lock)
-# —— 崩溃（资源已提交、Manifest 未写、事务在 committing）——
 PY
-# 不应出现"没有安装清单"——recover 应先 roll-forward 完成安装
 python3 -m installer --uninstall "$P2C" > "$T/p2-un.log" 2>&1
-grep -q "没有安装清单" "$T/p2-un.log"     && bad "P2.3 卸载未恢复遗留事务就因无清单退出"     || ok "P2.3 卸载先恢复再读清单（roll-forward 后清单在位）"
+UN_RC=$?
+check "P2.3a 卸载退出码 0（recover 先行）" 0 "$UN_RC"
+grep -q "没有安装清单" "$T/p2-un.log" && bad "P2.3b 因无清单退出（recover 未先行）" || ok "P2.3b recover 先行（清单在位）"
+[ ! -f "$P2C/.repo-memory-kit/manifest.json" ] && ok "P2.3c 卸载后 Manifest 已移除" || bad "P2.3c Manifest 残留"
+[ -z "$(ls "$P2C/.repo-memory-kit/tx/" 2>/dev/null)" ] && ok "P2.3d 事务目录清空" || bad "P2.3d 事务残留"
 
-# 14.4 恢复路径 fd 删除（P1：complete_external_removals TOCTOU）
+# 14.4 恢复路径 rename 隔离（P1：readlink→unlink 窗口注入）
 P2D="$T/p2-fd-rec"; W2D="$T/p2-ws"
 mkdir -p "$P2D"
 python3 -m installer --codex-root "$W2D" "$P2D" >/dev/null 2>&1
@@ -841,30 +842,62 @@ import os, sys
 from pathlib import Path
 sys.path.insert(0, ".")
 from installer import transaction as txm
-from installer.registry import resolve_spec
-from installer.uninstall import ExternalStep
+from installer.uninstall import ExternalStep, safe_unlink_external_link
 
 target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
-lock = txm.acquire_install_lock(target)
+link = ws / ".agents" / "skills" / "tdd"
+expected = str(target / ".agents" / "skills" / "tdd")
+
+# 直接测试原语：链接正确 → 安全删除
+assert link.is_symlink()
+safe_unlink_external_link(link, expected)
+assert not link.exists(), "正确链接未被删除"
+print("safe_unlink 正确路径 OK")
+
+# 窗口注入：换成用户文件 → 拒删且用户文件恢复原位
+link.write_text("USER FILE")
+try:
+    safe_unlink_external_link(link, expected)
+    raise SystemExit("P1: 用户文件被误删！")
+except OSError:
+    pass
+assert link.read_text() == "USER FILE", "P1: 用户文件未恢复"
+print("safe_unlink 窗口防护 OK")
+
+# 事务恢复路径也复用同一原语
 tx = txm.TransactionRecord.new(target, "uninstall")
 txm.secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")
-tx.status = "planning"; tx.write(target)
 tx.external = [ExternalStep(spec_id="codex-link-tdd", skill_name="tdd",
                             codex_root=str(ws),
                             prior_state="pointing_to_target", state="intent")]
-tx.write(target)
-# 模拟：intent 记录后、unlink 前，链接被换成用户文件
-link = ws / ".agents" / "skills" / "tdd"
-link.unlink()
-link.write_text("USER FILE")
+tx.status = "planning"; tx.write(target)
+lock = txm.acquire_install_lock(target)
 os.close(lock)
-# —— 崩溃（intent 在盘、链接被换）——
 r = txm.recover(target)
-# 恢复不应误删用户文件
 assert link.read_text() == "USER FILE", "P1: 恢复路径误删用户文件"
-print("P1-3 fd-based recovery OK")
+print("恢复路径窗口防护 OK")
 PY
-[ $? = 0 ] && ok "P2.4 恢复路径 fd 删除（不误删用户文件）" || bad "P2.4 恢复路径 TOCTOU"
+[ $? = 0 ] && ok "P2.4 rename 隔离原语（正常+窗口+恢复三路径）" || bad "P2.4 TOCTOU 防护失败"
+
+# 14.5 legacy 生成器可用性（P1：上轮引入的回归）
+python3 -m installer.legacy --generate > "$T/p2-gen.log" 2>&1
+check "P2.5a legacy --generate 退出码 0" 0 $?
+grep -q "已生成" "$T/p2-gen.log" && ok "P2.5b 生成器输出正常" || bad "P2.5b 生成器无输出"
+python3 -c "from installer.legacy import generate_legacy_hashes; generate_legacy_hashes()"     && ok "P2.5c generate_legacy_hashes 可导入调用" || bad "P2.5c 模块级函数不可用"
+
+# 14.6 dry-run 迁移退出码传播机制（P1-4b：验证 rc 传播，非 spec-migrate 行为）
+python3 - <<'PYEOF' && ok "P2.6 dry-run 迁移退出码传播机制" || bad "P2.6 传播机制缺失"
+import ast, sys
+# 静态验证：_dispatch_install 中 dry-run+migrate 的返回值被 max() 接收
+src = open("installer/__init__.py").read()
+assert "rc = max(rc, _spec_migrate_dry_run(" in src, \
+    "dry-run 迁移退出码未被传播"
+# 验证 _spec_migrate_dry_run 返回 int
+assert "return proc.returncode" in src, \
+    "_spec_migrate_dry_run 未返回子进程退出码"
+print("mechanism verified")
+PYEOF
+
 
 echo
 echo "通过 $pass / 失败 $fail"
