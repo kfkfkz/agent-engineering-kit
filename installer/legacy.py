@@ -37,6 +37,9 @@ LEGACY_GITIGNORE_V1 = f"{GITIGNORE_START}\n.repo-memory-kit/zvec/\n"
 # v4 中期的带 end 标记形态（只 ignore zvec/）——内容升级后成为历史版本，
 # 存量安装靠它保持血统（managed → 可更新），否则会被误判 conflict
 LEGACY_GITIGNORE_V2 = f"{GITIGNORE_START}\n.repo-memory-kit/zvec/\n{GITIGNORE_END}"
+LEGACY_GITIGNORE_V3 = (f"{GITIGNORE_START}\n.repo-memory-kit/zvec/\n"
+                       f".repo-memory-kit/memory-index.md\n"
+                       f".repo-memory-kit/.anchors.json\n{GITIGNORE_END}")
 
 # 旧版 .codex/config.toml 无标记 TOML 节（v1 前 install.sh 追加形态；canonical
 # 用 ${TARGET} 占位符——与运行时对实际绝对路径的规范化结果一致）
@@ -146,10 +149,10 @@ def generate_legacy_hashes(kit_dir: Path | None = None) -> dict:
         if spec.resource_type in ("json_fragment", "hook"):
             continue
         if spec.id == "gitignore-block":
-            add("legacy-gitignore-v1", spec.id,
-                hashlib.sha256(LEGACY_GITIGNORE_V1.encode()).hexdigest())
-            add("legacy-gitignore-v2", spec.id,
-                hashlib.sha256(LEGACY_GITIGNORE_V2.encode()).hexdigest())
+            for tag, form in (("legacy-gitignore-v1", LEGACY_GITIGNORE_V1),
+                              ("legacy-gitignore-v2", LEGACY_GITIGNORE_V2),
+                              ("legacy-gitignore-v3", LEGACY_GITIGNORE_V3)):
+                add(tag, spec.id, hashlib.sha256(form.encode()).hexdigest())
             continue
         if spec.id == "mcp-codex":
             # 无标记 TOML 节（canonical 形态含 ${TARGET}）

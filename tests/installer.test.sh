@@ -121,7 +121,11 @@ grep -q "user line A" "$R/CLAUDE.md" && grep -q "repo-memory-kit:start" "$R/CLAU
 grep -q "user line B" "$R/AGENTS.md" && grep -q "repo-memory-kit:end" "$R/AGENTS.md" \
   && ok "AGENTS.md：用户内容保留 + 托管区块追加" || bad "AGENTS.md 内容异常"
 grep -q "node_modules/" "$R/.gitignore" && grep -q "agent-engineering-kit:end" "$R/.gitignore" \
-  && ok ".gitignore：用户行保留 + 语义索引区块（带 end）" || bad ".gitignore 内容异常"
+  && ok ".gitignore：用户行保留 + 每机文件区块（带 end）" || bad ".gitignore 内容异常"
+for w in "^\.repo-memory-kit/$" "^\.mcp\.json$" "^\.codex/$"; do
+  echo "$R/.gitignore" >/dev/null
+  grep -qE "$w" "$R/.gitignore" && ok ".gitignore 区块含 $w" || bad ".gitignore 区块缺 $w"
+done
 grep -q '"command": "'"$R"'/\.repo-memory-kit/bin/agent-engineering-mcp"' "$R/.mcp.json" \
   && ok ".mcp.json 片段含目标绝对路径" || bad ".mcp.json 片段异常"
 python3 -m installer --doctor "$R" > "$T/rootdoc.log" 2>&1
@@ -621,13 +625,14 @@ if command -v svnadmin >/dev/null 2>&1 && command -v svn >/dev/null 2>&1; then
     for want in ".repo-memory-kit" ".mcp.json" ".codex"; do
         echo "$ROOT_IGNORE" | grep -qx "$want" && ok "根 ignore 含 $want" || bad "根 ignore 缺 $want"
     done
-    CLAUDE_IGNORE="$(svn propget svn:ignore "$SV/.claude" 2>/dev/null)"
-    echo "$CLAUDE_IGNORE" | grep -qx "settings.json" && ok ".claude ignore settings.json" || bad ".claude ignore 缺失"
     [ -f "$SV/docs/01-需求/README.md" ] && grep -q "需求指派索引" "$SV/docs/01-需求/README.md" \
         && ok "需求指派索引已种子（含治理规则）" || bad "需求索引缺失"
     [ -f "$SV/docs/memory/_PITFALL_TEMPLATE.md" ] && ok "v4 模板落位 memory 根（_PITFALL_TEMPLATE.md）" || bad "v4 模板缺失"
-    [ "$(svn status "$SV" 2>/dev/null | grep -c '^A.*settings.json')" = "0" ] \
-        && ok "settings.json 未被 svn add（ignore 生效）" || bad "settings.json 被误加入版本控制"
+    # settings.json 可跨机器移植（hook 是 $CLAUDE_PROJECT_DIR 字面量）→ 随库提交
+    [ "$(svn status "$SV" 2>/dev/null | grep -c '^A.*settings.json')" = "1" ] \
+        && ok "settings.json 已 svn add（hook 可移植，随库共享）" || bad "settings.json 未登记"
+    EOL_SS="$(svn propget svn:eol-style "$SV/.claude/settings.json" 2>/dev/null)"
+    [ "$EOL_SS" = "LF" ] && ok "settings.json eol-style=LF" || bad "settings.json eol 未设置"
     [ "$(svn status "$SV" 2>/dev/null | grep -c '^A.*repo-memory-kit')" = "0" ] \
         && ok ".repo-memory-kit 未被 svn add" || bad ".repo-memory-kit 被误加入"
     svn status "$SV" 2>/dev/null | grep -q "^A.*docs/memory/RULES.md" \

@@ -107,6 +107,9 @@
       "memory-readme-seed": "canonical_sha256:f4b8c12e3d9ef0c37a0a4e0cd0b160ded4b10a911c899d960a790c9c4247ccc8",
       "profile-template": "canonical_sha256:3cd28d4a6fba97dfad14278eec7e5cf2f18f8d0e98560c15e1211d7de1e40149"
     },
+    "4538b68": {
+      "bin-domain-check": "canonical_sha256:f10fca71ac8b7de910bfba191d60d91d8b89110428aa7f3e87793347bc17f744"
+    },
     "458dba5": {
       "bin-memory-build": "canonical_sha256:d2e2466f3722e6b62bc54b37e6e50b5f05553dbfafefcb90aec4372841c61b40",
       "memory-rules": "canonical_sha256:960d18f85e65a40c6c270819b971fb0a3c327d59fdc3e6634ddfc7f75bf0960d",
@@ -168,6 +171,9 @@
     },
     "73e5f7e": {
       "bin-agent-engineering-mcp": "canonical_sha256:859a14ad195d639fcda777f052f898ea53ddade5548430f6d9c0aae1e31c3708"
+    },
+    "746b1f3": {
+      "bin-memory-build": "canonical_sha256:91b7f6c458efe1dd801e6d52bc03005fdad94d5fe617c9e008511c2d828a7b50"
     },
     "75f1eac": {
       "skill-agents-delivery-gate": "canonical_sha256:d808ce701237a31e9320f8776792aa2febfe6258bc7ec681eac03b7ec7464b66",
@@ -274,6 +280,18 @@
       "bin-domain-check": "canonical_sha256:aef3751beba4015518881b17970bfd507939ee735e3a7074d322aefbeed2048c",
       "bin-spec-migrate": "canonical_sha256:859858439104aeeb4d7b766f757bce54eaaa41d688ab43b712bec02891a0ac93"
     },
+    "dc629b4": {
+      "bin-agent-engineering-mcp": "canonical_sha256:ef435d927bba34e381e93ee5f9782dd0f000e06f693d2dcecdd8f3300ae25528",
+      "bin-memory-build": "canonical_sha256:2261aa4d71a1d6c6e737bc6b31a9f5bab5435521d0237d5235abdedb1ec1c3ad",
+      "bin-memory-recall": "canonical_sha256:409c3ada7dcdfd33b81f96f53ae79272b154e5f5bb7e54da41a556ba9cddbaff",
+      "memory-readme-seed": "canonical_sha256:52196b22d67c17e56bf355bcb7eee6d23ccaff9ddbc5e5db0943a77a8171dfd6",
+      "skill-agents-memory-capture": "canonical_sha256:94a0520c5c72e6f2c06b9e84381ed55a07205babacbeadb2f66b277d660c9803",
+      "skill-agents-memory-check": "canonical_sha256:10e8aadf2e9383c5ff62753b7f1245069cf66a0792e4c94444e458a1260aff75",
+      "skill-agents-repo-delivery": "canonical_sha256:0a3d370662f9e678bf8bfc47a67dafc2286a5e7d4e87506fce61b394794b972e",
+      "skill-claude-memory-capture": "canonical_sha256:94a0520c5c72e6f2c06b9e84381ed55a07205babacbeadb2f66b277d660c9803",
+      "skill-claude-memory-check": "canonical_sha256:10e8aadf2e9383c5ff62753b7f1245069cf66a0792e4c94444e458a1260aff75",
+      "skill-claude-repo-delivery": "canonical_sha256:0a3d370662f9e678bf8bfc47a67dafc2286a5e7d4e87506fce61b394794b972e"
+    },
     "ebc491d": {
       "bin-memory-build": "canonical_sha256:64007544f7948949ff4221db7251b613b7f7554960a85923ddc4d7610bb11893",
       "memory-rules": "canonical_sha256:43ada7769ae3742a1b95792184624050032c275d5d7776a19c365233cc77b9a6",
@@ -376,6 +394,9 @@
     },
     "legacy-gitignore-v2": {
       "gitignore-block": "canonical_sha256:2ea670aff85fe14b517911328d619bf294bc538595181221b69086dc821471dd"
+    },
+    "legacy-gitignore-v3": {
+      "gitignore-block": "canonical_sha256:9e8a7ee1d560bac13c9422b9ef55b215c7926fcf33c9eee2c4cbaf452356c3dc"
     }
   }
 }

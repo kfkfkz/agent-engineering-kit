@@ -341,7 +341,7 @@ docs/memory/RULES.md            记忆规则
 docs/memory/_*_TEMPLATE.md      条目模板（pitfall/decision/playbook/PROFILE）
 docs/memory/README.md           用户笔记种子（首次创建，此后归用户）
 CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
-.cbmignore / .gitignore         图谱索引与语义索引的忽略区块
+.cbmignore / .gitignore         图谱索引区块 / 每机文件忽略区块（多人协作）
 .mcp.json / .codex/config.toml  MCP 注册（kit 片段，含本机路径）
 ```
 
@@ -377,23 +377,26 @@ cd /path/to/your-project && .repo-memory-kit/bin/spec-migrate --check .
 
 此时 feature 目录整体移动到 `docs/03-SDD/V<版本>/` 并按团队命名规范重排，`01-索引` 自动登记，原 feature 目录随之移除。安装器入口必须用 `--migrate-specify=feature名` 显式指定，防止整仓移动。
 
-## SVN 多人协作
+## 多人协作（git / SVN 同一套治理）
 
-目标仓库托管在 SVN、由团队共用时，首次安装后运行一次治理初始化：
+团队共用一个仓库（无论 git 还是 SVN）时，治理模型是同一套：
+
+- **每机文件不提交**：`.repo-memory-kit/`（安装清单/事务/语义索引等每机状态与派生物）、`.mcp.json`、`.codex/`（含本机绝对路径）——每台机器必然不同，入库即成永久冲突源。`settings.json` 不在此列：hook 命令是 `$CLAUDE_PROJECT_DIR` 字面量（运行时展开），可跨机器共享。
+- **同事开箱即用**：checkout/clone 即得技能与文档；各自跑一次 `install.sh`（幂等、零本地差异）获得工具/MCP/hook。
+- **升级单点执行**：kit 版本升级由维护者统一执行——同版本重跑 install 不产生任何本地差异；版本统一后任何人的 install 都是无冲突的空操作。
+- **需求目录治理**：`docs/01-需求/` 结构（含指派索引表）由需求维护者唯一维护；实现人只在自己被指派的需求目录内补充与撰写（一个需求一个目录，验证通过后整理终稿）；交付回执集中于 `docs/delivery-receipts/` 按功能命名。文档骨架从 kit 仓库 `templates/requirements/` 复制（维护者操作）。
+
+各版本控制的具体机制：
+
+**git**——无需任何额外步骤：kit 在目标 `.gitignore` 的托管区块里自动写入上述每机文件清单（`.gitignore` 不存在时请先创建，kit 不代建用户文件）。
+
+**SVN**——`svn:ignore` 是版本化属性，无法由文件承载，首次安装后运行一次治理初始化：
 
 ```bash
 ./install.sh --svn /path/to/your-project
 ```
 
-它会自动完成（幂等，可重复执行）：
-
-- **svn:ignore 轻提交清单**：`.repo-memory-kit`（每机状态与派生物）、`.mcp.json`、`.codex`（含本机路径）——这些文件每台机器必然不同，入库即成永久冲突源；合并追加，不覆盖既有 ignore 项；
-- **需求目录种子**：创建 `docs/01-需求/README.md` 指派索引（seed 式，此后不再改写）；
-- **svn add 内容确定文件**（技能/模板/RULES/托管区块/记忆条目等，递归时自动跳过每机文件）；
-- **`svn:eol-style=LF`**：已版本化的 kit 文本文件统一 LF，防 Windows 提交 CRLF 化导致与 kit 血统脱钩；
-- 已被版本控制的每机文件给出 `svn rm --keep-local` 整改提示。
-
-多人协作约定：**需求目录结构（含指派索引）由需求维护者唯一维护**；实现人只在自己被指派的需求目录内补充与撰写（一个需求一个目录，验证通过后整理终稿），交付回执集中于 `docs/delivery-receipts/` 按功能命名。每个需求目录的文档骨架从 kit 仓库 `templates/requirements/` 复制（维护者操作）。kit 版本升级由维护者统一执行——同版本重跑 install 不产生任何本地差异。
+幂等完成：svn:ignore 轻提交清单（合并追加，不覆盖 `.idea` 等既有项）、`docs/01-需求/README.md` 指派索引种子、内容确定文件 svn add（递归时自动跳过每机文件）、已版本化 kit 文本 `svn:eol-style=LF`（防 Windows CRLF 化与 kit 血统脱钩）、已入库的每机文件给出 `svn rm --keep-local` 整改提示。
 
 ## 更新与卸载
 

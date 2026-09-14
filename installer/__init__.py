@@ -205,20 +205,8 @@ def _svn_setup(repo) -> int:
     # 1. 根 ignore（工作副本根本必已版本化）
     ignore_merge(".", [".repo-memory-kit", ".mcp.json", ".codex"], reports)
 
-    # 2. 子目录 ignore：未版本化则先 --parents --depth empty 登记再设
-    #    （此后递归 add 尊重 ignore；settings.json 才不会被误加入）
-    #    注：docs/memory 无需 ignore——v4 起记忆索引/锚点在 .repo-memory-kit/（整目录
-    #    已 ignore），README.md 回归纯 seed（内容确定，可提交）
-    for rel, entries in ((".claude", ["settings.json"]),):
-        if not (repo / rel).is_dir():
-            continue
-        info = svn("info", str(repo / rel))
-        if info.returncode != 0:
-            add = svn("add", "--parents", "--depth", "empty", str(repo / rel))
-            if add.returncode != 0:
-                reports.append(f"✗ 无法登记 {rel}: {add.stderr.strip()}")
-                continue
-        ignore_merge(rel, entries, reports)
+    # 2. settings.json 不 ignore：hook 命令是 $CLAUDE_PROJECT_DIR 字面量（运行时
+    #    展开），跨机器可移植——按项目设置惯例随库共享（与 git 一致）
 
     # 3. 需求目录种子（seed 式：存在即不动）
     from .registry import KIT_DIR, secure_mkdir, secure_open, write_all
@@ -253,7 +241,7 @@ def _svn_setup(repo) -> int:
                if s.resource_type in ("owned_file", "seed_file")
                and not s.destination_path.startswith(".repo-memory-kit")
                and s.destination_path != "docs/memory/README.md"]
-    a_class += ["CLAUDE.md", "AGENTS.md", ".cbmignore"]
+    a_class += ["CLAUDE.md", "AGENTS.md", ".cbmignore", ".claude/settings.json"]
     eol_set = 0
     for rel in dict.fromkeys(a_class):
         p = repo / rel
@@ -268,7 +256,7 @@ def _svn_setup(repo) -> int:
         reports.append(f"✓ svn:eol-style=LF 已设于 {eol_set} 个 kit 文本文件")
 
     # 6. 已版本化但本应 ignore 的文件 → 整改提示
-    for rel in (".mcp.json", ".codex", ".repo-memory-kit", ".claude/settings.json",
+    for rel in (".mcp.json", ".codex", ".repo-memory-kit",
                 "docs/memory/.anchors.json", ".repo-memory-kit/memory-index.md"):
         p = repo / rel
         if p.exists() and svn("info", str(p)).returncode == 0:

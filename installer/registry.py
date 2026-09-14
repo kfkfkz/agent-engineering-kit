@@ -779,11 +779,13 @@ def _generate_block(spec: ResourceSpec, target: Path) -> str:
     if spec.id == "cbmignore-block":
         content = "!docs/\ndocs/*\n!docs/memory/\n"
     elif spec.id == "gitignore-block":
-        # v4 起索引/锚点是 .repo-memory-kit/ 下的每机派生物（双跑必冲突），
-        # 与语义索引一并 ignore——git 仓库防误提交
-        content = (".repo-memory-kit/zvec/\n"
-                   ".repo-memory-kit/memory-index.md\n"
-                   ".repo-memory-kit/.anchors.json\n")
+        # 多人协作（git / SVN 同一套清单——SVN 由 --svn 写入 svn:ignore）：
+        # 每机状态/派生/含本机绝对路径的文件，入库即成永久冲突源。
+        # settings.json 不在列——hook 命令是 $CLAUDE_PROJECT_DIR 字面量（运行时
+        # 展开），可跨机器移植，按 Claude Code 项目设置惯例随库共享。
+        content = (".repo-memory-kit/\n"
+                   ".mcp.json\n"
+                   ".codex/\n")
     elif spec.id == "mcp-codex":
         content = (f"[mcp_servers.agent-engineering]\n"
                    f"command = \"{target / '.repo-memory-kit' / 'bin' / 'agent-engineering-mcp'}\"\n")
