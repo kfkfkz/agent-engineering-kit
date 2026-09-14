@@ -240,6 +240,12 @@ def migrate_to_modules(entries, mem, target):
             print(f"✗ 跳过 {e['rel']} → {mod}/{os.path.basename(dst)}：目标已存在同名文件，请手工改名后重试")
             continue
         moved = False
+        if kind == "svn" and subprocess.run(["svn", "info", d], cwd=target,
+                                            capture_output=True).returncode != 0:
+            # 新模块目录必须先纳入版本控制，否则 svn mv 失败、静默回退
+            # os.rename 会把旧路径的版本调度悬空成"丢失"（!）
+            subprocess.run(["svn", "add", "--parents", d], cwd=target,
+                           capture_output=True)
         if kind == "git":
             moved = subprocess.run(["git", "-C", target, "mv", e["path"], dst],
                                    capture_output=True).returncode == 0

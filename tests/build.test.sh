@@ -415,6 +415,28 @@ assert_grep "迁移后补写 module 字段" "^module: 通用$" "$PMM/docs/memory
 MB "$PMM" >/dev/null && assert_grep "迁移后索引按新路径分组" "订单/2026-05-01-存量坑.md" "$PMM/.repo-memory-kit/memory-index.md"
 if MB --check "$PMM" >/dev/null 2>&1; then ok "迁移后 --check 通过"; else bad "迁移后 --check 失败"; fi
 
+# ── T12b SVN 版本化迁移：新模块目录先 svn add，调度不断裂 ──
+if command -v svnadmin >/dev/null 2>&1; then
+    PSV="$T/svn-mig"
+    svnadmin create "$T/svn-repo2" >/dev/null 2>&1
+    svn -q checkout "file://$T/svn-repo2" "$PSV" >/dev/null 2>&1
+    mkdir -p "$PSV/docs"
+    "$KIT/install.sh" "$PSV" >/dev/null
+    mkdir -p "$PSV/docs/memory/pitfalls"
+    printf -- '---\ntype: pitfall\nstatus: confirmed\nmodule: demo\ncreated: 2026-09-14\n---\n# t\n' \
+        > "$PSV/docs/memory/pitfalls/2026-09-14-t.md"
+    svn add -q "$PSV/docs" >/dev/null 2>&1
+    MB --migrate-to-modules "$PSV" >/dev/null
+    if svn status "$PSV/docs/memory" 2>/dev/null | grep -q "^A.*demo/2026-09-14-t.md"; then
+        ok "SVN 迁移保持版本调度（A 状态，非丢失）"
+    else
+        bad "SVN 迁移断裂版本调度: $(svn status "$PSV/docs/memory" 2>/dev/null | head -3)"
+    fi
+    assert_eq "SVN 迁移后无缺失项" "0" "$(svn status "$PSV/docs/memory" 2>/dev/null | grep -c '^!')"
+else
+    ok "（跳过：无 svnadmin）SVN 版本化迁移"
+fi
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]
