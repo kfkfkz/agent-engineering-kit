@@ -1,4 +1,4 @@
-"""atomic.py — 平台原子 no-replace rename 原语（fail-closed，无静默降级）。
+"""atomic.py — 原子 no-replace rename 原语（re-export 自 platform/）。
 
 - Linux: `renameat2(2)` + `RENAME_NOREPLACE`（glibc 2.28+ / kernel 3.15+）
 - macOS: `renameatx_np(3)` + `RENAME_EXCL`（fd 版本，五参数）
