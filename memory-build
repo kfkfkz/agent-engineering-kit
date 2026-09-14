@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""agent-engineering-kit memory v3: 条目 frontmatter 是唯一事实源，本工具自动生成 README 索引与 .anchors.json。
+"""agent-engineering-kit memory v4: 条目 frontmatter 是唯一事实源，本工具生成索引与锚点表。
+
+生成物自 v4 起迁入 .repo-memory-kit/（每机本地派生，SVN 多人协作下不再入库冲突）：
+  .repo-memory-kit/memory-index.md   记忆索引（本地浏览；匹配首选语义检索 memory-recall）
+  .repo-memory-kit/.anchors.json     锚点表
+docs/memory/README.md 回归纯 seed：仅首次创建、此后归用户所有，本工具不再改写。
 
 用法:
   memory-build [目标仓库]                # 校验 frontmatter + 重新生成索引与锚点表
@@ -16,6 +21,7 @@ import json, os, re, subprocess, sys, tempfile
 STATUS_MAP = {"confirmed": "已确认", "unverified": "待验证", "deprecated": "已废弃", "superseded": "已替代"}
 VALID_STATUS = set(STATUS_MAP)
 TYPE_BY_DIR = {"pitfalls": "pitfall", "decisions": "decision", "playbooks": "playbook"}
+VALID_TYPES = set(TYPE_BY_DIR.values())
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 def valid_date(s):
@@ -29,8 +35,6 @@ def valid_date(s):
     except ValueError:
         return False
 KEY_RE = re.compile(r"^(class|method|file|route|config):.+")
-INDEX_START = "<!-- index:start -->"
-INDEX_END = "<!-- index:end -->"
 PROFILE_THRESHOLD = 10
 PROFILE_REFRESH_THRESHOLD = 3
 LAST_DISTILL_RE = re.compile(r"最后蒸馏[：:]\s*(\d{4}-\d{2}-\d{2})")
@@ -68,26 +72,34 @@ def parse_frontmatter(text):
 
 
 def as_list(v):
-    if v is None:
+    if v is None or v == "":
         return []
     return v if isinstance(v, list) else [v]
 
 
 def load_entries(mem):
+    """条目 = docs/memory/<模块>/ 下的 .md（v4 按模块分目录，类型在 frontmatter）；
+    存量类型目录（pitfalls/decisions/playbooks/）继续读取（迁移前兼容）。"""
     entries = []
-    for sub, typ in TYPE_BY_DIR.items():
+    subdirs = sorted(d for d in os.listdir(mem)
+                     if os.path.isdir(os.path.join(mem, d))
+                     and not d.startswith(("_", ".")))
+    for sub in subdirs:
         d = os.path.join(mem, sub)
-        if not os.path.isdir(d):
-            continue
         for name in sorted(os.listdir(d)):
             if not name.endswith(".md") or name.startswith("_"):
                 continue
             text = open(os.path.join(d, name), encoding="utf-8").read()
             fm, body = parse_frontmatter(text)
             tm = re.search(r"^# (.+)$", body, re.M)
+            fm = fm or {}
+            typ = fm.get("type")
+            if typ not in VALID_TYPES:
+                typ = TYPE_BY_DIR.get(sub)   # 存量类型目录回退；模块目录缺 type → 由 validate 报错
             entries.append({
                 "rel": f"{sub}/{name}", "path": os.path.join(d, name),
-                "fm": fm or {}, "has_fm": fm is not None, "body": body, "type": typ,
+                "fm": fm, "has_fm": bool(fm), "body": body, "type": typ,
+                "module": sub if sub not in TYPE_BY_DIR else (str(fm.get("module") or "") or None),
                 "title": tm.group(1).strip() if tm else name,
             })
     return entries
@@ -102,8 +114,14 @@ def validate(entries):
         if not e["has_fm"]:
             errs.append(f"{rel}: 缺 frontmatter（运行 memory-build --migrate）")
             continue
-        if fm.get("type") != e["type"]:
-            errs.append(f"{rel}: type 应为 {e['type']}")
+        top = rel.split("/", 1)[0]
+        if top in TYPE_BY_DIR:
+            if fm.get("type") != TYPE_BY_DIR[top]:
+                errs.append(f"{rel}: 存量类型目录的 type 应为 {TYPE_BY_DIR[top]}")
+        elif fm.get("type") not in VALID_TYPES:
+            errs.append(f"{rel}: type 非法/缺失 {fm.get('type')!r}（合法: {sorted(VALID_TYPES)}）")
+        if str(fm.get("module") or "") and top not in TYPE_BY_DIR and str(fm["module"]) != top:
+            errs.append(f"{rel}: frontmatter module {fm['module']!r} 与目录 {top!r} 不一致")
         if fm.get("status") not in VALID_STATUS:
             errs.append(f"{rel}: 非法 status {fm.get('status')!r}（合法: {sorted(VALID_STATUS)}）")
         if not fm.get("created"):
@@ -112,7 +130,8 @@ def validate(entries):
             v = fm.get(dk)
             if v and not valid_date(v):
                 errs.append(f"{rel}: {dk} 日期非法 {v!r}（YYYY-MM-DD）")
-        if e["type"] == "playbook" and not fm.get("verified"):
+        typ = fm.get("type") if fm.get("type") in VALID_TYPES else e["type"]
+        if typ == "playbook" and not fm.get("verified"):
             errs.append(f"{rel}: playbook 必须有 verified（最后有效日期）")
         for k in as_list(fm.get("anchors")):
             if not (isinstance(k, str) and KEY_RE.match(k)):
@@ -135,26 +154,120 @@ def validate(entries):
     return errs
 
 
+INDEX_HEADER = ("# 记忆索引（memory-build 本地生成，勿手改；匹配首选 memory-recall 语义检索）\n\n")
+
+
 def build_index(entries):
-    lines = ["## 索引（memory-build 自动生成，勿手改）", ""]
-    for sub in TYPE_BY_DIR:
-        es = [e for e in entries if e["type"] == TYPE_BY_DIR[sub]]
-        if not es:
-            continue
-        lines += [f"### {sub}", ""]
-        if sub == "playbooks":
-            lines += ["| 条目 | 说明 |", "| --- | --- |"]
-            for e in sorted(es, key=lambda x: x["rel"]):
-                desc = e["fm"].get("summary") or e["title"]
-                lines.append(f"| [{e['title']}]({e['rel']}) | {desc[:40]} |")
-        else:
-            lines += ["| 条目 | 状态 | 一句话 |", "| --- | --- | --- |"]
-            for e in sorted(es, key=lambda x: x["rel"]):
-                st = STATUS_MAP.get(e["fm"].get("status"), "?")
-                desc = e["fm"].get("summary") or e["title"]
-                lines.append(f"| [{e['title']}]({e['rel']}) | {st} | {desc[:40]} |")
+    groups: dict[str, list] = {}
+    for e in entries:
+        groups.setdefault(e["module"] or e["rel"].split("/", 1)[0], []).append(e)
+    lines = []
+    for mod in sorted(groups):
+        lines += [f"## {mod}", "",
+                  "| 条目 | 类型 | 状态 | 一句话 |", "| --- | --- | --- | --- |"]
+        for e in sorted(groups[mod], key=lambda x: x["rel"]):
+            st = STATUS_MAP.get(e["fm"].get("status"), "?")
+            desc = e["fm"].get("summary") or e["title"]
+            lines.append(f"| [{e['title']}]({e['rel']}) | {e['type'] or '?'} | {st} | {desc[:40]} |")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def sanitize_module(name):
+    """模块名 → 目录名：去路径非法字符，空白转连字符。"""
+    t = re.sub(r"[\\/:*?\"<>|]", "", str(name)).strip()
+    return re.sub(r"\s+", "-", t)
+
+
+def remove_file_vcs(path, target):
+    """VCS 感知删除（git/svn rm；未版本化直接删）。"""
+    kind = vcs_kind(target)
+    if kind == "git":
+        rel = os.path.relpath(path, target)
+        subprocess.run(["git", "-C", target, "rm", "-q", "--ignore-unmatch", "--", rel],
+                       capture_output=True)
+    elif kind == "svn":
+        subprocess.run(["svn", "rm", "--", path], cwd=target, capture_output=True)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def rewrite_refs(rewrite_targets, plan, target):
+    """plan: [(old_rel, new_rel)] —— 改写全部条目与 PROFILE 中的路径/裸词干引用。"""
+    for path in rewrite_targets:
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError:
+            continue
+        new_text = text
+        for old_rel, new_rel in plan:
+            for pat, rep in [(old_rel, new_rel),
+                             (os.path.basename(old_rel), os.path.basename(new_rel)),
+                             (os.path.basename(old_rel)[:-3], os.path.basename(new_rel)[:-3])]:
+                new_text = re.sub(re.escape(pat) + r"(?![\w-])", rep, new_text)
+        if new_text != text:
+            atomic_write(path, new_text)
+
+
+def migrate_to_modules(entries, mem, target):
+    """存量类型目录（pitfalls/decisions/playbooks）条目迁入模块目录。
+
+    模块归属：条目 frontmatter `module` 字段（缺省"通用"，请人工复核）；
+    VCS 感知移动（git/svn mv）；迁移后统一补写 module 字段并联动改写交叉引用。"""
+    default_mod = "通用"
+    plan = []
+    for e in entries:
+        top = e["rel"].split("/", 1)[0]
+        if top not in TYPE_BY_DIR:
+            continue
+        mod = sanitize_module(e["fm"].get("module") or default_mod) or default_mod
+        plan.append((e, mod))
+    if not plan:
+        print("无存量类型目录条目需要迁移（已按模块分目录）")
+        return
+    kind = vcs_kind(target)
+    # 先改写引用（旧路径仍在），再移动
+    moves = [(e["rel"], f"{mod}/{os.path.basename(e['rel'])}") for e, mod in plan]
+    rewrite_refs([e["path"] for e in entries]
+                 + [os.path.join(mem, "PROFILE.md")], moves, target)
+    for e, mod in plan:
+        d = os.path.join(mem, mod)
+        os.makedirs(d, exist_ok=True)
+        dst = os.path.join(d, os.path.basename(e["path"]))
+        moved = False
+        if kind == "git":
+            moved = subprocess.run(["git", "-C", target, "mv", e["path"], dst],
+                                   capture_output=True).returncode == 0
+        elif kind == "svn":
+            moved = subprocess.run(["svn", "mv", e["path"], dst], cwd=target,
+                                   capture_output=True).returncode == 0
+        if not moved:
+            os.rename(e["path"], dst)
+        # 补写 module 字段（与目录一致）
+        text = open(dst, encoding="utf-8").read()
+        fm, body = parse_frontmatter(text)
+        fm = fm or {}
+        fm.pop("module", None)
+        fm["module"] = mod
+        ordered = {"type": fm.pop("type", e["type"]), "status": fm.pop("status", "unverified")}
+        ordered.update(fm)
+        atomic_write(dst, fm_to_text(ordered) + "\n" + body.lstrip("\n"))
+        print(f"已迁移 {e['rel']} → {mod}/{os.path.basename(dst)}")
+    # 清空后的存量目录（旧 _TEMPLATE.md 留存则保留并提示）
+    for sub in TYPE_BY_DIR:
+        d = os.path.join(mem, sub)
+        if os.path.isdir(d) and not os.listdir(d):
+            if kind == "svn":
+                subprocess.run(["svn", "rm", "--", d], cwd=target, capture_output=True)
+            else:
+                try:
+                    os.rmdir(d)
+                except OSError:
+                    pass
+        elif os.path.isdir(d):
+            print(f"提示: {sub}/ 仍留有文件（旧模板等），确认后可手动清理")
+    print(f"共迁移 {len(plan)} 条；索引与锚点随本次构建刷新——请人工复核模块归属"
+          f"（缺省归入 {default_mod}，模块名以业务域地图登记为准）")
 
 
 def profile_status(entries, mem):
@@ -191,28 +304,27 @@ def print_profile_status(entries, mem):
     print(profile_status(entries, mem))
 
 
-def render_readme(readme_path, index_text):
-    text = open(readme_path, encoding="utf-8").read() if os.path.exists(readme_path) else ""
-    block = f"{INDEX_START}\n{index_text}{INDEX_END}"
-    if INDEX_START in text and INDEX_END in text:
-        pre, rest = text.split(INDEX_START, 1)
-        _, post = rest.split(INDEX_END, 1)
-        return pre + block + post
-    return text.rstrip() + "\n\n" + block + "\n"
+def anchors_paths(target):
+    """锚点表新旧路径：新 .repo-memory-kit/.anchors.json；旧 docs/memory/.anchors.json
+    仅作迁移读取（存在则读取后由调用方清理）。"""
+    return (os.path.join(target, ".repo-memory-kit", ".anchors.json"),
+            os.path.join(target, "docs", "memory", ".anchors.json"))
 
 
-def build_anchors(entries, mem):
+def build_anchors(entries, target):
     anchors = {}
     for e in entries:
         for k in as_list(e["fm"].get("anchors")):
             anchors.setdefault(k, set()).add(e["rel"])
+    new_p, legacy_p = anchors_paths(target)
     old = {}
-    p = os.path.join(mem, ".anchors.json")
-    if os.path.exists(p):
-        try:
-            old = json.load(open(p, encoding="utf-8"))
-        except Exception:
-            old = {}
+    for p in (new_p, legacy_p):
+        if os.path.exists(p):
+            try:
+                old = json.load(open(p, encoding="utf-8"))
+                break
+            except Exception:
+                old = {}
     old_a = old.get("anchors", {}) if isinstance(old, dict) else {}
     unresolved = old.get("unresolved", {}) if isinstance(old, dict) else {}
     out = {"schema_version": 2, "anchors": {}, "unresolved": {k: unresolved[k] for k in sorted(unresolved)}}
@@ -222,7 +334,7 @@ def build_anchors(entries, mem):
             val = {kk: old_a[k][kk] for kk in ("file", "signature") if kk in old_a[k]}
         val["entries"] = sorted(anchors[k])
         out["anchors"][k] = val
-    return out, os.path.exists(p)
+    return out, os.path.exists(new_p), os.path.exists(legacy_p)
 
 
 def atomic_write(path, text):
@@ -241,6 +353,9 @@ def fm_to_text(fm):
     lines = ["---"]
     for k, v in fm.items():
         if isinstance(v, list):
+            if not v:
+                lines.append(f"{k}: []")   # 空列表写显式 []，裸 key: 回读会变空串
+                continue
             lines.append(f"{k}:")
             lines += [f"  - {x}" for x in v]
         elif v not in (None, "", []):
@@ -249,16 +364,18 @@ def fm_to_text(fm):
     return "\n".join(lines) + "\n"
 
 
-def migrate(entries, mem):
+def migrate(entries, target):
     """旧条目合成 frontmatter：状态行/最后有效行 → fm；文件名日期 → created；旧锚点表反填 anchors。"""
     old_a = {}
-    p = os.path.join(mem, ".anchors.json")
-    if os.path.exists(p):
-        try:
-            d = json.load(open(p, encoding="utf-8"))
-            old_a = d.get("anchors", {})
-        except Exception:
-            pass
+    new_p, legacy_p = anchors_paths(target)
+    for p in (new_p, legacy_p):
+        if os.path.exists(p):
+            try:
+                d = json.load(open(p, encoding="utf-8"))
+                old_a = d.get("anchors", {})
+                break
+            except Exception:
+                pass
     rev = {}
     for k, v in old_a.items():
         for rel in (v.get("entries", []) if isinstance(v, dict) else []):
@@ -503,6 +620,8 @@ def main():
             mode = "check"
         elif a == "--migrate":
             mode = "migrate"
+        elif a == "--migrate-to-modules":
+            mode = "migrate-modules"
         elif a == "--rename-by-title":
             mode = "rename"
         elif a == "--changed":
@@ -553,7 +672,7 @@ def main():
             return
         print(f"变更 {len(files)} 个文件，波及 {len(hits)} 条记忆：")
         for rel, keys in sorted(hits.items()):
-            print(f"  - {rel}  ←  {', '.join(keys)}")
+            print(f"  - {rel} ←  {', '.join(keys)}")
         print("提示: 方法级精确解析请运行 /memory-check <符号> 增量巡检（经图谱）")
         if strict:
             sys.exit(2)
@@ -562,8 +681,12 @@ def main():
     entries = load_entries(mem)
 
     if mode == "migrate":
-        migrate(entries, mem)
+        migrate(entries, target)
         return
+
+    if mode == "migrate-modules":
+        migrate_to_modules(entries, mem, target)
+        entries = load_entries(mem)  # 迁移后按新路径重建
 
     if mode == "rename":
         rename_by_title(entries, mem, target)
@@ -575,25 +698,23 @@ def main():
             print(f"✗ {e}")
         sys.exit(f"共 {len(errs)} 个条目格式问题，先修复（或对旧条目运行 --migrate）")
 
-    readme = os.path.join(mem, "README.md")
-    index_text = build_index(entries)
-    anchors, has_anchors = build_anchors(entries, mem)
+    kit_dir = os.path.join(target, ".repo-memory-kit")
+    idx_path = os.path.join(kit_dir, "memory-index.md")
+    index_text = INDEX_HEADER + build_index(entries)
+    anchors, has_anchors, has_legacy = build_anchors(entries, target)
+    new_p, legacy_p = anchors_paths(target)
 
     if mode == "check":
         problems = []
-        if not os.path.exists(readme):
-            problems.append("README.md 不存在（运行 memory-build 生成）")
-        else:
-            cur = open(readme, encoding="utf-8").read()
-            if INDEX_START in cur:
-                if render_readme(readme, index_text) != cur:
-                    problems.append("README 索引与条目不一致（运行 memory-build 刷新）")
-            else:
-                problems.append("README 缺索引托管区块（运行 memory-build 生成）")
-        ap = os.path.join(mem, ".anchors.json")
-        if has_anchors or anchors["anchors"] or anchors["unresolved"]:
-            if not has_anchors or json.load(open(ap, encoding="utf-8")) != anchors:
-                problems.append(".anchors.json 与条目 frontmatter 不一致（运行 memory-build 刷新）")
+        if not entries and not os.path.exists(idx_path):
+            pass   # 新装零条目：尚无索引文件属正常（首条入库后由 memory-build 生成）
+        elif not os.path.exists(idx_path):
+            problems.append(".repo-memory-kit/memory-index.md 不存在（运行 memory-build 生成）")
+        elif open(idx_path, encoding="utf-8").read() != index_text:
+            problems.append("记忆索引与条目不一致（运行 memory-build 刷新）")
+        if has_anchors or has_legacy or anchors["anchors"] or anchors["unresolved"]:
+            if not has_anchors or json.load(open(new_p, encoding="utf-8")) != anchors:
+                problems.append(".anchors.json 与条目 frontmatter 不一致（运行 memory-build 刷新；旧位置文件将在刷新时迁移清理）")
         if problems:
             for p in problems:
                 print(f"✗ {p}")
@@ -602,8 +723,9 @@ def main():
         print_profile_status(entries, mem)
         return
 
-    atomic_write(readme, render_readme(readme, index_text))
-    print(f"✓ README 索引已生成/刷新（{len(entries)} 条目）")
+    os.makedirs(kit_dir, exist_ok=True)
+    atomic_write(idx_path, index_text)
+    print(f"✓ 记忆索引已生成/刷新（{len(entries)} 条目 → .repo-memory-kit/memory-index.md）")
     # 单一刷新链：zvec 可用时语义索引随本次构建自动重建，消除"两条命令漏跑第二条"。
     try:
         import zvec  # noqa: F401
@@ -619,9 +741,11 @@ def main():
     except ImportError:
         pass
     if anchors["anchors"] or has_anchors or anchors["unresolved"]:
-        atomic_write(os.path.join(mem, ".anchors.json"),
-                     json.dumps(anchors, ensure_ascii=False, indent=2) + "\n")
+        atomic_write(new_p, json.dumps(anchors, ensure_ascii=False, indent=2) + "\n")
         print(f"✓ .anchors.json 已生成/刷新（{len(anchors['anchors'])} 个锚点）")
+    if has_legacy:
+        remove_file_vcs(legacy_p, target)   # 旧位置已迁移读取，清理防混淆
+        print("• 旧 docs/memory/.anchors.json 已迁移清理")
     print_profile_status(entries, mem)
 
 

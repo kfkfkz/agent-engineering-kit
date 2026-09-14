@@ -18,6 +18,7 @@ P="$T/proj"; mkdir -p "$P"
 "$KIT/install.sh" "$P" >/dev/null
 
 # 合法条目 ×2
+mkdir -p "$P/docs/memory/pitfalls"
 cat > "$P/docs/memory/pitfalls/2026-01-01-alpha.md" <<'EOF'
 ---
 type: pitfall
@@ -34,6 +35,7 @@ anchors:
 ## 现象
 坏了
 EOF
+mkdir -p "$P/docs/memory/playbooks"
 cat > "$P/docs/memory/playbooks/2026-01-02-beta-flow.md" <<'EOF'
 ---
 type: playbook
@@ -56,23 +58,24 @@ EOF
 
 # ── B1 生成：索引与锚点表 ──
 MB "$P" >/dev/null
-assert_grep "索引含 pitfall 条目"     "Alpha 坑的索引一句话" "$P/docs/memory/README.md"
-assert_grep "索引含状态映射"          "已确认"               "$P/docs/memory/README.md"
-assert_grep "锚点表含 class 键"       "class:com.example.AlphaService" "$P/docs/memory/.anchors.json"
-assert_grep "锚点表含 file 键"        "file:src/beta.yml"    "$P/docs/memory/.anchors.json"
-assert_eq   "锚点数=3" "$(python3 -c "import json;print(len(json.load(open('$P/docs/memory/.anchors.json'))['anchors']))")" "3"
+assert_grep "索引含 pitfall 条目"     "Alpha 坑的索引一句话" "$P/.repo-memory-kit/memory-index.md"
+assert_grep "索引含状态映射"          "已确认"               "$P/.repo-memory-kit/memory-index.md"
+assert_grep "锚点表含 class 键"       "class:com.example.AlphaService" "$P/.repo-memory-kit/.anchors.json"
+assert_grep "锚点表含 file 键"        "file:src/beta.yml"    "$P/.repo-memory-kit/.anchors.json"
+assert_eq   "锚点数=3" "$(python3 -c "import json;print(len(json.load(open('$P/.repo-memory-kit/.anchors.json'))['anchors']))")" "3"
 
 # ── B2 --check 新鲜 ──
 if MB --check "$P" >/dev/null 2>&1; then ok "--check 通过（索引/锚点最新）"; else bad "--check 误报过期"; fi
 
 # ── B3 篡改锚点表 → --check 抓到 ──
 python3 -c "
-import json; p='$P/docs/memory/.anchors.json'
+import json; p='$P/.repo-memory-kit/.anchors.json'
 d=json.load(open(p)); d['anchors']['class:hack:X']={'entries':['pitfalls/2026-01-01-alpha.md']}
 json.dump(d, open(p,'w'), ensure_ascii=False, indent=2)"
 if MB --check "$P" >/dev/null 2>&1; then bad "--check 未抓到锚点表篡改"; else ok "--check 抓到锚点表篡改"; fi
 
 # ── B4 新增条目未刷新 → --check 抓到；重建后恢复 ──
+mkdir -p "$P/docs/memory/decisions"
 cat > "$P/docs/memory/decisions/2026-01-04-gamma.md" <<'EOF'
 ---
 type: decision
@@ -84,7 +87,7 @@ created: 2026-01-04
 选了 A 方案
 EOF
 if MB --check "$P" >/dev/null 2>&1; then bad "--check 未抓到索引过期"; else ok "--check 抓到索引过期"; fi
-MB "$P" >/dev/null && assert_grep "重建后索引含 decision" "Gamma 决定" "$P/docs/memory/README.md"
+MB "$P" >/dev/null && assert_grep "重建后索引含 decision" "Gamma 决定" "$P/.repo-memory-kit/memory-index.md"
 
 # ── B5 非法 status / 假日期被拒 ──
 cat > "$P/docs/memory/pitfalls/2026-01-05-bad.md" <<'EOF'
@@ -161,6 +164,7 @@ fi
 # ── B12 L3 门槛：只数 confirmed，并提示建档/重蒸馏 ──
 P2="$T/profile-status"; mkdir -p "$P2"
 "$KIT/install.sh" "$P2" >/dev/null
+mkdir -p "$P2/docs/memory/pitfalls" "$P2/docs/memory/decisions"
 i=1
 while [ "$i" -le 9 ]; do
     day="$(printf '%02d' "$i")"
@@ -219,6 +223,7 @@ case "$OUT6" in *"其后新增 confirmed 5 条"*"建议重新蒸馏"*) ok "新�
 # ── T7 条目按标题中文重命名：文件、交叉引用、索引、锚点联动 ──
 P3="$T/rename"; mkdir -p "$P3"
 "$KIT/install.sh" "$P3" >/dev/null
+mkdir -p "$P3/docs/memory/pitfalls"
 cat > "$P3/docs/memory/pitfalls/2026-03-01-zip-format-mismatch.md" <<'EOF'
 ---
 type: pitfall
@@ -263,8 +268,8 @@ MB --rename-by-title "$P3" >/dev/null
 assert_exists "条目按中文标题重命名" "$P3/docs/memory/pitfalls/2026-03-01-压缩包格式误判.md"
 assert_gone "旧英文文件名移除" "$P3/docs/memory/pitfalls/2026-03-01-zip-format-mismatch.md"
 assert_grep "交叉引用联动改写" 'pitfalls/2026-03-01-压缩包格式误判.md' "$P3/docs/memory/pitfalls/2026-03-02-相邻问题.md"
-assert_grep "README 索引指向新文件名" '2026-03-01-压缩包格式误判.md' "$P3/docs/memory/README.md"
-assert_grep "锚点表条目路径更新" '2026-03-01-压缩包格式误判.md' "$P3/docs/memory/.anchors.json"
+assert_grep "本地索引指向新文件名" '2026-03-01-压缩包格式误判.md' "$P3/.repo-memory-kit/memory-index.md"
+assert_grep "锚点表条目路径更新" '2026-03-01-压缩包格式误判.md' "$P3/.repo-memory-kit/.anchors.json"
 assert_grep "PROFILE 裸词干引用联动改写" 'pitfalls/2026-03-01-压缩包格式误判' "$P3/docs/memory/PROFILE.md"
 OUT7="$(MB --rename-by-title "$P3")"
 case "$OUT7" in *"无需重命名"*) ok "重命名幂等";; *) bad "重命名不幂等: $OUT7";; esac
@@ -275,6 +280,7 @@ if MB --check "$P3" >/dev/null 2>&1; then ok "重命名后 --check 一致"; else
 P4R="$T/recall"; mkdir -p "$P4R"
 "$KIT/install.sh" "$P4R" >/dev/null
 assert_exists "语义检索器随仓库安装" "$P4R/.repo-memory-kit/bin/memory-recall"
+mkdir -p "$P4R/docs/memory/pitfalls"
 cat > "$P4R/docs/memory/pitfalls/2026-01-01-alpha.md" <<'EOF2'
 ---
 type: pitfall
@@ -349,6 +355,65 @@ mv "$DM/03-核心业务域/坏域" "$T/坏域备份"
 sed -i '/幽灵域/d' "$DM/01-索引/README.md"
 if CROSS_REPO_PREFIXES="dmtp-sdk" python3 "$KIT/domain-check" "$P5D" >/dev/null 2>&1; then ok "干净域地图通过"; else bad "干净域地图误报: $(python3 "$KIT/domain-check" "$P5D" 2>&1 | head -3)"; fi
 
+
+
+# ── T11 v4 模块目录：类型在 frontmatter、索引按模块分组、README 不再改写 ──
+PM="$T/mod4"; mkdir -p "$PM"
+"$KIT/install.sh" "$PM" >/dev/null
+printf '# 索引宿主\n' > "$PM/docs/memory/README.md"
+README_HASH_BEFORE="$(sha256sum "$PM/docs/memory/README.md" | cut -d' ' -f1)"
+mkdir -p "$PM/docs/memory/订单"
+cat > "$PM/docs/memory/订单/2026-04-01-导出坑.md" <<'EOF2'
+---
+type: pitfall
+status: confirmed
+module: 订单
+created: 2026-04-01
+summary: 导出的坑
+---
+# 导出坑
+EOF2
+MB "$PM" >/dev/null
+assert_grep "索引按模块分组" "## 订单" "$PM/.repo-memory-kit/memory-index.md"
+assert_grep "索引含模块条目（类型来自 frontmatter）" "导出坑" "$PM/.repo-memory-kit/memory-index.md"
+assert_eq "README 回归纯 seed（构建不改写）" "$README_HASH_BEFORE" "$(sha256sum "$PM/docs/memory/README.md" | cut -d' ' -f1)"
+OUTL="$(python3 "$KIT/memory-recall" --list "$PM")"
+case "$OUTL" in *"[pitfall/confirmed]"*"订单/2026-04-01-导出坑.md"*) ok "语义层按 frontmatter 判型（--list）";; *) bad "语义层类型判定异常: $OUTL";; esac
+# module 与目录不一致被抓
+sed -i 's/^module: 订单/module: 库存/' "$PM/docs/memory/订单/2026-04-01-导出坑.md"
+if MB "$PM" >/dev/null 2>&1; then bad "module 与目录不一致未被抓"; else ok "module 与目录不一致被抓"; fi
+sed -i 's/^module: 库存/module: 订单/' "$PM/docs/memory/订单/2026-04-01-导出坑.md"
+
+# ── T12 --migrate-to-modules：存量类型目录条目迁入模块目录 ──
+PMM="$T/mod-mig"; mkdir -p "$PMM"
+"$KIT/install.sh" "$PMM" >/dev/null
+mkdir -p "$PMM/docs/memory/pitfalls"
+cat > "$PMM/docs/memory/pitfalls/2026-05-01-存量坑.md" <<'EOF2'
+---
+type: pitfall
+status: confirmed
+module: 订单
+created: 2026-05-01
+summary: 存量坑
+related: []
+---
+# 存量坑
+EOF2
+cat > "$PMM/docs/memory/pitfalls/2026-05-02-无模块坑.md" <<'EOF2'
+---
+type: pitfall
+status: unverified
+created: 2026-05-02
+summary: 无模块坑
+---
+# 无模块坑
+EOF2
+MB "$PMM" --migrate-to-modules >/dev/null
+assert_exists "有 module 字段的条目迁入对应模块目录" "$PMM/docs/memory/订单/2026-05-01-存量坑.md"
+assert_exists "无 module 字段的条目迁入默认模块（通用）" "$PMM/docs/memory/通用/2026-05-02-无模块坑.md"
+assert_grep "迁移后补写 module 字段" "^module: 通用$" "$PMM/docs/memory/通用/2026-05-02-无模块坑.md"
+MB "$PMM" >/dev/null && assert_grep "迁移后索引按新路径分组" "订单/2026-05-01-存量坑.md" "$PMM/.repo-memory-kit/memory-index.md"
+if MB --check "$PMM" >/dev/null 2>&1; then ok "迁移后 --check 通过"; else bad "迁移后 --check 失败"; fi
 
 echo
 echo "通过 $pass / 失败 $fail"

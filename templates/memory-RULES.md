@@ -1,17 +1,17 @@
 # 项目记忆规则（RULES）
 
 > **本文件由 agent-engineering-kit 管辖**，`install.sh --update` 会自动刷新——请勿手工编辑（改动会被覆盖）。如需改规则，改 kit 仓库的 `templates/memory-RULES.md`。
-> 用户数据（索引、巡检记录、条目、锚点表）在 `README.md`、各条目文件与 `.anchors.json` 中，可自由编辑。
+> 用户数据在 `README.md`（纯 seed，首次创建后归用户）、各条目文件中，可自由编辑；索引与锚点表是 `.repo-memory-kit/` 下的本地生成物（每机派生，SVN 多人协作下不入库）。
 
 ## 使用规则（对 Agent 同样生效）
 
-1. 动手修改代码前，先查 `README.md` 索引（`memory-build` 自动生成），命中相关条目必须先读全文。
+1. 动手修改代码前，先用 `memory-recall` 语义检索（`.repo-memory-kit/bin/memory-recall "<任务描述>"`），或查本地索引（`.repo-memory-kit/memory-index.md`，`memory-build` 生成），命中相关条目必须先读全文。
 2. 状态为「待验证」（unverified）的条目仅供了解，不得作为修改依据。
 3. Bug 修复经人工审核通过后，将原因、影响范围、修复方案整理为新条目入库（素材即审核通过的 bug 分析，零额外成本）。
 4. 条目过时改为 `deprecated`；被新条目替代改为 `superseded`（并在新条目 frontmatter 的 `supersedes` 指回旧条目）。原则上不删除，保留可追溯。**唯一例外见「敏感信息误入库应急」**。
 5. 遵循安全要求：条目中禁止出现密钥、Token、真实 PII、内网地址。
 6. **功能验收通过后进行功能蒸馏**：按下方「功能蒸馏」清单将核心流程与环境信息沉淀为 playbook 条目。
-7. **任何条目增删改后必须运行 `memory-build`**（`.repo-memory-kit/bin/memory-build`）刷新 README 索引与锚点表——索引与锚点表是生成物，禁止手改；zvec 可用时语义索引随本次构建自动刷新。
+7. **任何条目增删改后必须运行 `memory-build`**（`.repo-memory-kit/bin/memory-build`）刷新本地索引与锚点表（`.repo-memory-kit/memory-index.md` 与 `.anchors.json`，生成物禁止手改）；zvec 可用时语义索引随本次构建自动刷新。
 
 ## 触发与捕获（记忆怎么进来）
 
@@ -27,7 +27,7 @@
 1. **候选提取**：扫描当前会话，识别四类候选——坑（根因已明的缺陷/陷阱）、流程（跑通的操作步骤）、环境信息（路由/配置/关键 ID）、决定（重要取舍及理由）。
 2. **分类起草**：按条目模板生成草稿（**frontmatter 必填**：type/status/created，playbook 还须 verified）；坑 → pitfall（默认 status: unverified，除非已有验证证据），流程/环境 → playbook，**决定 → decision**（背景/取舍/后果，禁止硬塞进 playbook）。不捕获凭证与内网地址（安全规则）、纯会话性内容。
 3. **呈现确认**：逐条列出（类型/标题/一句话），等用户确认或修改——**确认是入库的必要条件**。
-4. **入库**：确认后写入对应目录（`YYYY-MM-DD-<中文标题>.md`，标题与正文一级标题一致，纯代码符号名可保留英文；frontmatter 的 anchors 填类型化定位符），**随即运行 `memory-build` 刷新索引与锚点表**；达到 L3 门槛（有效 `confirmed` 条目 ≥ 10，由 `memory-build` 自动判断）时提示蒸馏 PROFILE。
+4. **入库**：确认后写入对应模块目录（`docs/memory/<模块>/<YYYY-MM-DD-<中文标题>.md>`；模块按接口入口所属业务域划分，以业务域地图登记为准；标题与正文一级标题一致，纯代码符号名可保留英文；frontmatter 的 type 填条目类型、anchors 填类型化定位符），**随即运行 `memory-build` 刷新索引与锚点表**；达到 L3 门槛（有效 `confirmed` 条目 ≥ 10，由 `memory-build` 自动判断）时提示蒸馏 PROFILE。
 5. **后续提示**：待验证条目给出验证方式；playbook 标注「最后有效」日期。
 
 ## 功能蒸馏清单
@@ -36,10 +36,10 @@
 
 | 蒸馏项 | 去处 | 内容 |
 | --- | --- | --- |
-| 核心流程 | 业务域地图条目（项目已建立时）；无域地图时 `playbooks/` | 端到端可执行步骤（谁调用谁、接口顺序）、涉及的组件/算法包清单 |
-| 环境信息 | `playbooks/` | 部署环境、服务路由前缀、关键配置项（凭证除外，写获取途径） |
-| 可复用测试数据 | `playbooks/` | 现成的场景/资源 ID，附「最后有效」日期 |
-| 过程中踩的坑 | `pitfalls/` | 功能开发/测试期间定位的缺陷与陷阱 |
+| 核心流程 | 业务域地图条目（项目已建立时）；无域地图时 playbook 条目 | 端到端可执行步骤（谁调用谁、接口顺序）、涉及的组件/算法包清单 |
+| 环境信息 | playbook 条目 | 部署环境、服务路由前缀、关键配置项（凭证除外，写获取途径） |
+| 可复用测试数据 | playbook 条目 | 现成的场景/资源 ID，附「最后有效」日期 |
+| 过程中踩的坑 | pitfall 条目 | 功能开发/测试期间定位的缺陷与陷阱 |
 | 权威文档指针 | playbook 内 | spec/接口文档等详细文档的位置，报文细节不复制 |
 
 原则：记忆区存"怎么跑通"和"去哪查详情"，不复制权威文档内容（单一口径）。
@@ -52,14 +52,15 @@
 
 ```text
 L3  PROFILE.md（项目经验画像）   宏观引导：风险域地图/稳定约定/反模式，会话开始优先读
-L2  playbooks/                  场景流程：某功能/环境怎么跑通
-L1  pitfalls/ + decisions/      原子经验：坑（缺陷/陷阱）与决定（背景/取舍/后果）
+L2  playbook 条目              场景流程：某功能/环境怎么跑通
+L1  pitfall / decision 条目     原子经验：坑（缺陷/陷阱）与决定（背景/取舍/后果）
+    （条目统一按模块分目录存放，类型在 frontmatter 的 type 字段）
 L0  权威文档与代码（记忆区外）   证据：源码（第一事实源）、业务域地图、spec/SDD、接口文档
 ```
 
-**语义检索层（memory-recall）**：`docs/` 下全部 Markdown（记忆条目、业务域地图、SDD、交付回执；模板与生成索引除外）经 zvec jieba 全文 + 双字段 RRF 建成可检索索引，Agent 取上下文时先 `.repo-memory-kit/bin/memory-recall "<任务描述>"`，再读命中条目全文——功能点多了以后，靠人工记得去查索引表必然漏召回。索引是派生数据（`.repo-memory-kit/zvec/recall`，随卸载移除），条目增删改后由 `memory-build` 随动重建（单独 `--rebuild` 仍可用）；可选依赖 `pip install zvec`，未安装时明确报错降级，不影响记忆体系其余功能。
+**语义检索层（memory-recall）**：`docs/` 下全部 Markdown（记忆条目、业务域地图、SDD、交付回执；模板与生成索引除外）经 zvec jieba 全文 + 双字段 RRF 建成可检索索引，Agent 取上下文时先 `.repo-memory-kit/bin/memory-recall "<任务描述>"`，再读命中条目全文——功能点多了以后，靠人工记得去查索引表必然漏召回。索引是派生数据（`.repo-memory-kit/zvec/generations/` + `current.json` 指针，每机本地、随卸载移除），条目增删改后由 `memory-build` 随动重建（单独 `--rebuild` 仍可用）；可选依赖 `pip install zvec`，未安装时明确报错降级，不影响记忆体系其余功能。
 
-**L3 消费规则（写入 Agent 指引）**：`PROFILE.md` 存在时，Agent 会话开始必须先读它，再查 README 索引——没有消费规则的生产规则是死代码。
+**L3 消费规则（写入 Agent 指引）**：`PROFILE.md` 存在时，Agent 会话开始必须先读它，再跑 `memory-recall` 语义检索——没有消费规则的生产规则是死代码。
 
 规则：
 
@@ -77,7 +78,7 @@ L0  权威文档与代码（记忆区外）   证据：源码（第一事实源�
 
 - pitfall 条目 ≤ 60 行，playbook ≤ 150 行；超出时压缩：过程细节（报文、步骤明细）下沉到权威文档并保留指针，或按主题拆分条目。
 - 压缩不删「状态/触发/根因结论」，只下沉过程细节。
-- README 索引表一句话 ≤ 40 字。
+- 索引一句话（summary）≤ 40 字。
 
 ### 时效规则
 
@@ -95,19 +96,19 @@ L0  权威文档与代码（记忆区外）   证据：源码（第一事实源�
 2. 逐条读取条目，无「校验点」小节的从正文提取可核验事实（接口路由、类/方法名、文件路径、配置键）生成该小节。
 3. 对每个校验点比对当前代码库（符号定位用图工具；grep 仅用于字面量、配置文件与非代码文件）。核验路由是否仍存在、类/方法逻辑是否未变、文件是否还在。
 4. 失配条目：修正正文与校验点，更新日期；无法确认的列出待人工决定是否 `deprecated`。
-5. 超限条目按「大小约束」压缩；符号锚点增删改在条目 frontmatter 的 `anchors` 中进行；**最后统一运行 `memory-build` 刷新 README 索引与 `.anchors.json`**；`PROFILE.md`（L3，存在时）核对下钻链仍闭合并更新「最后蒸馏」日期。
+5. 超限条目按「大小约束」压缩；符号锚点增删改在条目 frontmatter 的 `anchors` 中进行；**最后统一运行 `memory-build` 刷新本地索引与 `.anchors.json`**；`PROFILE.md`（L3，存在时）核对下钻链仍闭合并更新「最后蒸馏」日期。
 6. 输出报告：本次矫正/压缩了什么、哪些存疑；巡检只改 `docs/memory/` 内文档，不改代码；`deprecated` 需人工确认。
 
 ### 增量巡检（事件驱动模式）
 
 输入变更范围，只核验受波及的条目——用于 bug 修复合入前、大功能开工前、或快速确认某次重构没打断记忆链：
 
-1. **确定变更面**：只知道改了哪些文件时，运行 `memory-build --changed [ref]` / `--since <ref>`（自动探测 git/svn），或任意来源用 `<变更命令> | memory-build --files [目标仓库]`（可加 `--report <路径>` 生成 Markdown 影响报告、`--strict` 供 CI 阻断）；知道符号时直接查 `.anchors.json`，表缺失或未命中时回退结构化检索文本反查（如 codebase-memory `search_code(符号, path_filter="docs/memory")`）。
+1. **确定变更面**：只知道改了哪些文件时，运行 `memory-build --changed [ref]` / `--since <ref>`（自动探测 git/svn），或任意来源用 `<变更命令> | memory-build --files [目标仓库]`（可加 `--report <路径>` 生成 Markdown 影响报告、`--strict` 供 CI 阻断）；知道符号时直接查 `.repo-memory-kit/.anchors.json`，表缺失或未命中时回退结构化检索文本反查（如 codebase-memory `search_code(符号, path_filter="docs/memory")`）。
 2. **命中条目**执行全量巡检的核验与矫正步骤；**无命中**则报告"本次变更不波及任何记忆条目"。
 
 ### 锚点表（符号 → 条目映射）
 
-`docs/memory/.anchors.json` 是"变更符号 → 受波及记忆条目"的精确映射，**由 `memory-build` 从各条目 frontmatter 的 `anchors` 字段聚合生成**（旧表中 `unresolved` 与 `file`/`signature` 提示字段自动保留），随仓库版本化，禁止手改。
+`.repo-memory-kit/.anchors.json` 是"变更符号 → 受波及记忆条目"的精确映射，**由 `memory-build` 从各条目 frontmatter 的 `anchors` 字段聚合生成**（旧表中 `unresolved` 与 `file`/`signature` 提示字段自动保留）。它是每机本地派生物（SVN 多人协作下不入库；换机/新同事首次运行 `memory-build` 即重建），禁止手改。
 
 **协议（所有写入方必须遵守，schema_version 兼容性依据）**：
 
@@ -135,11 +136,11 @@ L0  权威文档与代码（记忆区外）   证据：源码（第一事实源�
 
 ## 条目格式（v3：frontmatter 单一事实源）
 
-每个条目以 YAML frontmatter 开头，README 索引与 `.anchors.json` 均由 `memory-build` 从 frontmatter 自动生成——**索引与锚点表是生成物，禁止手改**。
+每个条目以 YAML frontmatter 开头，本地索引与 `.anchors.json` 均由 `memory-build` 从 frontmatter 自动生成——**索引与锚点表是生成物，禁止手改**。
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| type | ✓ | pitfall / decision / playbook（须与所在目录一致） |
+| type | ✓ | pitfall / decision / playbook（条目按模块分目录，类型由本字段承载） |
 | status | ✓ | confirmed / unverified / deprecated / superseded |
 | module | 建议 | 模块/服务 |
 | created | ✓ | 定位/创建日期（YYYY-MM-DD） |
@@ -149,4 +150,4 @@ L0  权威文档与代码（记忆区外）   证据：源码（第一事实源�
 | summary | 可选 | 索引一句话（缺省用标题） |
 | supersedes / conflicts_with / related | 可选 | 替代/冲突/关联条目（相对路径）；status 为 superseded 的条目必须被某条的 supersedes 指向 |
 
-正文：一级标题 + 内容小节 + 「校验点」（巡检记录与补充事实）。状态与日期**不再写在正文**——单一事实源在 frontmatter。模板：`pitfalls/_TEMPLATE.md`、`decisions/_TEMPLATE.md`、`playbooks/_TEMPLATE.md`、`_PROFILE_TEMPLATE.md`；命名 `YYYY-MM-DD-<中文标题>.md`（纯代码符号名可保留英文）。存量英文命名的条目可运行 `memory-build --rename-by-title` 按标题批量重命名，交叉引用与索引自动联动。
+正文：一级标题 + 内容小节 + 「校验点」（巡检记录与补充事实）。状态与日期**不再写在正文**——单一事实源在 frontmatter。模板：`_PITFALL_TEMPLATE.md`、`_DECISION_TEMPLATE.md`、`_PLAYBOOK_TEMPLATE.md`、`_PROFILE_TEMPLATE.md`（复制到对应模块目录、按 `YYYY-MM-DD-<中文标题>.md` 命名，纯代码符号名可保留英文）。存量英文命名条目可运行 `memory-build --rename-by-title` 按标题批量重命名；存量 v3 类型目录（pitfalls/decisions/playbooks）条目可运行 `memory-build --migrate-to-modules` 迁入模块目录（交叉引用自动联动）——两者均在刷新索引时自动联动。

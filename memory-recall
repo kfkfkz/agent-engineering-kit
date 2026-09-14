@@ -71,7 +71,12 @@ def parse_frontmatter(text):
     return fm, text[end + 5:]
 
 
-def derive_type(rel):
+def derive_type(rel, fm, body):
+    # v4：类型以 frontmatter type 为准（模块分目录后类型不再由路径承载）；
+    # 存量类型目录前缀仅作回退。domain/sdd/receipt 等文档类型仍按路径前缀判定。
+    t = str(fm.get("type") or "").strip()
+    if t in ("pitfall", "decision", "playbook"):
+        return t
     for prefix, typ in TYPE_BY_PREFIX:
         if rel.startswith(prefix):
             return typ
@@ -110,7 +115,7 @@ def iter_docs(repo):
             _anchors = _anchors.split()
         anchors = " ".join(_anchors)
         meta = " ".join(x for x in (title, str(fm.get("summary") or ""), anchors) if x)
-        yield rel, fm, body, title, derive_type(rel), meta
+        yield rel, fm, body, title, derive_type(rel, fm, body), meta
 
 
 def build_docs(repo):

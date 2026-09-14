@@ -163,19 +163,21 @@ def _memory_specs() -> list[ResourceSpec]:
             id="memory-readme-seed", source_path="templates/memory-README.md",
             destination_path="docs/memory/README.md", resource_type="seed_file",
             locator=None, merge_policy="seed_if_absent", expected_mode=0o644),
+        # v4：条目按模块分目录（docs/memory/<模块>/），类型在 frontmatter——
+        # 模板随之移到 memory 根（旧 <类型>/_TEMPLATE.md 是 v3 布局，存量文件不删不动）
         ResourceSpec(
             id="pitfall-template", source_path="templates/pitfall-entry.md",
-            destination_path="docs/memory/pitfalls/_TEMPLATE.md",
+            destination_path="docs/memory/_PITFALL_TEMPLATE.md",
             resource_type="owned_file", locator=None, merge_policy="replace",
             expected_mode=0o644),
         ResourceSpec(
             id="decision-template", source_path="templates/decision-entry.md",
-            destination_path="docs/memory/decisions/_TEMPLATE.md",
+            destination_path="docs/memory/_DECISION_TEMPLATE.md",
             resource_type="owned_file", locator=None, merge_policy="replace",
             expected_mode=0o644),
         ResourceSpec(
             id="playbook-template", source_path="templates/playbook-entry.md",
-            destination_path="docs/memory/playbooks/_TEMPLATE.md",
+            destination_path="docs/memory/_PLAYBOOK_TEMPLATE.md",
             resource_type="owned_file", locator=None, merge_policy="replace",
             expected_mode=0o644),
         ResourceSpec(

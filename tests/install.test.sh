@@ -22,7 +22,7 @@ P="$T/proj1"; mkdir -p "$P"; printf '# T\n' > "$P/CLAUDE.md"
 "$KIT/install.sh" "$P" >/dev/null
 assert_exists "RULES.md 安装"            "$P/docs/memory/RULES.md"
 assert_exists "README.md 创建"           "$P/docs/memory/README.md"
-assert_exists "条目模板安装"              "$P/docs/memory/pitfalls/_TEMPLATE.md"
+assert_exists "坑条目模板安装"            "$P/docs/memory/_PITFALL_TEMPLATE.md"
 assert_exists "PROFILE 模板安装"         "$P/docs/memory/_PROFILE_TEMPLATE.md"
 assert_exists "校验器随仓库安装"          "$P/.repo-memory-kit/bin/validate-memory.sh"
 assert_exists "Claude 技能（check）"     "$P/.claude/skills/memory-check/SKILL.md"
@@ -105,7 +105,7 @@ if grep -q "项目专属的定制行" "$P6/CLAUDE.md"; then ok "定制段落内�
 if grep -qF '<!-- repo-memory-kit:start -->' "$P6/CLAUDE.md"; then bad "定制段落被追加新区块（应只提示）"; else ok "定制段落未被追加新区块"; fi
 
 # ── T9 RULES.md 引用的文件均可达 ──
-for f in README.md pitfalls/_TEMPLATE.md _PROFILE_TEMPLATE.md; do
+for f in README.md _PITFALL_TEMPLATE.md _PROFILE_TEMPLATE.md; do
     assert_exists "RULES 引用可达: $f" "$P/docs/memory/$f"
 done
 
@@ -122,6 +122,7 @@ if sh "$KIT/validate-memory.sh" "$P4" >/dev/null 2>&1; then bad "校验器未抓
 
 # ── T13 校验器：索引一致性（条目漏登被抓）──
 rm -f "$P4/docs/memory/.anchors.json"
+mkdir -p "$P4/docs/memory/pitfalls"
 printf '# fake entry\n' > "$P4/docs/memory/pitfalls/2099-01-01-not-in-index.md"
 if sh "$KIT/validate-memory.sh" "$P4" >/dev/null 2>&1; then bad "校验器未抓到条目漏登"; else ok "校验器抓到条目漏登"; fi
 
@@ -140,7 +141,7 @@ done
 assert_gone     "卸载：bin 目录移除"       "$P4/.repo-memory-kit/bin"
 assert_exists   "卸载：manifest.json 缩减保留（seed 残留条目）" "$P4/.repo-memory-kit/manifest.json"
 assert_grep     "缩减清单只含 seed"        '"spec_id": "memory-readme-seed"' "$P4/.repo-memory-kit/manifest.json"
-assert_gone     "卸载：_TEMPLATE.md（清单内）移除" "$P4/docs/memory/pitfalls/_TEMPLATE.md"
+assert_gone     "卸载：_PITFALL_TEMPLATE.md（清单内）移除" "$P4/docs/memory/_PITFALL_TEMPLATE.md"
 if grep -qF '<!-- repo-memory-kit:start -->' "$P4/CLAUDE.md"; then bad "卸载后 CLAUDE.md 仍含区块"; else ok "卸载：CLAUDE.md 区块移除"; fi
 if [ -f "$P4/CLAUDE.md" ]; then ok "卸载：CLAUDE.md 本体保留"; else bad "卸载误删 CLAUDE.md 本体"; fi
 assert_exists   "卸载：README 索引保留"    "$P4/docs/memory/README.md"
@@ -182,7 +183,8 @@ fi
 # ── T19 校验器拒绝未填写的模板条目 ──
 P11="$T/proj11"; mkdir -p "$P11"
 "$KIT/install.sh" "$P11" >/dev/null
-cp "$KIT/templates/pitfall-entry.md" "$P11/docs/memory/pitfalls/2026-01-01-tpl.md"
+mkdir -p "$P11/docs/memory/订单"
+cp "$KIT/templates/pitfall-entry.md" "$P11/docs/memory/订单/2026-01-01-tpl.md"
 printf '\n| [tpl](pitfalls/2026-01-01-tpl.md) | 已确认 | 测试 |\n' >> "$P11/docs/memory/README.md"
 if sh "$KIT/validate-memory.sh" "$P11" >/dev/null 2>&1; then bad "校验器接受了未填写的模板条目"; else ok "校验器拒绝未填写的模板条目"; fi
 rm -f "$P11/docs/memory/pitfalls/2026-01-01-tpl.md"

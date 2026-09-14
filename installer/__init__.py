@@ -206,9 +206,10 @@ def _svn_setup(repo) -> int:
     ignore_merge(".", [".repo-memory-kit", ".mcp.json", ".codex"], reports)
 
     # 2. 子目录 ignore：未版本化则先 --parents --depth empty 登记再设
-    #    （此后递归 add 尊重 ignore；README.md/.anchors.json 才不会被误加入）
-    for rel, entries in ((".claude", ["settings.json"]),
-                         ("docs/memory", ["README.md", ".anchors.json"])):
+    #    （此后递归 add 尊重 ignore；settings.json 才不会被误加入）
+    #    注：docs/memory 无需 ignore——v4 起记忆索引/锚点在 .repo-memory-kit/（整目录
+    #    已 ignore），README.md 回归纯 seed（内容确定，可提交）
+    for rel, entries in ((".claude", ["settings.json"]),):
         if not (repo / rel).is_dir():
             continue
         info = svn("info", str(repo / rel))
@@ -268,7 +269,7 @@ def _svn_setup(repo) -> int:
 
     # 6. 已版本化但本应 ignore 的文件 → 整改提示
     for rel in (".mcp.json", ".codex", ".repo-memory-kit", ".claude/settings.json",
-                "docs/memory/.anchors.json"):
+                "docs/memory/.anchors.json", ".repo-memory-kit/memory-index.md"):
         p = repo / rel
         if p.exists() and svn("info", str(p)).returncode == 0:
             reports.append(f"⚠ {rel} 已被版本控制（含每机内容，会永久冲突）——"

@@ -285,7 +285,7 @@ os.close(lock)
 r = txm.recover(t)
 assert r.status == "rolled_back", f"期望 rolled_back，实际 {r.status}"
 assert not (t / "docs" / "memory" / "RULES.md").exists(), "NEW 步骤未被回滚"
-assert not (t / "docs" / "memory" / "pitfalls" / "_TEMPLATE.md").exists(), "OLD 不应被提交"
+assert not (t / "docs" / "memory" / "_PITFALL_TEMPLATE.md").exists(), "OLD 不应被提交"
 record = t / ".repo-memory-kit" / "tx" / tx.tx_id / "record.json"
 assert record.is_file() and '"status": "rolled_back"' in record.read_text(), \
     "恢复后 rolled_back 记录保留（审计）"
@@ -619,13 +619,9 @@ if command -v svnadmin >/dev/null 2>&1 && command -v svn >/dev/null 2>&1; then
     done
     CLAUDE_IGNORE="$(svn propget svn:ignore "$SV/.claude" 2>/dev/null)"
     echo "$CLAUDE_IGNORE" | grep -qx "settings.json" && ok ".claude ignore settings.json" || bad ".claude ignore 缺失"
-    MEM_IGNORE="$(svn propget svn:ignore "$SV/docs/memory" 2>/dev/null)"
-    echo "$MEM_IGNORE" | grep -qx "README.md" && echo "$MEM_IGNORE" | grep -qx ".anchors.json" \
-        && ok "docs/memory ignore 生成物（README/.anchors）" || bad "docs/memory ignore 缺失"
     [ -f "$SV/docs/01-需求/README.md" ] && grep -q "需求指派索引" "$SV/docs/01-需求/README.md" \
         && ok "需求指派索引已种子（含治理规则）" || bad "需求索引缺失"
-    [ "$(svn status "$SV" 2>/dev/null | grep -cE '^A.*docs/memory/(README\.md|\.anchors)')" = "0" ] \
-        && ok "docs/memory 生成物未被 svn add（ignore 生效）" || bad "docs/memory 生成物被误加入"
+    [ -f "$SV/docs/memory/_PITFALL_TEMPLATE.md" ] && ok "v4 模板落位 memory 根（_PITFALL_TEMPLATE.md）" || bad "v4 模板缺失"
     [ "$(svn status "$SV" 2>/dev/null | grep -c '^A.*settings.json')" = "0" ] \
         && ok "settings.json 未被 svn add（ignore 生效）" || bad "settings.json 被误加入版本控制"
     [ "$(svn status "$SV" 2>/dev/null | grep -c '^A.*repo-memory-kit')" = "0" ] \

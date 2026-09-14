@@ -513,8 +513,9 @@ def run_install(target: Path, *, repair: bool = False,
     if codex_root is not None:
         for line in ensure_codex_links(target, codex_root, preflight):
             print(line)
-    print("完成。下一步：把最近一个 bug 写成第一条 pitfall（复制 _TEMPLATE.md，按日期命名）；"
-          "README 索引由 memory-build 自动生成，禁止手改。")
+    print("完成。下一步：把最近一个 bug 写成第一条 pitfall（复制 _PITFALL_TEMPLATE.md 到"
+          "对应模块目录、按日期命名、frontmatter 填 type/module）；记忆索引由 memory-build "
+          "本地生成（.repo-memory-kit/memory-index.md），匹配首选 memory-recall 语义检索。")
     return 0
 
 
