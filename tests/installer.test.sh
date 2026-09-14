@@ -602,6 +602,46 @@ python3 -m installer --dry-run "$DR" > "$T/dry.log" 2>&1
 check "dry-run 退出码 0" 0 $?
 [ ! -e "$DR/.repo-memory-kit" ] && ok "dry-run 不写入任何文件" || bad "dry-run 产生写入"
 
+# ══════════ 十二、--svn 团队治理初始化（svnadmin 可用时执行） ══════════
+if command -v svnadmin >/dev/null 2>&1 && command -v svn >/dev/null 2>&1; then
+    SV="$T/svn-proj"
+    svnadmin create "$T/svn-repo" >/dev/null 2>&1
+    svn -q checkout "file://$T/svn-repo" "$SV" >/dev/null 2>&1
+    # 存量 ignore 项不被覆盖
+    svn propset -q svn:ignore ".idea" "$SV" >/dev/null 2>&1
+    python3 -m installer "$SV" > /dev/null 2>&1
+    python3 -m installer --svn "$SV" > "$T/svn1.log" 2>&1
+    check "--svn 治理初始化退出码 0" 0 $?
+    ROOT_IGNORE="$(svn propget svn:ignore "$SV" 2>/dev/null)"
+    echo "$ROOT_IGNORE" | grep -q "^.idea$" && ok "根 ignore 既有项保留（合并不覆盖）" || bad "根 ignore 覆盖了既有项"
+    for want in ".repo-memory-kit" ".mcp.json" ".codex"; do
+        echo "$ROOT_IGNORE" | grep -qx "$want" && ok "根 ignore 含 $want" || bad "根 ignore 缺 $want"
+    done
+    CLAUDE_IGNORE="$(svn propget svn:ignore "$SV/.claude" 2>/dev/null)"
+    echo "$CLAUDE_IGNORE" | grep -qx "settings.json" && ok ".claude ignore settings.json" || bad ".claude ignore 缺失"
+    MEM_IGNORE="$(svn propget svn:ignore "$SV/docs/memory" 2>/dev/null)"
+    echo "$MEM_IGNORE" | grep -qx "README.md" && echo "$MEM_IGNORE" | grep -qx ".anchors.json" \
+        && ok "docs/memory ignore 生成物（README/.anchors）" || bad "docs/memory ignore 缺失"
+    [ -f "$SV/docs/01-需求/README.md" ] && grep -q "需求指派索引" "$SV/docs/01-需求/README.md" \
+        && ok "需求指派索引已种子（含治理规则）" || bad "需求索引缺失"
+    [ "$(svn status "$SV" 2>/dev/null | grep -cE '^A.*docs/memory/(README\.md|\.anchors)')" = "0" ] \
+        && ok "docs/memory 生成物未被 svn add（ignore 生效）" || bad "docs/memory 生成物被误加入"
+    [ "$(svn status "$SV" 2>/dev/null | grep -c '^A.*settings.json')" = "0" ] \
+        && ok "settings.json 未被 svn add（ignore 生效）" || bad "settings.json 被误加入版本控制"
+    [ "$(svn status "$SV" 2>/dev/null | grep -c '^A.*repo-memory-kit')" = "0" ] \
+        && ok ".repo-memory-kit 未被 svn add" || bad ".repo-memory-kit 被误加入"
+    svn status "$SV" 2>/dev/null | grep -q "^A.*docs/memory/RULES.md" \
+        && ok "内容确定文件已 svn add（RULES.md）" || bad "RULES.md 未登记"
+    EOL="$(svn propget svn:eol-style "$SV/docs/memory/RULES.md" 2>/dev/null)"
+    [ "$EOL" = "LF" ] && ok "RULES.md eol-style=LF" || bad "eol-style 未设置: '$EOL'"
+    # 二次执行幂等：ignore 不重复追加
+    python3 -m installer --svn "$SV" > /dev/null 2>&1
+    N_RMK="$(svn propget svn:ignore "$SV" 2>/dev/null | grep -c '.repo-memory-kit')"
+    check "二次 --svn 幂等（ignore 不重复）" 1 "$N_RMK"
+else
+    ok "（跳过：无 svnadmin）--svn 治理初始化"
+fi
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

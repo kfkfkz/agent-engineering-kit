@@ -387,6 +387,32 @@ cd /path/to/your-project && .repo-memory-kit/bin/spec-migrate --check .
 
 此时 feature 目录整体移动到 `docs/03-SDD/V<版本>/` 并按团队命名规范重排（`02-需求`、`03-架构设计`、`04-详细设计/N-功能名`、`06-实现计划`、`07-原始需求材料`），`01-索引` 自动登记，原 feature 目录随之移除（`.specify/specs` 下不保留副本）。安装器入口必须用 `--migrate-specify=feature名` 显式指定（等价于迁移器的 `--apply --feature`），防止整仓移动。
 
+## SVN 多人协作
+
+目标仓库托管在 SVN、由团队共用时，首次安装后运行一次治理初始化：
+
+```bash
+./install.sh --svn /path/to/your-project
+```
+
+它会自动完成（幂等，可重复执行）：
+
+- **svn:ignore 轻提交清单**：`.repo-memory-kit`、`.mcp.json`、`.codex`（每机状态/本机配置），
+  `.claude/settings.json`（hook 含本机路径），`docs/memory/` 下的 `README.md` 与
+  `.anchors.json`（memory-build 全量重写的生成物）——这些文件每台机器必然不同，
+  入库即成永久冲突源；合并追加，不覆盖既有 ignore 项；
+- **需求目录种子**：创建 `docs/01-需求/README.md` 指派索引（seed 式，此后不再改写）；
+- **svn add 内容确定文件**（技能/模板/RULES/托管区块等，递归时自动跳过上述每机文件）；
+- **`svn:eol-style=LF`**：已版本化的 kit 文本文件统一 LF，防 Windows 提交 CRLF 化
+  导致与 kit 血统脱钩；
+- 已被版本控制的每机文件给出 `svn rm --keep-local` 整改提示。
+
+多人协作约定：**需求目录结构（含指派索引）由需求维护者唯一维护**；实现人只在
+自己被指派的需求目录内补充与撰写（一个需求一个目录，验证通过后整理终稿），
+交付回执集中于 `docs/delivery-receipts/` 按功能命名。每个需求目录的文档骨架
+从 kit 仓库 `templates/requirements/` 复制（维护者操作）。kit 版本升级由
+维护者统一执行——同版本重跑 install 不产生任何本地差异。
+
 ## 更新与卸载
 
 拉取最新版后更新项目：
