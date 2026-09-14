@@ -227,10 +227,13 @@ def try_open_install_lock_shared(target: Path) -> int | None:
 
 def tx_key_path(target: Path) -> Path:
     """密钥在目标仓库之外（运行用户配置目录）——目标仓库写入者不可篡改。
-    以 target 绝对路径哈希命名，多目标仓库共存。"""
+    遵循 XDG base-dir：$XDG_CONFIG_HOME 优先（测试/无 HOME 环境借此隔离），
+    否则 ~/.config。以 target 绝对路径哈希命名，多目标仓库共存。"""
     digest = hashlib.sha256(str(target.resolve()).encode()).hexdigest()[:16]
-    return Path(os.path.expanduser(
-        "~/.config/agent-engineering-kit/keys")) / f"{digest}.key"
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if not config_home:
+        config_home = os.path.join(os.path.expanduser("~"), ".config")
+    return Path(config_home) / "agent-engineering-kit" / "keys" / f"{digest}.key"
 
 
 def load_tx_key(target: Path) -> bytes | None:
@@ -698,6 +701,41 @@ def classify_committing(target: Path, tx: TransactionRecord) -> dict[str, list[C
     return classified
 
 
+def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]:
+    """卸载方向 roll-forward 的外部步骤收尾：链接删除意图已记录但未执行完的
+    （state="intent" 且链接仍在），重新核验 readlink 后补删；链接已消失视为
+    已完成。**绝不重建**——roll-forward 是完成事务（删除），不是撤销它。
+    返回失败清单；非空 → needs_human。"""
+    import stat as stat_module
+    failures = []
+    for rec in tx.external:
+        if rec.prior_state != "pointing_to_target":
+            continue
+        try:
+            spec = resolve_spec(rec.spec_id)
+            if rec.skill_name != spec.link_skill_name:
+                failures.append(f"{rec.spec_id}: 记录的 skill_name 与 Registry 不符")
+                continue
+            codex_root = Path(rec.codex_root)
+            link_spec = CodexLinkSpec(skill_name=spec.link_skill_name)
+            link_spec.validate(codex_root, target)
+            link = link_spec.derive_link_path(codex_root)
+            expected = str(link_spec.derive_target_path(target))
+            if not link.is_symlink():
+                if rec.state != "removed":
+                    rec.state = "removed"      # 崩溃窗口外已被删除（或用户处理）
+                continue
+            if os.readlink(link) != expected:
+                failures.append(f"{rec.spec_id}: 链接已改指其他目标，拒绝补删")
+                continue
+            link.unlink()
+            fsync_dir(link.parent)
+            rec.state = "removed"
+        except (OSError, SecurityError) as e:
+            failures.append(f"{rec.spec_id}: {e}")
+    return failures
+
+
 def restore_external_links(target: Path, tx: TransactionRecord) -> list[str]:
     """可补偿外部步骤的逆操作：以**磁盘现状**为准（记录只是线索）。
     - 只处理 prior_state == "pointing_to_target" 的步骤
@@ -792,10 +830,13 @@ def recover(target: Path) -> RecoveryResult:
                 _write_manifest(target, _rollforward_manifest(
                     target, classified["NEW"]))
             cleanup_staging(target, tx)
-            failures = restore_external_links(target, tx)
+            # 外部步骤：install 事务无外部步骤；uninstall 的 roll-forward 只补删
+            # （complete_external_removals），绝不重建已删除的链接
+            failures = (complete_external_removals(target, tx)
+                        if tx.kind == "uninstall" else [])
             if failures:
                 tx.status = "needs_human"
-                tx.detail = f"外部步骤补偿失败: {failures}"
+                tx.detail = f"外部步骤收尾失败: {failures}"
                 write_transaction_atomic(target, tx)
                 return RecoveryResult("needs_human", detail=tx.detail)
             tx.status = "done"
@@ -893,10 +934,12 @@ def recover_manual(target: Path, strategy: str) -> RecoveryResult:
             _write_manifest(target, _rollforward_manifest(
                 target, classified["NEW"] + classified["OLD"]))
         cleanup_staging(target, tx)
-        failures = restore_external_links(target, tx)
+        # 同 recover()：卸载 roll-forward 补删不重建；install 无外部步骤
+        failures = (complete_external_removals(target, tx)
+                    if tx.kind == "uninstall" else [])
         if failures:
             tx.status = "needs_human"
-            tx.detail = f"外部步骤补偿失败: {failures}"
+            tx.detail = f"外部步骤收尾失败: {failures}"
             write_transaction_atomic(target, tx)
             return RecoveryResult("needs_human", detail=tx.detail)
         tx.status = "done"

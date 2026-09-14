@@ -512,17 +512,20 @@ def run_install(target: Path, *, repair: bool = False,
         tx.status = "done"
         tx.write(target)
 
-        # 步骤 13：清理 + 报告
+        # 步骤 13：清理
         cleanup_staging(target, tx)
+        # workspace 链接创建在锁内完成（P2 回归：锁外创建会与并发生命周期
+        # 操作竞争——另一进程的卸载可能在链接创建前已完成删除）
+        link_reports = (ensure_codex_links(target, codex_root, preflight)
+                        if codex_root is not None else [])
     finally:
         os.close(lock_fd)
 
     _install_report(target, preflight, plans, codex_root)
     for line in legacy_reports:
         print(line)
-    if codex_root is not None:
-        for line in ensure_codex_links(target, codex_root, preflight):
-            print(line)
+    for line in link_reports:
+        print(line)
     print("完成。下一步：把最近一个 bug 写成第一条 pitfall（复制 _PITFALL_TEMPLATE.md 到"
           "对应模块目录、按日期命名、frontmatter 填 type/module）；记忆索引由 memory-build "
           "本地生成（.repo-memory-kit/memory-index.md），匹配首选 memory-recall 语义检索。")

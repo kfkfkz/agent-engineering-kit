@@ -1,9 +1,11 @@
 #!/bin/sh
+# shellcheck disable=SC2015,SC2181  # 断言惯用法
 # memory-build v3 测试：frontmatter 校验、索引/锚点生成、--check 新鲜度、
 # --migrate 旧格式迁移、--changed 变更影响、supersedes 一致性、L3 自动门槛。
 set -e
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
+XDG_CONFIG_HOME="$T/xdg-config"; export XDG_CONFIG_HOME  # 隔离事务密钥（不动 HOME：zvec 在 user-site）
 trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "✓ $1"; }

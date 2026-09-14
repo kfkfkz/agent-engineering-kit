@@ -1,8 +1,10 @@
 #!/bin/sh
+# shellcheck disable=SC2015,SC2181  # 断言惯用法
 # 技能副本一致性:安装到临时目录,校验 skills/ 源 → .claude/.agents 副本一致。
 set -e
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
+XDG_CONFIG_HOME="$T/xdg-config"; export XDG_CONFIG_HOME  # 隔离事务密钥（不动 HOME：zvec 在 user-site）
 trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "✓ $1"; }

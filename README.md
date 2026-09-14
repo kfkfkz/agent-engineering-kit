@@ -14,7 +14,7 @@ cd agent-engineering-kit
 ./install.sh /path/to/your-project
 ```
 
-安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+**（其余无外部依赖）。
+安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+ 与 POSIX 环境（Linux/macOS）**——依赖 `fcntl` 文件锁与 Unix 文件语义（`dir_fd`/`O_NOFOLLOW`），不支持 Windows 原生环境（WSL 可用）。
 
 先预览、不写入：
 

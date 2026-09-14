@@ -94,6 +94,23 @@ def derive_status(rel, fm, body):
     return ""
 
 
+def _under_repo_no_symlinks(p: Path, repo: Path) -> bool:
+    """p 及其 repo 内祖先均不是符号链接，且 resolve 后仍在 repo 内——
+    防止 docs/ 里的符号链接把仓库外文件（配置/凭证/其他项目文档）带进
+    检索语料（P1 回归）。"""
+    cur = p
+    repo = repo.resolve()
+    while cur != repo and cur.parent != cur:
+        if cur.is_symlink():
+            return False
+        cur = cur.parent
+    try:
+        p.resolve().relative_to(repo)
+    except ValueError:
+        return False
+    return True
+
+
 def iter_docs(repo):
     """语料提取：docs/**/*.md → (rel, fm, body, title, typ, meta)。不依赖 zvec。"""
     docs = repo / "docs"
@@ -102,6 +119,8 @@ def iter_docs(repo):
     for p in sorted(docs.rglob("*.md")):
         rel = p.relative_to(repo).as_posix()
         if p.name.startswith("_") or any(rel.endswith(s) for s in EXCLUDE_SUFFIXES):
+            continue
+        if not _under_repo_no_symlinks(p, repo):
             continue
         try:
             text = p.read_text(encoding="utf-8")

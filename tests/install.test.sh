@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2015,SC2181  # 断言惯用法（见 installer.test.sh 头注）
 # install.sh 测试。全程使用临时 HOME——绝不触碰开发者真实全局技能。
 # 覆盖：首次安装、幂等、--update 保护、空格路径、残缺 .cbmignore、安全清理
 #      （指纹匹配才删）、旧段落自动迁移、定制段落保护、卸载、清单、校验器。
@@ -326,7 +327,7 @@ assert_grep "卸载保留既有配置" "demo@x" "$P20/.claude/settings.json"
 
 # ── T28 存量 .codex/config.toml 无标记段落 → 采纳升级为标记区块（不产生重复节）──
 P21="$T/proj21"; mkdir -p "$P21/.codex"
-printf '# user toml\nmodel = "gpt"\n\n[mcp_servers.agent-engineering]\ncommand = "'"$P21"'/.repo-memory-kit/bin/agent-engineering-mcp"\n' > "$P21/.codex/config.toml"
+printf '# user toml\nmodel = "gpt"\n\n[mcp_servers.agent-engineering]\ncommand = "%s/.repo-memory-kit/bin/agent-engineering-mcp"\n' "$P21" > "$P21/.codex/config.toml"
 "$KIT/install.sh" "$P21" >/dev/null
 assert_eq "旧 TOML 节采纳后仍只有 1 个节头" "$(grep -c '^\[mcp_servers.agent-engineering\]' "$P21/.codex/config.toml")" "1"
 assert_grep "旧 TOML 节升级为标记区块" 'kit:agent-engineering:start' "$P21/.codex/config.toml"

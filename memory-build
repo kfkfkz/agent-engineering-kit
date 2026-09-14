@@ -77,18 +77,40 @@ def as_list(v):
     return v if isinstance(v, list) else [v]
 
 
+def _under_root_no_symlinks(p: Path, root: Path) -> bool:
+    """p 及其 root 内祖先均非符号链接且 resolve 收敛于 root（防越界读取）。
+    root 按 lexical 路径走查（调用方传入的原始路径），resolve 校验另用
+    root.resolve()——两者混用会导致走查越过根目录。"""
+    cur = p
+    while cur != root and cur.parent != cur:
+        if cur.is_symlink():
+            return False
+        cur = cur.parent
+    try:
+        p.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def load_entries(mem):
     """条目 = docs/memory/<模块>/ 下的 .md（v4 按模块分目录，类型在 frontmatter）；
-    存量类型目录（pitfalls/decisions/playbooks/）继续读取（迁移前兼容）。"""
+    存量类型目录（pitfalls/decisions/playbooks/）继续读取（迁移前兼容）。
+    符号链接条目/目录跳过（防越界读取）。"""
+    from pathlib import Path as _P
+    mem_lex = _P(mem)
     entries = []
     subdirs = sorted(d for d in os.listdir(mem)
                      if os.path.isdir(os.path.join(mem, d))
-                     and not d.startswith(("_", ".")))
+                     and not d.startswith(("_", "."))
+                     and not os.path.islink(os.path.join(mem, d)))
     for sub in subdirs:
         d = os.path.join(mem, sub)
         for name in sorted(os.listdir(d)):
             if not name.endswith(".md") or name.startswith("_"):
                 continue
+            if not _under_root_no_symlinks(_P(d) / name, mem_lex):
+                continue                     # 符号链接条目，跳过
             text = open(os.path.join(d, name), encoding="utf-8").read()
             fm, body = parse_frontmatter(text)
             tm = re.search(r"^# (.+)$", body, re.M)

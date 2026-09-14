@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2015,SC2181  # 断言惯用法
 # Spec Kit 迁移测试：发现、dry-run 无写入、结构迁移、幂等与阻断保护。
 set -e
 KIT="$(cd "$(dirname "$0")/.." && pwd)"

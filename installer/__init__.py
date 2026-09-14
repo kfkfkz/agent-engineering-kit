@@ -159,11 +159,39 @@ def main(argv: list[str] | None = None) -> int:
     rc = run_install(repo, repair=(mode == "repair"), codex_root=codex,
                      dry_run=dry_run)
     if rc == 0 and not dry_run:
-        _post_install_extras(repo, migrate_features, sdd_layout, sdd_version,
-                             with_codebase_memory)
+        rc = max(rc, _post_install_extras(repo, migrate_features, sdd_layout,
+                                          sdd_version, with_codebase_memory))
+    if rc == 0 and dry_run and migrate_features is not None:
+        _spec_migrate_dry_run(repo, migrate_features, sdd_layout, sdd_version)
     if rc == 0 and not dry_run and with_svn:
         rc = _svn_setup(repo)
     return rc
+
+
+def _spec_migrate_args(migrate_features, sdd_layout, sdd_version, target):
+    cmd = []
+    if migrate_features:
+        for feature in migrate_features.split(","):
+            if feature.strip():
+                cmd += ["--feature", feature.strip()]
+    if sdd_layout:
+        cmd += ["--layout", "sdd", "--sdd-version", sdd_version]
+    cmd.append(str(target))
+    return cmd
+
+
+def _spec_migrate_dry_run(repo, migrate_features, sdd_layout, sdd_version) -> None:
+    """dry-run + --migrate-specify：展示 Spec 迁移计划（kit 侧脚本——目标可能未装）。"""
+    import subprocess
+    from .registry import KIT_DIR
+    script = repo / ".repo-memory-kit" / "bin" / "spec-migrate"
+    if not script.is_file():
+        script = KIT_DIR / "spec-migrate"
+    cmd = [sys.executable, str(script), "--dry-run"] + _spec_migrate_args(
+        migrate_features, sdd_layout, sdd_version, repo)
+    proc = subprocess.run(cmd)
+    if proc.returncode != 0:
+        print("✗ --migrate-specify 预检失败（详见上方输出）")
 
 
 def _svn_setup(repo) -> int:
@@ -278,11 +306,13 @@ def _posix_parent(rel: str) -> str:
 
 
 def _post_install_extras(repo, migrate_features, sdd_layout, sdd_version,
-                         with_codebase_memory) -> None:
+                         with_codebase_memory) -> int:
     """安装后的旁路步骤（不在事务内，沿用旧 install.sh 行为）：
     - Spec Kit 迁移：默认只检查报告；--migrate-specify 才执行保留原文的增量迁移
-    - codebase-memory MCP：本地已有则配置，否则下载官方安装器（联网）"""
+    - codebase-memory MCP：本地已有则配置，否则下载官方安装器（联网）
+    返回 0/1——显式请求的旁路步骤失败必须反映到主命令退出码（P1 回归）。"""
     import subprocess
+    rc = 0
 
     if with_codebase_memory:
         import shutil
@@ -290,24 +320,37 @@ def _post_install_extras(repo, migrate_features, sdd_layout, sdd_version,
             print("正在使用已安装的 codebase-memory-mcp 配置当前 Agent 环境...")
             subprocess.run(["codebase-memory-mcp", "install"])
         elif shutil.which("curl"):
+            import hashlib
             import tempfile
             from pathlib import Path as _P
+            # 供应链固定（P2 回归）：锁 commit + SHA-256 校验，绝不直接执行
+            # 浮动 main 分支脚本。上游升级时同步更新这两个常量。
+            CBM_REF = "339b3f4097aa6ede22fc382ab7fd320d93c498b8"
+            CBM_SHA256 = "13049c7cc51bc508d68b8ecb8a9fd9574ecb7c6f2c9dd5a19bf7d4c187321145"
             with tempfile.TemporaryDirectory() as tmp:
                 installer = _P(tmp) / "install.sh"
-                print("正在下载并执行 DeusData/codebase-memory-mcp 官方安装器...")
+                print(f"正在下载 codebase-memory-mcp 官方安装器（固定 {CBM_REF[:12]}）...")
                 import urllib.request
+                url = ("https://raw.githubusercontent.com/DeusData/"
+                       f"codebase-memory-mcp/{CBM_REF}/install.sh")
                 try:
-                    urllib.request.urlretrieve(
-                        "https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh",
-                        installer)
+                    urllib.request.urlretrieve(url, installer)
                 except Exception as e:
                     print(f"✗ codebase-memory-mcp 安装器下载失败: {e}")
-                else:
-                    rc = subprocess.run(["sh", str(installer)]).returncode
-                    if rc != 0:
-                        print("✗ codebase-memory-mcp 官方安装器执行失败")
+                    return 1
+                actual = hashlib.sha256(installer.read_bytes()).hexdigest()
+                if actual != CBM_SHA256:
+                    print(f"✗ codebase-memory-mcp 安装器校验失败（sha256 不符）——"
+                          f"拒绝执行。上游已变更时请更新 installer/__init__.py "
+                          f"中的 CBM_REF/CBM_SHA256 常量。")
+                    return 1
+                rc = subprocess.run(["sh", str(installer)]).returncode
+                if rc != 0:
+                    print("✗ codebase-memory-mcp 官方安装器执行失败")
+                    return 1
         else:
             print("✗ --with-codebase-memory 需要 curl 下载官方安装器")
+            return 1
 
     if (repo / ".specify" / "specs").is_dir():
         script = repo / ".repo-memory-kit" / "bin" / "spec-migrate"
@@ -329,3 +372,5 @@ def _post_install_extras(repo, migrate_features, sdd_layout, sdd_version,
             print("提示: 当前仅检查未修改文档；确认后可使用 --migrate-specify[=FEATURE,...] 增量迁移")
         elif migrate_features is not None and proc.returncode != 0:
             print("✗ --migrate-specify 迁移失败（详见上方输出）")
+            rc = 1
+    return rc

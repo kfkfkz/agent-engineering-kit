@@ -89,7 +89,14 @@ def adopt_legacy(target: Path, *, codex_root_cli: Path | None = None) -> int:
             print(f"  • {line}")
         return 1
 
-    write_manifest_atomic(target, build_manifest(target, current_kit_version(), entries))
+    from .transaction import acquire_install_lock
+    import os
+    lock_fd = acquire_install_lock(target)    # P2 回归：登记也是生命周期写操作
+    try:
+        write_manifest_atomic(target, build_manifest(
+            target, current_kit_version(), entries))
+    finally:
+        os.close(lock_fd)
     print(f"✓ 已登记 {len(entries)} 项（adopted_legacy，未修改任何内容）——"
           f"此后 doctor / uninstall 走正常流程。")
     for line in skipped:

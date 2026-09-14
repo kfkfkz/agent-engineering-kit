@@ -104,23 +104,36 @@ def remove_json_fragment(container: dict, locator: str) -> dict:
 
 
 def remove_hook(container: dict, spec: ResourceSpec) -> dict:
-    """移除 command 精确匹配的 SessionStart 钩子；清理空 entry / 空
-    SessionStart / 空 hooks（沿用旧 install.sh 的精细清理口径）。"""
+    """只移除 command 精确匹配的 kit 钩子元素——**容器保真**（P1 回归）：
+    - 非对象条目、hooks 非列表的条目原样保留（用户自己的结构）
+    - 父 entry 只在"过滤后 hooks 为空 **且** 其余字段只有 kit 创建的 matcher"
+      （即 kit 自建 entry 形态）时移除；带 description 等用户元数据的空 entry
+      保留不删
+    - SessionStart / hooks 键只在结果为空列表时移除"""
     hooks = container.get("hooks")
     if not isinstance(hooks, dict):
         return container
     ss = hooks.get("SessionStart")
     if not isinstance(ss, list):
         return container
+    kept = []
     for entry in ss:
-        if isinstance(entry, dict) and isinstance(entry.get("hooks"), list):
-            entry["hooks"] = [
-                h for h in entry["hooks"]
-                if not (isinstance(h, dict)
-                        and h.get("command") == spec.expected_hook_command)]
-    ss = [e for e in ss if isinstance(e, dict) and e.get("hooks")]
-    if ss:
-        hooks["SessionStart"] = ss
+        if not isinstance(entry, dict) or not isinstance(entry.get("hooks"), list):
+            kept.append(entry)                     # 用户结构，原样保留
+            continue
+        entry["hooks"] = [
+            h for h in entry["hooks"]
+            if not (isinstance(h, dict)
+                    and h.get("command") == spec.expected_hook_command)]
+        if entry["hooks"]:
+            kept.append(entry)
+            continue
+        # 过滤后为空：仅当剩余字段只有 matcher（kit 自建 entry 形态）才整体移除
+        if set(entry.keys()) == {"matcher", "hooks"}:
+            continue
+        kept.append(entry)                          # 带用户元数据，保留空 entry
+    if kept:
+        hooks["SessionStart"] = kept
     else:
         del hooks["SessionStart"]
         if not hooks:
@@ -179,12 +192,24 @@ def plan_external_removal(target: Path, codex_root_cli: Path,
 
 
 def execute_external_removal(target: Path, step: ExternalStep) -> None:
-    """unlink + 经父目录 fsync（调用方已先落盘 intent）。"""
+    """unlink 前经父目录 fd 重新核验（P1 回归：plan 与执行之间的 TOCTOU——
+    链接被换成用户文件/改指他处时拒绝删除，而非误删）。"""
+    import stat as stat_module
     link_spec = CodexLinkSpec(skill_name=step.skill_name)
     link_spec.validate(Path(step.codex_root), target)
     link = link_spec.derive_link_path(Path(step.codex_root))
-    link.unlink()
-    fsync_dir(link.parent)
+    expected = str(link_spec.derive_target_path(target))
+    parent_fd = os.open(link.parent, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    try:
+        st = os.lstat(link.name, dir_fd=parent_fd)
+        if not stat_module.S_ISLNK(st.st_mode):
+            raise OSError(f"目标已不是符号链接（被用户文件替换？）: {link}")
+        if os.readlink(link.name, dir_fd=parent_fd) != expected:
+            raise OSError(f"链接已改指其他目标，拒绝删除: {link}")
+        os.unlink(link.name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
 
 
 # ══════════════════════════ 主流程（§13） ══════════════════════════
@@ -195,28 +220,28 @@ def run_uninstall(target: Path, *, codex_root_cli: Path | None = None) -> int:
         print(f"✗ 目标目录不存在: {target}")
         return 1
 
-    # 步骤 1：读取 Manifest（无 → 拒绝普通卸载）
-    try:
-        manifest = read_manifest(target)
-    except ManifestCorruptError as e:
-        print(f"✗ 安装清单损坏，拒绝卸载（人工处置后重试）: {e}")
-        return 1
-    if manifest is None:
-        print("没有安装清单，无法安全卸载。请运行 doctor 查看现状；若确为 kit 旧版本"
-              "产物，先运行 install.py --adopt-legacy（§18）重建清单后再卸载。")
-        return 1
-
-    # codex_root 解析：CLI 显式参数优先；否则退回已记录的 workspace marker
-    # （沿用旧 install.sh 行为——删除授权始终由 readlink == target 保证）
-    if codex_root_cli is None:
-        marker_root = read_codex_workspace_marker(target)
-        if marker_root is not None:
-            codex_root_cli = marker_root
-            print(f"提示: 使用已记录的 Codex workspace: {marker_root}"
-                  f"（来自 .repo-memory-kit/codex-workspace-root）")
-
     lock_fd = acquire_install_lock(target)           # 步骤 0（全程持有）
     try:
+        # 步骤 1：读取 Manifest（锁内——P2 回归：锁外读取会与并发安装竞态，
+        # 拿到旧清单导致"新装资源被留下却删掉清单"）
+        try:
+            manifest = read_manifest(target)
+        except ManifestCorruptError as e:
+            print(f"✗ 安装清单损坏，拒绝卸载（人工处置后重试）: {e}")
+            return 1
+        if manifest is None:
+            print("没有安装清单，无法安全卸载。请运行 doctor 查看现状；若确为 kit 旧版本"
+                  "产物，先运行 install.py --adopt-legacy（§18）重建清单后再卸载。")
+            return 1
+
+        # codex_root 解析（锁内读 marker）：CLI 显式参数优先；
+        # 删除授权始终由 readlink == target 保证
+        if codex_root_cli is None:
+            marker_root = read_codex_workspace_marker(target)
+            if marker_root is not None:
+                codex_root_cli = marker_root
+                print(f"提示: 使用已记录的 Codex workspace: {marker_root}"
+                      f"（来自 .repo-memory-kit/codex-workspace-root）")
         # 步骤 2：恢复遗留未完成事务
         rr = recover(target)
         if rr.status in ("blocked", "needs_human"):

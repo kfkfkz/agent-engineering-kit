@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2015,SC2181,SC2012  # 断言惯用法：A && ok || bad 恰为预期语义；$? 检查服务于计数器；ls|wc 计数此处只为数量
 # installer/ 受管资源生命周期测试（设计文档 v12·冻结版 §20.1 冻结版测试清单）。
 # 覆盖：根目录路径全链路 / 首次安装 / 二次幂等 / 故障注入全套（写序不变量
 # 三窗口、HMAC、恢复分类、外部步骤补偿、secure_* 拒绝面、伪造 Manifest）。
@@ -11,7 +12,7 @@ trap 'rm -rf "$T" "$T_HOME"' EXIT
 USER_SITE="$(python3 -c 'import site; print(site.getusersitepackages())' 2>/dev/null || true)"
 HOME="$T_HOME"
 export HOME
-cd "$SRC"
+cd "$SRC" || exit 1
 
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "✓ $1"; }
@@ -646,6 +647,139 @@ if command -v svnadmin >/dev/null 2>&1 && command -v svn >/dev/null 2>&1; then
 else
     ok "（跳过：无 svnadmin）--svn 治理初始化"
 fi
+
+
+# ══════════ 十三、P1 回归（外部对抗审查复现场景） ══════════
+
+# 13.1 卸载 roll-forward 不得重建已删除的 workspace 链接
+P1A="$T/p1-rollfwd"; W1A="$T/p1-ws"; mkdir -p "$P1A"
+python3 -m installer --codex-root "$W1A" "$P1A" >/dev/null 2>&1
+[ -L "$W1A/.agents/skills/tdd" ] && ok "P1.1 前置：链接已创建" || bad "P1.1 前置失败"
+python3 - "$P1A" "$W1A" <<'PY'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+from installer.registry import resolve_spec
+from installer.uninstall import ExternalStep
+
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+lock = txm.acquire_install_lock(target)
+# 构造"卸载已全部提交、写 done 前崩溃"的事务
+tx = txm.TransactionRecord.new(target, "uninstall")
+txm.secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")
+spec = resolve_spec("memory-rules")
+tx.plan = [txm.CommitStep(spec_id="memory-rules", spec_ids=("memory-rules",),
+                          kind="delete",
+                          pre_container_hash=txm.file_sha256(target / spec.destination_path),
+                          post_container_hash=None, pre_mode=None)]
+tx.external = [ExternalStep(spec_id="codex-link-tdd", skill_name="tdd",
+                            codex_root=str(ws),
+                            prior_state="pointing_to_target", state="removed")]
+tx.status = "committing"
+tx.write(target)
+r1 = txm.commit_one(target, tx.plan[0], tx.tx_id)          # 内部步骤提交
+assert r1.status == "committed"
+os.close(lock)                                             # —— 崩溃 ——
+r = txm.recover(target)
+assert r.status == "roll_forward_completed", r.status
+link = ws / ".agents" / "skills" / "tdd"
+assert not link.is_symlink(), "roll-forward 重建了已删除的链接"
+print("P1.1 OK")
+PY
+[ $? = 0 ] && ok "P1.1 卸载 roll-forward 不重建链接（补删不补偿）" || bad "P1.1 roll-forward 误重建链接"
+
+# 13.2 卸载 hook 保留用户容器结构（非对象条目/元数据/异构 hooks）
+P1B="$T/p1-hook"; mkdir -p "$P1B/.claude"
+cat > "$P1B/.claude/settings.json" <<'EOF'
+{
+  "hooks": {
+    "SessionStart": [
+      "raw-string-entry",
+      {"matcher": "user-own", "hooks": [{"type": "command", "command": "echo user"}], "description": "用户备注"},
+      {"matcher": "startup|resume", "hooks": [{"type": "command", "command": "\"$CLAUDE_PROJECT_DIR/.repo-memory-kit/bin/session-reminder\"", "timeout": 5}]}
+    ]
+  }
+}
+EOF
+python3 -m installer "$P1B" >/dev/null 2>&1
+python3 -m installer --uninstall "$P1B" >/dev/null 2>&1
+python3 - "$P1B/.claude/settings.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ss = d["hooks"]["SessionStart"]
+assert "raw-string-entry" in ss, "非对象条目被删"
+by_matcher = {e.get("matcher"): e for e in ss if isinstance(e, dict)}
+assert "user-own" in by_matcher, "用户 entry 被删"
+assert by_matcher["user-own"].get("description") == "用户备注", "用户元数据被删"
+assert by_matcher["user-own"]["hooks"][0]["command"] == "echo user", "用户 hook 被删"
+assert all("session-reminder" not in str(h) for e in ss
+           if isinstance(e, dict)
+           for h in (e.get("hooks") or [])), "kit hook 残留"
+assert "startup|resume" not in by_matcher, "kit 自建 entry 未清理"
+print("P1.2 OK")
+PY
+[ $? = 0 ] && ok "P1.2 hook 卸载保真（用户结构/元数据保留，kit 片段移除）" || bad "P1.2 hook 卸载破坏用户配置"
+
+# 13.3 链接删除 TOCTOU：plan 后被换为用户文件 → 拒删
+P1C="$T/p1-toctou"; W1C="$T/p1-ws2"; mkdir -p "$P1C"
+python3 -m installer --codex-root "$W1C" "$P1C" >/dev/null 2>&1
+python3 - "$P1C" "$W1C" <<'PY'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer.uninstall import execute_external_removal, ExternalStep
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+link = ws / ".agents" / "skills" / "tdd"
+link.unlink()
+link.write_text("user file content")          # plan 与执行之间被替换
+step = ExternalStep(spec_id="codex-link-tdd", skill_name="tdd", codex_root=str(ws),
+                    prior_state="pointing_to_target", state="intent")
+try:
+    execute_external_removal(target, step)
+    raise SystemExit("误删了用户文件")
+except OSError:
+    pass
+assert link.read_text() == "user file content", "用户文件被删"
+print("P1.3 OK")
+PY
+[ $? = 0 ] && ok "P1.3 链接被换为用户文件 → 拒删（TOCTOU 防护）" || bad "P1.3 TOCTOU 误删用户文件"
+
+# 13.4 语义索引不跟随符号链接读取仓库外文件
+P1D="$T/p1-symlink"; mkdir -p "$P1D/docs/memory/通用"
+printf 'SECRET-CORPUS-XYZ\n' > "$T/outside-secret.md"
+ln -s "$T/outside-secret.md" "$P1D/docs/innocent.md"
+printf -- '---\ntype: pitfall\nstatus: confirmed\nmodule: 通用\ncreated: 2026-09-14\n---\n# 内部条目\n' \
+    > "$P1D/docs/memory/通用/2026-09-14-内部.md"
+python3 - "$P1D" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from importlib.machinery import SourceFileLoader
+import importlib.util
+loader = SourceFileLoader("mr", "memory-recall")
+spec = importlib.util.spec_from_loader("mr", loader)
+mr = importlib.util.module_from_spec(spec); loader.exec_module(mr)
+docs = mr.build_docs(Path(sys.argv[1]).resolve())
+rels = [d["rel"] for d in docs]
+assert "docs/innocent.md" not in rels, "符号链接语料被索引"
+assert not any("SECRET-CORPUS-XYZ" in d["content"] for d in docs), "仓库外内容进入语料"
+assert "docs/memory/通用/2026-09-14-内部.md" in rels
+print("P1.4 OK")
+PY
+[ $? = 0 ] && ok "P1.4 符号链接文件不入语料（防越界读取）" || bad "P1.4 越界读取"
+
+# 13.5 --migrate-specify 失败上抛退出码；dry-run 展示迁移计划
+P1E="$T/p1-migrate"; F1E="$P1E/.specify/specs/001-demo"
+mkdir -p "$F1E" "$P1E/.specify/templates"
+printf '# spec only\n' > "$F1E/spec.md"            # 缺 plan/tasks → apply 必失败
+python3 -m installer --migrate-specify "$P1E" >/dev/null 2>&1
+[ $? != 0 ] && ok "P1.5 迁移失败上抛非零退出码" || bad "P1.5 迁移失败仍返回 0"
+OUT_DRY=$(python3 -m installer --dry-run --migrate-specify "$P1E" 2>&1)
+case "$OUT_DRY" in
+    *DRY-RUN*) ok "P1.5 dry-run 可与 --migrate-specify 组合" ;;
+    *) bad "P1.5 dry-run 契约缺失: $(echo "$OUT_DRY" | head -2)" ;;
+esac
 
 echo
 echo "通过 $pass / 失败 $fail"
