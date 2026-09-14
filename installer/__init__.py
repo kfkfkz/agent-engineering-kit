@@ -31,7 +31,7 @@ USAGE = ("用法: python3 -m installer [--update|--repair|--doctor|--uninstall|-
 
 @dataclass
 class CliArgs:
-    mode: str = "install"          # install|repair|doctor|uninstall|adopt-legacy|recover
+    mode: Optional[str] = None     # 解析完仍为 None → install
     target: Optional[str] = None
     codex_root: Optional[str] = None
     recover_strategy: Optional[str] = None
@@ -133,7 +133,7 @@ def _set_mode(a: CliArgs, arg: str) -> None:
                "uninstall": "uninstall", "adopt-legacy": "adopt-legacy",
                "recover": "recover", "migrate-specify": "install"}
     new_mode = mode_map.get(requested)
-    if new_mode and a.mode != "install" and a.mode != new_mode:
+    if new_mode and a.mode is not None and a.mode != new_mode:
         sys.exit(f"错误: --{requested} 不能与 --{a.mode} 同时使用")
     if new_mode:
         a.mode = new_mode
@@ -144,6 +144,8 @@ def _set_mode(a: CliArgs, arg: str) -> None:
 def _validate(a: CliArgs) -> Path:
     if a.target is None:
         sys.exit(USAGE)
+    if a.mode is None:
+        a.mode = "install"
     checks = [
         (a.dry_run and a.mode not in ("install", "repair"),
          "错误: --dry-run 仅用于安装方向"),
@@ -218,7 +220,8 @@ def _dispatch_install(a: CliArgs, repo: Path, codex: Optional[Path]) -> int:
             repo, a.migrate_features, a.sdd_layout, a.sdd_version,
             a.with_codebase_memory))
     if rc == 0 and a.dry_run and a.migrate_features is not None:
-        _spec_migrate_dry_run(repo, a.migrate_features, a.sdd_layout, a.sdd_version)
+        rc = max(rc, _spec_migrate_dry_run(
+            repo, a.migrate_features, a.sdd_layout, a.sdd_version))
     if rc == 0 and not a.dry_run and a.with_svn:
         rc = _svn_setup(repo)
     return rc
@@ -251,8 +254,8 @@ def _spec_migrate_args(migrate_features, sdd_layout, sdd_version, target):
     return cmd
 
 
-def _spec_migrate_dry_run(repo, migrate_features, sdd_layout, sdd_version) -> None:
-    """dry-run + --migrate-specify：展示 Spec 迁移计划（kit 侧脚本——目标可能未装）。"""
+def _spec_migrate_dry_run(repo, migrate_features, sdd_layout, sdd_version) -> int:
+    """dry-run + --migrate-specify：展示 Spec 迁移计划；返回子进程退出码。"""
     import subprocess
     from .registry import KIT_DIR
     script = repo / ".repo-memory-kit" / "bin" / "spec-migrate"
@@ -263,6 +266,7 @@ def _spec_migrate_dry_run(repo, migrate_features, sdd_layout, sdd_version) -> No
     proc = subprocess.run(cmd)
     if proc.returncode != 0:
         print("✗ --migrate-specify 预检失败（详见上方输出）")
+    return proc.returncode
 
 
 def _post_install_extras(repo, migrate_features, sdd_layout, sdd_version,
@@ -278,7 +282,10 @@ def _post_install_extras(repo, migrate_features, sdd_layout, sdd_version,
         import shutil
         if shutil.which("codebase-memory-mcp"):
             print("正在使用已安装的 codebase-memory-mcp 配置当前 Agent 环境...")
-            subprocess.run(["codebase-memory-mcp", "install"])
+            mcp_rc = subprocess.run(["codebase-memory-mcp", "install"]).returncode
+            if mcp_rc != 0:
+                print(f"✗ codebase-memory-mcp install 失败（exit={mcp_rc}）")
+                return 1
         elif shutil.which("curl"):
             import hashlib
             import tempfile

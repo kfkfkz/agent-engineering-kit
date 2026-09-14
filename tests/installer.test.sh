@@ -781,6 +781,91 @@ case "$OUT_DRY" in
     *) bad "P1.5 dry-run 契约缺失: $(echo "$OUT_DRY" | head -2)" ;;
 esac
 
+
+# ══════════ 十四、第二轮 P1/P2 回归（独立复核复现场景） ══════════
+
+# 14.1 adopt-legacy 拒绝已有 Manifest（P1：覆盖健康清单）
+P2A="$T/p2-adopt"; mkdir -p "$P2A"
+python3 -m installer "$P2A" >/dev/null 2>&1
+[ -f "$P2A/.repo-memory-kit/manifest.json" ] && ok "前置：已安装" || bad "前置失败"
+python3 -m installer --adopt-legacy "$P2A" >/dev/null 2>&1
+[ $? != 0 ] && grep -q "已存在 Manifest" "$P2A/.repo-memory-kit/manifest.json" 2>/dev/null || true
+# 退出码非零即可（清单存在时拒绝）
+N_ENTRIES=$(python3 -c "import json; print(len(json.load(open('$P2A/.repo-memory-kit/manifest.json'))['entries']))" 2>/dev/null || echo 0)
+[ "$N_ENTRIES" -gt 0 ] && ok "P2.1 adopt-legacy 不覆盖已有清单（$N_ENTRIES 条保留）" || bad "P2.1 清单被覆盖"
+
+# 14.2 模式互斥与顺序无关（P2：--update --uninstall vs --uninstall --update）
+python3 -m installer --update --uninstall "$P2A" >/dev/null 2>&1
+[ $? != 0 ] && ok "P2.2 --update --uninstall 互斥（顺序无关）" || bad "P2.2 --update --uninstall 未拒绝"
+python3 -m installer --uninstall --update "$P2A" >/dev/null 2>&1
+[ $? != 0 ] && ok "P2.2 --uninstall --update 互斥（顺序无关）" || bad "P2.2 --uninstall --update 未拒绝"
+
+# 14.3 uninstall 先 recover 再读清单（P1：首次安装崩溃后可卸载）
+P2C="$T/p2-recover-first"
+mkdir -p "$P2C"
+python3 - "$P2C" <<'PY'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+from installer.install import plan_groups
+from installer.registry import resolve_spec
+
+t = Path(sys.argv[1]).resolve()
+lock = txm.acquire_install_lock(t)
+tx = txm.TransactionRecord.new(t, "install")
+txm.secure_mkdir(t, f".repo-memory-kit/tx/{tx.tx_id}")
+tx.status = "planning"; tx.write(t)
+plans = plan_groups(t, [resolve_spec("memory-rules")])
+tx.plan = [gp.step for gp in plans]
+tx.write(t)
+tx.status = "staging"; tx.write(t)
+for gp in plans:
+    txm.stage_resource(t, gp.step.spec_id, tx.tx_id, gp.content, mode=gp.mode)
+tx.status = "committing"; tx.write(t)
+for gp in plans:
+    assert txm.commit_one(t, gp.step, tx.tx_id).status == "committed"
+os.close(lock)
+# —— 崩溃（资源已提交、Manifest 未写、事务在 committing）——
+PY
+# 不应出现"没有安装清单"——recover 应先 roll-forward 完成安装
+python3 -m installer --uninstall "$P2C" > "$T/p2-un.log" 2>&1
+grep -q "没有安装清单" "$T/p2-un.log"     && bad "P2.3 卸载未恢复遗留事务就因无清单退出"     || ok "P2.3 卸载先恢复再读清单（roll-forward 后清单在位）"
+
+# 14.4 恢复路径 fd 删除（P1：complete_external_removals TOCTOU）
+P2D="$T/p2-fd-rec"; W2D="$T/p2-ws"
+mkdir -p "$P2D"
+python3 -m installer --codex-root "$W2D" "$P2D" >/dev/null 2>&1
+python3 - "$P2D" "$W2D" <<'PY'
+import os, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+from installer.registry import resolve_spec
+from installer.uninstall import ExternalStep
+
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+lock = txm.acquire_install_lock(target)
+tx = txm.TransactionRecord.new(target, "uninstall")
+txm.secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")
+tx.status = "planning"; tx.write(target)
+tx.external = [ExternalStep(spec_id="codex-link-tdd", skill_name="tdd",
+                            codex_root=str(ws),
+                            prior_state="pointing_to_target", state="intent")]
+tx.write(target)
+# 模拟：intent 记录后、unlink 前，链接被换成用户文件
+link = ws / ".agents" / "skills" / "tdd"
+link.unlink()
+link.write_text("USER FILE")
+os.close(lock)
+# —— 崩溃（intent 在盘、链接被换）——
+r = txm.recover(target)
+# 恢复不应误删用户文件
+assert link.read_text() == "USER FILE", "P1: 恢复路径误删用户文件"
+print("P1-3 fd-based recovery OK")
+PY
+[ $? = 0 ] && ok "P2.4 恢复路径 fd 删除（不误删用户文件）" || bad "P2.4 恢复路径 TOCTOU"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

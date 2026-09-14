@@ -91,7 +91,7 @@ description: "遵循项目宪章完成非平凡仓库变更的端到端交付编
 
 **⑤ 任务拆分**：详细设计拆成纵向可验证的任务清单（SDD `06-实现计划/` 或 Spec Kit tasks），每任务带验证方式——任务级验证方式是④测试与验证设计在该任务上的具体化，不是另行发明。
 
-**⑥ 编码与验证**：`tdd` 纵向切片实现 → `delivery-gate` 门禁与验证回执 → 回写设计文档与业务域地图 → `memory-capture` 候选。
+**⑥ 编码与验证**：`tdd` 纵向切片实现 → `delivery-gate` 门禁与验证回执（形态由 `.repo-memory-kit/governance` 标记决定：strict=独立文件，lightweight=低风险允许 commit message 内嵌）→ 回写设计文档与业务域地图 → `memory-capture` 候选。
 
 **确认矩阵**（谁在什么节点签什么——灰色情况对照此表判定，不确定走重）：
 

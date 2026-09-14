@@ -6,16 +6,16 @@ description: "交付门禁，两种形态：代码变更走 diff 证据化审查
 # 交付门禁
 ## 治理等级（governance profile）
 
-安装器写入 `.repo-memory-kit/governance` 标记当前治理模式：
+**第一步：读取 `.repo-memory-kit/governance`**——它决定本节的回执形态要求。
 
-- **strict**（默认）：所有非平凡变更必须落正式验证回执——适合受监管/重流程团队
+- **strict**（默认）：所有非平凡变更必须落正式验证回执（`docs/delivery-receipts/`）
 - **lightweight**（`install.sh --lightweight` 启用）：仅**高风险变更**（数据库
-  schema、外部 API 契约、安全域）要求正式回执；低风险变更（文案/配置/纯
-  内部重构）允许在 commit message 或 PR 描述中含验证结论替代独立回执文件
+  schema、外部 API 契约、安全域）要求独立回执文件；低风险变更（文案/配置/
+  纯内部重构）允许在 commit message 或 PR 描述中含验证结论替代
 
-lightweight 模式下仍必须满足：测试通过、行为变更可验证；只是**回执形式**
-从独立文件放宽为 commit message 内嵌。高风险判定标准不变（宪法/设计文档
-定义）。
+**lightweight 不降低验证标准，只放宽回执形式**：测试必须通过、行为变更
+必须可验证、高风险判定标准不变。本节优先于下方"必需产物"中的回执要求
+（冲突时以 governance marker 实际值为准）。
 
 
 零额外依赖的收口门禁，按交付物形态执行：**代码变更**走两阶段（审查 → 验证闭环），**设计文档**走文档质量门禁。

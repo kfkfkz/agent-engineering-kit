@@ -703,8 +703,10 @@ def classify_committing(target: Path, tx: TransactionRecord) -> dict[str, list[C
 
 def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]:
     """卸载方向 roll-forward 的外部步骤收尾：链接删除意图已记录但未执行完的
-    （state="intent" 且链接仍在），重新核验 readlink 后补删；链接已消失视为
+    （state="intent" 且链接仍在），经父目录 fd 核验后补删；链接已消失视为
     已完成。**绝不重建**——roll-forward 是完成事务（删除），不是撤销它。
+    P1 回归：复用与 execute_external_removal 相同的 fd 原语——readlink 核验
+    与 unlink 不是同一原子操作，路径式 unlink 存在 TOCTOU。
     返回失败清单；非空 → needs_human。"""
     import stat as stat_module
     failures = []
@@ -721,16 +723,23 @@ def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]
             link_spec.validate(codex_root, target)
             link = link_spec.derive_link_path(codex_root)
             expected = str(link_spec.derive_target_path(target))
-            if not link.is_symlink():
-                if rec.state != "removed":
-                    rec.state = "removed"      # 崩溃窗口外已被删除（或用户处理）
-                continue
-            if os.readlink(link) != expected:
-                failures.append(f"{rec.spec_id}: 链接已改指其他目标，拒绝补删")
-                continue
-            link.unlink()
-            fsync_dir(link.parent)
-            rec.state = "removed"
+            # 与 execute_external_removal 相同的 fd 核验原语
+            parent_fd = os.open(link.parent,
+                               os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+            try:
+                st = os.lstat(link.name, dir_fd=parent_fd)
+                if not stat_module.S_ISLNK(st.st_mode):
+                    if rec.state != "removed":
+                        rec.state = "removed"  # 被替换或已删，视为完成
+                    continue
+                if os.readlink(link.name, dir_fd=parent_fd) != expected:
+                    failures.append(f"{rec.spec_id}: 链接已改指其他目标，拒绝补删")
+                    continue
+                os.unlink(link.name, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+                rec.state = "removed"
+            finally:
+                os.close(parent_fd)
         except (OSError, SecurityError) as e:
             failures.append(f"{rec.spec_id}: {e}")
     return failures

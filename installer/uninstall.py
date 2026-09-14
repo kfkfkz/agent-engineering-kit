@@ -377,17 +377,20 @@ def run_uninstall(target: Path, *, codex_root_cli: Path | None = None) -> int:
 
     lock_fd = acquire_install_lock(target)
     try:
-        manifest = _read_manifest_locked(target)
-        if manifest is None:
-            return 1
-        codex_root_cli = _resolve_codex_root(target, codex_root_cli)
-
+        # P1 回归：先 recover 再读 Manifest——首次安装在写 Manifest 前崩溃时，
+        # recover 会 roll-forward 完成安装并写 Manifest；否则卸载直接因"无清单"
+        # 退出，committing 事务永远没有恢复机会
         rr = recover(target)
         if rr.status in ("blocked", "needs_human"):
             print(f"✗ {rr.detail}")
             return 1
         if rr.status != "no_action":
             print(f"• 已恢复遗留事务: {rr.status}")
+
+        manifest = _read_manifest_locked(target)
+        if manifest is None:
+            return 1
+        codex_root_cli = _resolve_codex_root(target, codex_root_cli)
 
         tx = TransactionRecord.new(target, "uninstall")
         secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")

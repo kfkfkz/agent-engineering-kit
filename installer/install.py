@@ -520,16 +520,15 @@ def run_install(target: Path, *, repair: bool = False,
         finally:
             os.close(gov_fd)
 
-        # 步骤 12：done
-        tx.status = "done"
-        tx.write(target)
-
-        # 步骤 13：清理
-        cleanup_staging(target, tx)
-        # workspace 链接创建在锁内完成（P2 回归：锁外创建会与并发生命周期
-        # 操作竞争——另一进程的卸载可能在链接创建前已完成删除）
+        # 步骤 12：workspace 链接（在 done 之前——P2 回归：done 先写则崩溃
+        # 窗口内 recover 无从补偿；链接在 done 前失败 → committing → 可恢复）
         link_reports = (ensure_codex_links(target, codex_root, preflight)
                         if codex_root is not None else [])
+
+        # 步骤 13：done + 清理
+        tx.status = "done"
+        tx.write(target)
+        cleanup_staging(target, tx)
     finally:
         os.close(lock_fd)
 
