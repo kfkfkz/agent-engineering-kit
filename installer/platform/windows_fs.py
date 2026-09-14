@@ -192,13 +192,83 @@ def try_shared_lock(root: Path, rel: str):
     return _SharedLock()
 
 
+# ══════════════════════════ secure_* 家族（Windows compatible 实现） ══════════════════════════
+# path-based + islink/junction 预检——TOCTOU 保护弱于 POSIX（检查与打开间有理论竞窗）。
+
+def _validate_rel(rel: str) -> Path:
+    """轻量路径校验（不依赖 registry——避免循环导入）。"""
+    from pathlib import PurePosixPath
+    p = PurePosixPath(rel)
+    if p.is_absolute() or not p.parts:
+        raise ValueError(f"secure_* 只接受非空相对路径: {rel!r}")
+    if any(part == ".." for part in p.parts):
+        raise ValueError(f"路径含 .. 组件: {rel!r}")
+    return Path(rel)
+
+
+def secure_walk_dir_fd(target: Path, dir_rel: str) -> int:
+    """Windows：检查路径无 reparse point 后打开目录。返回 fd（供 close）。"""
+    if dir_rel not in ("", "."):
+        _check_no_reparse(target, dir_rel)
+    return os.open(target, os.O_RDONLY)
+
+
+def secure_open(target: Path, rel: str, flags: int, mode: int = 0o600) -> int:
+    """Windows：path-based + islink 预检。"""
+    p = _validate_rel(rel)
+    full = _check_no_reparse(target, str(p.parent))
+    filepath = full / p.name
+    if path_is_symlink(filepath):
+        raise PermissionError(f"文件是符号链接/junction: {filepath}")
+    return os.open(filepath, flags, mode)
+
+
+def secure_replace(target: Path, src_rel: str, dst_rel: str) -> None:
+    """Windows：os.replace（MoveFileEx 覆盖语义）。"""
+    _validate_rel(src_rel)
+    _validate_rel(dst_rel)
+    _check_no_reparse(target, str(Path(src_rel).parent))
+    _check_no_reparse(target, str(Path(dst_rel).parent))
+    os.replace(target / src_rel, target / dst_rel)
+
+
+def secure_unlink(target: Path, rel: str) -> None:
+    """Windows：path-based unlink。"""
+    p = _validate_rel(rel)
+    _check_no_reparse(target, str(p.parent))
+    os.unlink(target / rel)
+
+
+def secure_rmdir(target: Path, rel: str) -> None:
+    """Windows：path-based rmdir。"""
+    p = _validate_rel(rel)
+    _check_no_reparse(target, str(p.parent))
+    os.rmdir(target / rel)
+
+
+def secure_mkdir(target: Path, rel: str) -> None:
+    """Windows：逐级创建目录（幂等；符号链接/junction/文件占位拒绝）。"""
+    if rel in ("", "."):
+        return
+    _validate_rel(rel)
+    current = target
+    for part in Path(rel).parts:
+        current = current / part
+        if current.exists():
+            if path_is_symlink(current):
+                raise PermissionError(f"目录组件是符号链接/junction: {current}")
+            if not current.is_dir():
+                raise PermissionError(f"目录组件被文件占位: {current}")
+        else:
+            current.mkdir(mode=0o755)
+
+
 def rename_noreplace(src_dir_fd: int, src_name: str,
                      dst_dir_fd: int, dst_name: str) -> None:
-    """Windows os.rename 默认不覆盖——直接用。
-    注意：参数中的 fd 在 Windows 上被忽略（不可用），改用路径。"""
-    # Windows 的 os.rename 不带 dir_fd（会报错），用路径替代
-    # fd 在这里实际上是路径（由调用方适配）或不可用
-    os.rename(src_name, dst_name)  # 路径形式；Windows 默认 no-replace
+    """Windows：os.rename 默认不覆盖（等价 RENAME_NOREPLACE）。
+    fd 参数在 Windows 上不可用——此函数在 Windows 场景下不应被直接调用
+    （由 safe_unlink_external_link 的 platform 分支处理）。"""
+    os.rename(src_name, dst_name)
 
 
 # ══════════════════════════ 内部 ══════════════════════════

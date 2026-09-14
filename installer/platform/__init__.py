@@ -93,6 +93,38 @@ def try_shared_lock(root: Path, rel: str) -> Any:
     return _fs.try_shared_lock(root, rel)
 
 
+# ══════════════════════════ secure_* 家族（registry.py 委托入口） ══════════════════════════
+
+def secure_walk_dir_fd(target, dir_rel: str) -> int:
+    """打开到指定目录，返回 fd。POSIX: O_NOFOLLOW|O_DIRECTORY；Windows: islink 预检。"""
+    return _fs.secure_walk_dir_fd(target, dir_rel)
+
+
+def secure_open(target, rel: str, flags: int, mode: int = 0o600) -> int:
+    """安全打开文件，返回 fd。路径校验由调用方（registry.validate_relative_path）完成。"""
+    return _fs.secure_open(target, rel, flags, mode)
+
+
+def secure_replace(target, src_rel: str, dst_rel: str) -> None:
+    """原子替换。"""
+    _fs.secure_replace(target, src_rel, dst_rel)
+
+
+def secure_unlink(target, rel: str) -> None:
+    """删除文件。"""
+    _fs.secure_unlink(target, rel)
+
+
+def secure_rmdir(target, rel: str) -> None:
+    """删除空目录。"""
+    _fs.secure_rmdir(target, rel)
+
+
+def secure_mkdir(target, rel: str) -> None:
+    """逐级创建目录（幂等）。"""
+    _fs.secure_mkdir(target, rel)
+
+
 # ══════════════════════════ 原子 no-replace rename ══════════════════════════
 
 def rename_noreplace(src_dir_fd: int, src_name: str,

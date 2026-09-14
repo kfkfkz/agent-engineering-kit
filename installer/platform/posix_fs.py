@@ -160,6 +160,112 @@ def try_shared_lock(root: Path, rel: str):
     return _SharedLock()
 
 
+# ══════════════════════════ secure_* 家族（POSIX dir_fd 实现） ══════════════════════════
+# 路径校验（validate_relative_path）由 registry.py 调用方完成后再委托到这里。
+
+def _validate_rel(rel: str) -> Path:
+    """轻量路径校验（不依赖 registry——避免循环导入）。
+    与 registry.validate_relative_path 逻辑一致但独立实现。"""
+    from pathlib import PurePosixPath
+    p = PurePosixPath(rel)
+    if p.is_absolute() or not p.parts:
+        raise ValueError(f"secure_* 只接受非空相对路径: {rel!r}")
+    if any(part == ".." for part in p.parts):
+        raise ValueError(f"路径含 .. 组件: {rel!r}")
+    return Path(rel)
+
+
+def secure_walk_dir_fd(target: Path, dir_rel: str) -> int:
+    """逐级 O_NOFOLLOW|O_DIRECTORY 打开到 dir_rel。"""
+    if dir_rel in ("", "."):
+        return os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    parts = _validate_rel(dir_rel).parts
+    fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            nxt = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def secure_open(target: Path, rel: str, flags: int, mode: int = 0o600) -> int:
+    """dir_fd 版打开（O_NOFOLLOW）。"""
+    p = _validate_rel(rel)
+    dir_fd = secure_walk_dir_fd(target, str(p.parent))
+    try:
+        return os.open(p.name, flags | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def secure_replace(target: Path, src_rel: str, dst_rel: str) -> None:
+    """双 dir_fd 原子替换 + fsync。"""
+    src = _validate_rel(src_rel)
+    dst = _validate_rel(dst_rel)
+    src_dir_fd = secure_walk_dir_fd(target, str(src.parent))
+    try:
+        dst_dir_fd = secure_walk_dir_fd(target, str(dst.parent))
+        try:
+            os.replace(src.name, dst.name,
+                       src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+            os.fsync(dst_dir_fd)
+        finally:
+            os.close(dst_dir_fd)
+    finally:
+        os.close(src_dir_fd)
+
+
+def secure_unlink(target: Path, rel: str) -> None:
+    """dir_fd 版 unlink + fsync。"""
+    p = _validate_rel(rel)
+    dir_fd = secure_walk_dir_fd(target, str(p.parent))
+    try:
+        os.unlink(p.name, dir_fd=dir_fd)
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def secure_rmdir(target: Path, rel: str) -> None:
+    """dir_fd 版 rmdir + fsync。"""
+    p = _validate_rel(rel)
+    dir_fd = secure_walk_dir_fd(target, str(p.parent))
+    try:
+        os.rmdir(p.name, dir_fd=dir_fd)
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def secure_mkdir(target: Path, rel: str) -> None:
+    """逐级创建目录（幂等；符号链接/文件占位拒绝）。"""
+    if rel in ("", "."):
+        return
+    parts = _validate_rel(rel).parts
+    fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            try:
+                nxt = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fd)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, 0o755, dir_fd=fd)
+                    os.fsync(fd)
+                except FileExistsError:
+                    pass
+                nxt = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fd)
+            except OSError as e:
+                raise PermissionError(f"目录组件已存在但异常（{e}）: {part}")
+            os.close(fd)
+            fd = nxt
+    finally:
+        os.close(fd)
+
+
 def rename_noreplace(src_dir_fd: int, src_name: str,
                      dst_dir_fd: int, dst_name: str) -> None:
     """原子 no-replace rename（来自 atomic.py）。"""

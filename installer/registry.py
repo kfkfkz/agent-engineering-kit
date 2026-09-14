@@ -23,6 +23,20 @@ from typing import Any, Literal
 # ── kit 仓库根（installer/ 的父目录；安装器代码的一部分，目标仓库不可篡改）──
 KIT_DIR = Path(__file__).resolve().parent.parent
 
+# 平台后端（延迟导入——registry 是底层模块，避免循环依赖）
+def _get_platform_fs():
+    from installer import platform as _p
+    return _p
+
+_platform_fs = None  # 延迟初始化（首次调用 secure_* 时加载）
+
+
+def _fs():
+    global _platform_fs
+    if _platform_fs is None:
+        _platform_fs = _get_platform_fs()
+    return _platform_fs
+
 
 class SecurityError(Exception):
     """路径校验 / 权限边界违规。"""
@@ -416,113 +430,50 @@ def validate_relative_path(rel: str) -> PurePosixPath:
     return p
 
 
-def secure_walk_dir_fd(target: Path, dir_rel: str) -> int:
-    """从 target 根逐级 O_NOFOLLOW|O_DIRECTORY 打开到 dir_rel，返回该目录 fd。
-
-    dir_rel 为 ""/"."（根目录文件的父目录，如 AGENTS.md / CLAUDE.md / .mcp.json /
-    .cbmignore / .gitignore）→ 直接返回 target 根 fd（v12 特判）。
-    中间任一级是符号链接即失败；调用方负责 os.close(fd)。"""
-    if dir_rel in ("", "."):
-        return os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
-    parts = validate_relative_path(dir_rel).parts
-    fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+def _wrap_fs_error(func, *args, **kwargs):
+    """包装平台后端的 PermissionError → SecurityError（保持 registry API 兼容）。"""
     try:
-        for part in parts:
-            nxt = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fd)
-            os.close(fd)
-            fd = nxt
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
+        return func(*args, **kwargs)
+    except PermissionError as e:
+        raise SecurityError(str(e)) from e
+
+
+def secure_walk_dir_fd(target: Path, dir_rel: str) -> int:
+    """打开到指定目录，返回 fd。POSIX: O_NOFOLLOW|O_DIRECTORY 逐级；Windows: islink 预检。"""
+    return _wrap_fs_error(_fs().secure_walk_dir_fd, target, dir_rel)
 
 
 def secure_open(target: Path, rel: str, flags: int, mode: int = 0o600) -> int:
-    """kit 一切文件打开/写入的入口：先 validate 完整文件路径（拒绝最后的 ".."
-    组件），walk 到父目录（根目录文件的父 = target 根）后以 dir_fd 打开最终
-    文件（O_NOFOLLOW）。成功时只返回文件 fd——父目录 fd 已关闭。"""
-    p = validate_relative_path(rel)                      # 完整文件路径校验（v12）
-    dir_fd = secure_walk_dir_fd(target, str(p.parent))   # "." → target 根
-    try:
-        return os.open(p.name, flags | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
-    finally:
-        os.close(dir_fd)
+    """kit 一切文件打开/写入的入口。路径校验后委托到平台后端。"""
+    p = validate_relative_path(rel)
+    return _wrap_fs_error(_fs().secure_open, target, str(p), flags, mode)
 
 
 def secure_replace(target: Path, src_rel: str, dst_rel: str) -> None:
-    """全程持有 dir_fd 的原子替换（v10：不回退路径操作，父目录 TOCTOU 不回归）。
-    先各自 validate 完整路径 → walk 到 src/dst 父目录 fd → os.replace(双
-    dir_fd) → 经 dst 父目录 fd fsync。"""
+    """原子替换。路径校验后委托到平台后端。"""
     src = validate_relative_path(src_rel)
     dst = validate_relative_path(dst_rel)
-    src_dir_fd = secure_walk_dir_fd(target, str(src.parent))
-    try:
-        dst_dir_fd = secure_walk_dir_fd(target, str(dst.parent))
-        try:
-            os.replace(src.name, dst.name,
-                       src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-            os.fsync(dst_dir_fd)               # 经 fd fsync，不回退路径
-        finally:
-            os.close(dst_dir_fd)
-    finally:
-        os.close(src_dir_fd)
+    _wrap_fs_error(_fs().secure_replace, target, str(src), str(dst))
 
 
 def secure_unlink(target: Path, rel: str) -> None:
-    """dir_fd 版 unlink + 经 fd fsync（不走路径；根目录文件同样支持）。"""
-    p = validate_relative_path(rel)                      # 完整文件路径校验（v12）
-    dir_fd = secure_walk_dir_fd(target, str(p.parent))
-    try:
-        os.unlink(p.name, dir_fd=dir_fd)
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    """删除文件。路径校验后委托到平台后端。"""
+    p = validate_relative_path(rel)
+    _wrap_fs_error(_fs().secure_unlink, target, str(p))
 
 
 def secure_rmdir(target: Path, rel: str) -> None:
-    """dir_fd 版 rmdir + 经 fd fsync（§6 家族成员：清理事务目录/空目录用；
-    只删空目录——非空时 ENOTEMPTY 抛出，由调用方按需忽略）。"""
+    """删除空目录。路径校验后委托到平台后端。"""
     p = validate_relative_path(rel)
-    dir_fd = secure_walk_dir_fd(target, str(p.parent))
-    try:
-        os.rmdir(p.name, dir_fd=dir_fd)
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    _wrap_fs_error(_fs().secure_rmdir, target, str(p))
 
 
 def secure_mkdir(target: Path, rel: str) -> None:
-    """逐级创建缺失目录（幂等——第二次 install/update 必须能跑，v12 全流程接入）：
-    - rel 为 ""/"." → no-op（根目录文件的父目录无需创建）
-    - 已存在且为真实目录（O_NOFOLLOW 打开成功）→ 继续
-    - 已存在但是符号链接（ELOOP）或被文件占位（ENOTDIR）→ SecurityError
-    - 缺失（ENOENT）→ os.mkdir(dir_fd=父) + 经父 fd fsync（目录项持久化）
-
-    调用点（v12 接入清单）：acquire_install_lock（.repo-memory-kit）、
-    write_transaction_atomic（tx/<id>）、安装流程步骤 3（tx/<id>/backups）、
-    stage_resource（destination 父目录，如 .claude/skills/<name>）、
-    zvec rebuild（zvec/ 与 generations/<uuid>）。"""
+    """逐级创建目录（幂等）。路径校验后委托到平台后端。"""
     if rel in ("", "."):
-        return                                          # 根目录文件的父目录
-    parts = validate_relative_path(rel).parts
-    fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
-    try:
-        for part in parts:
-            try:
-                nxt = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fd)
-            except FileNotFoundError:                     # 缺失 → 创建
-                try:
-                    os.mkdir(part, 0o755, dir_fd=fd)
-                    os.fsync(fd)
-                except FileExistsError:                   # 并发创建竞窗 → 复用
-                    pass
-                nxt = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY, dir_fd=fd)
-            except OSError as e:                          # ELOOP（符号链接）/ ENOTDIR（文件占位）
-                raise SecurityError(f"目录组件已存在但异常（{e}）: {part}")
-            os.close(fd)
-            fd = nxt
-    finally:
-        os.close(fd)
+        return
+    validate_relative_path(rel)
+    _wrap_fs_error(_fs().secure_mkdir, target, rel)
 
 
 # ★ 规则：所有文件系统变更（打开写入、replace/rename、unlink、rmdir）一律经
