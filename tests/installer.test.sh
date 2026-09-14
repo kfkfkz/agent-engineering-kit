@@ -879,22 +879,33 @@ print("恢复路径窗口防护 OK")
 PY
 [ $? = 0 ] && ok "P2.4 rename 隔离原语（正常+窗口+恢复三路径）" || bad "P2.4 TOCTOU 防护失败"
 
-# 14.5 legacy 生成器可用性（P1：只读验证——generate_legacy_hashes 是纯函数，
-# 不写文件；--generate CLI 才写入，测试只调函数确保不污染工作区）
-python3 - <<'PYEOF' && ok "P2.5 生成器可用（纯函数调用 + git 历史 + 工作区干净）" || bad "P2.5 生成器异常"
+# 14.5 legacy 生成器可用性 + 产物一致性（纯函数调用，不写文件）
+python3 - <<'PYEOF' && ok "P2.5 生成器可用 + 产物与提交一致" || bad "P2.5 生成器异常或产物过期"
+import json
 from installer.legacy import generate_legacy_hashes
 result = generate_legacy_hashes()
 assert "kit_versions" in result, "缺 kit_versions"
 n = len(result["kit_versions"])
-# 至少 4 个硬编码版本（gitignore/codex-toml + 当前提交）
 assert n >= 4, f"版本数过少: {n}（可能 git log 全部失败被静默跳过）"
-# 验证至少有一个版本包含 skill 条目（来自 git 历史）
 has_skill = any(
     spec_id.startswith("skill-")
     for entries in result["kit_versions"].values()
     for spec_id in entries)
 assert has_skill, "无 skill 条目——git log 可能全部静默失败"
-print(f"generator OK: {n} versions, skills present")
+# 产物一致性：生成的 canonical hash 集合应包含已提交文件的全部条目
+committed = json.load(open("installer/legacy_hashes.json"))
+committed_set = set()
+for ver, entries in committed["kit_versions"].items():
+    for sid in entries:
+        committed_set.add((ver, sid))
+generated_set = set()
+for ver, entries in result["kit_versions"].items():
+    for sid in entries:
+        generated_set.add((ver, sid))
+# 已提交的 (version, spec) 对应全部在生成结果中（生成器可能多出新 commit）
+missing = committed_set - generated_set
+assert not missing, f"已提交 legacy_hashes 有 {len(missing)} 项不在生成结果中: {sorted(missing)[:3]}"
+print(f"generator OK: {n} versions, skills present, committed artifact consistent")
 PYEOF
 
 # 14.6 旁路步骤退出码传播（P1-4b：信号终止归一化 + 非零传播）

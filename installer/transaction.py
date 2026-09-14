@@ -135,6 +135,7 @@ class TransactionRecord:
     detail: str | None = None               # needs_human 原因（阻断时展示）
     mac: str | None = None                  # 载入时填充；写入时由 write_transaction_atomic 计算
     mac_verified: bool = False              # find_unresolved 载入即验证（§11.4）
+    codex_root_old: str | None = None       # marker 旧值（HMAC 保护——回滚恢复）
 
     def to_dict(self) -> dict:
         return {
@@ -145,6 +146,7 @@ class TransactionRecord:
             "external": [e.to_dict() for e in self.external],
             "created_at": self.created_at,
             "detail": self.detail,
+            "codex_root_old": self.codex_root_old,
         }
 
     @classmethod
@@ -157,6 +159,7 @@ class TransactionRecord:
             external=[ExternalStep.from_dict(e) for e in data.get("external", [])],
             created_at=str(data.get("created_at", "")),
             detail=data.get("detail"),
+            codex_root_old=data.get("codex_root_old"),
         )
 
     @classmethod
@@ -652,7 +655,7 @@ def cleanup_staging(target: Path, tx: TransactionRecord) -> None:
             secure_unlink(target, f"{tx_dir}/backups/{step.spec_id}")
         except FileNotFoundError:
             pass
-    for extra in ("record.json", "marker-backup"):
+    for extra in ("record.json",):
         try:
             secure_unlink(target, f"{tx_dir}/{extra}")
         except FileNotFoundError:
@@ -724,10 +727,16 @@ def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]
             link = link_spec.derive_link_path(codex_root)
             expected = str(link_spec.derive_target_path(target))
             from .uninstall import safe_unlink_external_link
-            # 原路径和确定性隔离名都检查——原路径不存在不代表完成，
-            # 可能只是被移到了 .kit-iso-{basename}（P1：孤儿感知恢复）
+            # 原路径和确定性隔离名都检查（lstat 语义——broken symlink 也算存在，
+            # Path.exists() 跟随链接对断链返回 False 会漏判 P1）
             iso = link.parent / f".kit-iso-{link.name}"
-            if not link.is_symlink() and not link.exists() and not iso.exists():
+            def _lexists(p):
+                try:
+                    os.lstat(p)
+                    return True
+                except OSError:
+                    return False
+            if not _lexists(link) and not _lexists(iso):
                 if rec.state != "removed":
                     rec.state = "removed"      # 原路径和隔离名都不在 → 完成
                 continue
@@ -772,17 +781,14 @@ def restore_external_links(target: Path, tx: TransactionRecord) -> list[str]:
 
 
 def _restore_marker_backup(target: Path, tx: TransactionRecord) -> None:
-    """回滚时恢复旧 codex workspace marker（P1 第五轮：更新 A→B 失败回滚后，
-    marker 应恢复指向 A，否则后续卸载找不到旧链接）。"""
-    backup_rel = f".repo-memory-kit/tx/{tx.tx_id}/marker-backup"
+    """回滚时恢复旧 codex workspace marker（值来自 HMAC 保护的事务记录——
+    P1 第六轮：旁路备份文件 O_TRUNC 崩溃窗口不可信，必须进事务记录）。"""
     from .registry import STATE_REGISTRY, secure_open, secure_unlink, write_all
-    backup_path = target / backup_rel
-    if not backup_path.is_file():
-        return  # 无备份（首次安装或无 codex_root）
-    old_value = backup_path.read_text(encoding="utf-8").strip()
+    if tx.codex_root_old is None:
+        return  # 事务创建时无 marker（首次安装或无 codex_root）
+    old_value = tx.codex_root_old.strip()
     marker_rel = STATE_REGISTRY["state.codex-workspace-marker"].destination_path
     if old_value:
-        # 有旧值 → 恢复
         fd = secure_open(target, marker_rel,
                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         try:
@@ -791,7 +797,6 @@ def _restore_marker_backup(target: Path, tx: TransactionRecord) -> None:
         finally:
             os.close(fd)
     else:
-        # 无旧值（首次安装）→ 删除 marker
         try:
             secure_unlink(target, marker_rel)
         except FileNotFoundError:
@@ -983,7 +988,6 @@ def recover_manual(target: Path, strategy: str) -> RecoveryResult:
         if tx.kind == "install":
             _write_manifest(target, _rollforward_manifest(
                 target, classified["NEW"] + classified["OLD"]))
-        cleanup_staging(target, tx)
         # 同 recover()：卸载 roll-forward 补删不重建；install 无外部步骤
         failures = (complete_external_removals(target, tx)
                     if tx.kind == "uninstall" else [])
@@ -994,6 +998,7 @@ def recover_manual(target: Path, strategy: str) -> RecoveryResult:
             return RecoveryResult("needs_human", detail=tx.detail)
         tx.status = "done"
         write_transaction_atomic(target, tx)
+        cleanup_staging(target, tx)   # done 写入后再清理（与 recover 一致）
         return RecoveryResult("roll_forward_completed")
 
     return RecoveryResult("needs_human", detail=f"未知恢复策略: {strategy!r}")

@@ -482,22 +482,15 @@ def run_install(target: Path, *, repair: bool = False,
         # 步骤 8.5：写 codex workspace marker（P1 回归——必须在 committing
         # 之前：首次安装的链接创建在 done 前发生，若在此处之前崩溃，
         # recover() 从 marker 读 codex_root 补建链接）。
-        # 同时备份旧值到 tx 目录（P1 第五轮：回滚时恢复旧 marker——
-        # 否则更新 A→B 失败回滚后 marker 仍指向 B，旧链接残留）
+        # 旧值存入事务记录 codex_root_old（HMAC 保护——P1 第六轮：旁路备份
+        # 文件 O_TRUNC 崩溃窗口不可信，必须进事务记录）
         if codex_root is not None:
             from .registry import (STATE_REGISTRY, secure_open, write_all)
             marker_rel = STATE_REGISTRY["state.codex-workspace-marker"].destination_path
-            # 备份旧 marker
             old_marker_path = target / marker_rel
             old_value = old_marker_path.read_text().strip() if old_marker_path.is_file() else ""
-            backup_fd = secure_open(
-                target, f".repo-memory-kit/tx/{tx.tx_id}/marker-backup",
-                os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            try:
-                write_all(backup_fd, old_value.encode())
-                os.fsync(backup_fd)
-            finally:
-                os.close(backup_fd)
+            tx.codex_root_old = old_value    # HMAC 保护的事务字段
+            tx.write(target)                 # 刷新记录（含旧值）
             # 写新 marker
             fd = secure_open(target, marker_rel,
                             os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
