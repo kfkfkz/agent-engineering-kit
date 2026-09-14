@@ -192,39 +192,39 @@ def plan_external_removal(target: Path, codex_root_cli: Path,
 
 
 def safe_unlink_external_link(link: Path, expected_target: str) -> None:
-    """原子安全删除外部符号链接。
+    """原子安全删除外部符号链接（事务化设计——第五轮终版）。
 
-    正确原语：rename 隔离 → 核验被移对象 → 匹配则删除 / 不匹配则恢复。
+    原语链（每步原子，无覆盖窗口）：
+    1. rename_noreplace(original → isolation)——目标已存在则先清孤儿
+    2. lstat + readlink(isolation)——核验被移对象
+    3. 匹配 → unlink(isolation)；不匹配 → rename_noreplace(isolation → original)
 
-    P1 第三+第四轮修复：
-    - 隔离名确定性（`.kit-iso-{link.basename}`）——崩溃后 recover 可扫描到孤儿
-    - 恢复用 no-overwrite 语义——原路径被竞争者占用时**不覆盖**，保留隔离对象
-      并报错（needs_human），绝不能吞掉第二个用户文件"""
-    import stat as stat_module
+    所有 rename 都用 no-replace 语义（installer.atomic），绝不覆盖竞争文件。
+    隔离名确定性（.kit-iso-{basename}），崩溃后可被 recover 扫描到。"""
+    from .atomic import rename_noreplace
     parent_fd = os.open(link.parent,
                         os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
-    # 确定性隔离名（不用 UUID——恢复路径可重建此名字）
     iso_name = f".kit-iso-{link.name}"
     try:
-        # 0. 清理上次中断留下的孤儿隔离（同名的确定性隔离）
-        _resolve_orphan_isolation(parent_fd, iso_name, link.name, expected_target)
+        # 0. 清理上次中断的孤儿（确定性同名隔离）
+        _resolve_orphan(parent_fd, iso_name, link.name, expected_target)
 
-        # 1. 原子移入隔离名
+        # 1. 原子移入隔离名（no-replace——如果 isolation 已被清孤儿则不会走到这）
         try:
-            os.rename(link.name, iso_name,
-                      src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            rename_noreplace(parent_fd, link.name, parent_fd, iso_name)
         except FileNotFoundError:
             raise OSError(f"链接不存在（已被删除？）: {link}")
 
-        # 2. 核验被移入隔离名的对象
-        _resolve_isolation(parent_fd, iso_name, link.name, expected_target, link)
+        # 2-3. 核验并处置
+        _verify_and_dispose(parent_fd, iso_name, link.name, expected_target, link)
     finally:
         os.close(parent_fd)
 
 
-def _resolve_isolation(parent_fd: int, iso_name: str, original_name: str,
-                       expected_target: str, link: Path) -> None:
-    """核验隔离对象：匹配 → 删除；不匹配 → no-overwrite 恢复或保留+报错。"""
+def _verify_and_dispose(parent_fd: int, iso_name: str, original_name: str,
+                        expected_target: str, link: Path) -> None:
+    """核验隔离对象：匹配 → 删除；不匹配 → no-replace 恢复。"""
+    from .atomic import rename_noreplace
     import stat as stat_module
     try:
         st = os.lstat(iso_name, dir_fd=parent_fd)
@@ -236,45 +236,42 @@ def _resolve_isolation(parent_fd: int, iso_name: str, original_name: str,
         os.unlink(iso_name, dir_fd=parent_fd)
         os.fsync(parent_fd)
     except OSError as verify_err:
-        # 不匹配 → 尝试恢复（no-overwrite：原路径被占则保留隔离对象）
+        # 不匹配 → no-replace 恢复（原路径被占则保留隔离+报错）
         try:
-            os.lstat(original_name, dir_fd=parent_fd)
-            # 原路径已被竞争者占用——不能覆盖，保留隔离对象
+            rename_noreplace(parent_fd, iso_name, parent_fd, original_name)
+        except FileExistsError:
             raise OSError(
                 f"隔离对象不匹配且原路径已被占用: {link} → "
-                f"隔离对象保留在 {iso_name}，需人工处理（不覆盖竞争文件）"
+                f"隔离对象保留在 {iso_name}，需人工处理"
             ) from verify_err
-        except FileNotFoundError:
-            pass  # 原路径空闲——安全恢复
-        os.rename(iso_name, original_name,
-                  src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-        raise verify_err  # 上抛原始核验失败
+        raise verify_err
 
 
-def _resolve_orphan_isolation(parent_fd: int, iso_name: str,
-                              original_name: str, expected_target: str) -> None:
-    """清理上次中断的孤儿隔离：核验→删除（匹配）/ 恢复（不匹配）。"""
+def _resolve_orphan(parent_fd: int, iso_name: str,
+                    original_name: str, expected_target: str) -> None:
+    """清理上次中断的同名孤儿隔离：匹配删 / 不匹配恢复（均为 no-replace）。"""
+    from .atomic import rename_noreplace
+    import stat as stat_module
     try:
         os.lstat(iso_name, dir_fd=parent_fd)
     except FileNotFoundError:
         return  # 无孤儿
-    # 孤儿存在——尝试匹配删除（安静处理，失败留给后续人工）
-    import stat as stat_module
+
     try:
         st = os.lstat(iso_name, dir_fd=parent_fd)
         if (stat_module.S_ISLNK(st.st_mode)
                 and os.readlink(iso_name, dir_fd=parent_fd) == expected_target):
+            # 匹配的孤儿 → 完成删除
             os.unlink(iso_name, dir_fd=parent_fd)
             os.fsync(parent_fd)
         else:
-            # 不匹配——恢复到原路径（如果空闲）
+            # 不匹配的孤儿 → 恢复到原路径（no-replace，不覆盖）
             try:
-                os.lstat(original_name, dir_fd=parent_fd)
-            except FileNotFoundError:
-                os.rename(iso_name, original_name,
-                          src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+                rename_noreplace(parent_fd, iso_name, parent_fd, original_name)
+            except FileExistsError:
+                pass  # 原路径被占，孤儿留存（人工处理）
     except OSError:
-        pass  # 孤儿处理失败不阻塞当前操作，留给人工
+        pass  # 孤儿处理失败不阻塞当前操作
 
 
 def execute_external_removal(target: Path, step: ExternalStep) -> None:

@@ -652,10 +652,11 @@ def cleanup_staging(target: Path, tx: TransactionRecord) -> None:
             secure_unlink(target, f"{tx_dir}/backups/{step.spec_id}")
         except FileNotFoundError:
             pass
-    try:
-        secure_unlink(target, f"{tx_dir}/record.json")
-    except FileNotFoundError:
-        pass
+    for extra in ("record.json", "marker-backup"):
+        try:
+            secure_unlink(target, f"{tx_dir}/{extra}")
+        except FileNotFoundError:
+            pass
     for rel in (f"{tx_dir}/backups", tx_dir):
         try:
             secure_rmdir(target, rel)
@@ -708,7 +709,6 @@ def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]
     P1 回归：复用与 execute_external_removal 相同的 fd 原语——readlink 核验
     与 unlink 不是同一原子操作，路径式 unlink 存在 TOCTOU。
     返回失败清单；非空 → needs_human。"""
-    import stat as stat_module
     failures = []
     for rec in tx.external:
         if rec.prior_state != "pointing_to_target":
@@ -723,12 +723,15 @@ def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]
             link_spec.validate(codex_root, target)
             link = link_spec.derive_link_path(codex_root)
             expected = str(link_spec.derive_target_path(target))
-            # 复用 uninstall.safe_unlink_external_link 的 rename 隔离原语
             from .uninstall import safe_unlink_external_link
-            if not link.is_symlink() and not link.exists():
+            # 原路径和确定性隔离名都检查——原路径不存在不代表完成，
+            # 可能只是被移到了 .kit-iso-{basename}（P1：孤儿感知恢复）
+            iso = link.parent / f".kit-iso-{link.name}"
+            if not link.is_symlink() and not link.exists() and not iso.exists():
                 if rec.state != "removed":
-                    rec.state = "removed"      # 已消失，视为完成
+                    rec.state = "removed"      # 原路径和隔离名都不在 → 完成
                 continue
+            # 原路径或隔离名存在 → 走安全删除（内部会处理孤儿和原子恢复）
             safe_unlink_external_link(link, expected)
             rec.state = "removed"
         except (OSError, SecurityError) as e:
@@ -768,9 +771,38 @@ def restore_external_links(target: Path, tx: TransactionRecord) -> list[str]:
     return failures
 
 
+def _restore_marker_backup(target: Path, tx: TransactionRecord) -> None:
+    """回滚时恢复旧 codex workspace marker（P1 第五轮：更新 A→B 失败回滚后，
+    marker 应恢复指向 A，否则后续卸载找不到旧链接）。"""
+    backup_rel = f".repo-memory-kit/tx/{tx.tx_id}/marker-backup"
+    from .registry import STATE_REGISTRY, secure_open, secure_unlink, write_all
+    backup_path = target / backup_rel
+    if not backup_path.is_file():
+        return  # 无备份（首次安装或无 codex_root）
+    old_value = backup_path.read_text(encoding="utf-8").strip()
+    marker_rel = STATE_REGISTRY["state.codex-workspace-marker"].destination_path
+    if old_value:
+        # 有旧值 → 恢复
+        fd = secure_open(target, marker_rel,
+                        os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            write_all(fd, (old_value + "\n").encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    else:
+        # 无旧值（首次安装）→ 删除 marker
+        try:
+            secure_unlink(target, marker_rel)
+        except FileNotFoundError:
+            pass
+
+
 def _finish_rollback(target: Path, tx: TransactionRecord,
                      final_status: TransactionStatus) -> RecoveryResult:
-    """planning/staging/无 NEW 的 committing 收尾：清理 → 外部补偿 → 状态落盘。"""
+    """planning/staging/无 NEW 的 committing 收尾：清理 → marker 恢复 →
+    外部补偿 → 状态落盘。"""
+    _restore_marker_backup(target, tx)
     cleanup_staging(target, tx)
     failures = restore_external_links(target, tx)
     if failures:
@@ -860,7 +892,7 @@ def recover(target: Path) -> RecoveryResult:
             cleanup_staging(target, tx)   # done 写入后再清理（与 install 一致）
             return RecoveryResult("roll_forward_completed")
 
-        # 部分提交 → roll-back（倒序，只回滚 NEW）+ 外部步骤补偿
+        # 部分提交 → roll-back（倒序，只回滚 NEW）+ marker 恢复 + 外部步骤补偿
         for step in reversed(classified["NEW"]):
             if not rollback_one(target, step, tx):
                 tx.status = "needs_human"
@@ -868,6 +900,7 @@ def recover(target: Path) -> RecoveryResult:
                 write_transaction_atomic(target, tx)
                 return RecoveryResult("needs_human", detail=tx.detail)
 
+        _restore_marker_backup(target, tx)
         return _finish_rollback(target, tx, "rolled_back")
 
     return RecoveryResult("no_action")
