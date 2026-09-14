@@ -9,13 +9,13 @@ jobs:
           fetch-depth: 0
       - name: 语法检查（sh -n / py_compile）
         run: |
-          sh -n install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh
+          sh -n install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh
           python3 -m py_compile memory-build spec-migrate memory-recall domain-check
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck >/dev/null
-          shellcheck install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh
+          shellcheck install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh
       - name: 安装器测试
         run: sh tests/install.test.sh
       - name: 安装 zvec（语义检索层/安装器测试依赖）
@@ -28,3 +28,5 @@ jobs:
         run: sh tests/spec-migrate.test.sh
       - name: 技能副本一致性
         run: sh tests/skill-sync.test.sh
+      - name: MCP 协议测试
+        run: sh tests/mcp.test.sh

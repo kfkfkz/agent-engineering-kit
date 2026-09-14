@@ -214,35 +214,174 @@ def execute_external_removal(target: Path, step: ExternalStep) -> None:
 
 # ══════════════════════════ 主流程（§13） ══════════════════════════
 
+def _classify_entries(target: Path, manifest, codex_root_cli):
+    """步骤 4：条目分类 → removal_specs / external_specs / residual。"""
+    residual: list[tuple[Any, str]] = []
+    removal_specs: list[ResourceSpec] = []
+    external_specs: list[ResourceSpec] = []
+    entries = manifest.entry_map()
+    for spec in REGISTRY:
+        entry = entries.get(spec.id)
+        if entry is None:
+            continue
+        try:
+            status = determine_status(target, spec, entry, codex_root_cli)
+        except ContainerUnreadableError as e:
+            residual.append((entry, f"容器不可读（漂移保护）: {e}"))
+            continue
+        except SecurityError as e:
+            residual.append((entry, f"路径/权限校验失败（漂移保护）: {e}"))
+            continue
+        if spec.resource_type == "seed_file":
+            residual.append((entry, "seed_file 永不卸载（用户所有）"))
+            continue
+        if status is None:
+            residual.append((entry, "codex_link 未传 --codex-root，无法核验"))
+            continue
+        if status in ("conflict", "drifted"):
+            residual.append((entry, f"{status}（漂移保护）——保留"))
+            continue
+        if spec.resource_type == "codex_link":
+            external_specs.append(spec)
+        else:
+            removal_specs.append(spec)
+    return removal_specs, external_specs, residual
+
+
+def _build_removal_plan(target: Path, removal_specs, manifest, residual):
+    """步骤 5：内存构建全部 CommitStep（含 Manifest 最后一步）。"""
+    plans = []
+    for group in group_specs(removal_specs):
+        spec0 = group[0]
+        dst = target / spec0.destination_path
+        pre_bytes, pre_mode = _read_container(dst)
+        content = build_removal_content(target, group, pre_bytes)
+        kind = "delete" if content is None else "replace"
+        step = CommitStep(
+            spec_id=spec0.id, spec_ids=tuple(s.id for s in group), kind=kind,
+            pre_container_hash=(hashlib.sha256(pre_bytes).hexdigest()
+                               if pre_bytes is not None else None),
+            post_container_hash=(hashlib.sha256(content).hexdigest()
+                                if content is not None else None),
+            pre_mode=pre_mode)
+        mode = pre_mode if pre_mode is not None else (spec0.expected_mode or 0o644)
+        plans.append((step, content, mode, group))
+
+    reduced = reduced_manifest(manifest, [e for e, _ in residual])
+    reduced_bytes = manifest_payload_bytes(reduced)
+    m_pre, m_mode = _read_container(
+        target / STATE_REGISTRY[MANIFEST_SPEC_ID].destination_path)
+    manifest_step = CommitStep(
+        spec_id=MANIFEST_SPEC_ID, spec_ids=(MANIFEST_SPEC_ID,),
+        kind="delete" if not residual else "replace",
+        pre_container_hash=(hashlib.sha256(m_pre).hexdigest()
+                            if m_pre is not None else None),
+        post_container_hash=(None if not residual
+                             else hashlib.sha256(reduced_bytes).hexdigest()),
+        pre_mode=m_mode)
+    manifest_content = None if not residual else reduced_bytes
+    return plans, manifest_step, manifest_content
+
+
+def _stage_and_backup(target: Path, tx, plans, manifest_step, manifest_content):
+    """步骤 5 后半：staging 落盘 + 备份（写序不变量 1：完整 plan 先行）。"""
+    tx.plan = [p[0] for p in plans] + [manifest_step]
+    tx.write(target)
+    tx.status = "staging"
+    tx.write(target)
+    for step, content, mode, group in plans:
+        if step.kind == "replace":
+            stage_resource(target, step.spec_id, tx.tx_id, content, mode=mode)
+    if manifest_step.kind == "replace":
+        stage_resource(target, MANIFEST_SPEC_ID, tx.tx_id,
+                        manifest_content, mode=0o600)
+    for step, *_ in plans:
+        if not backup_container(target, step, tx.tx_id):
+            print(f"✗ 卸载中止：备份失败: {step.spec_id}")
+            _fail_tx(target, tx)
+            return False
+    if not backup_container(target, manifest_step, tx.tx_id):
+        print("✗ 卸载中止：Manifest 备份失败")
+        _fail_tx(target, tx)
+        return False
+    return True
+
+
+def _fail_tx(target, tx):
+    cleanup_staging(target, tx)
+    tx.status = "failed"
+    tx.write(target)
+
+
+def _remove_external_links(target: Path, tx, external_specs, codex_root_cli):
+    """步骤 5.5：外部链接移除（意图先行——写序不变量 3）。返回 link_reports 或 None=失败。"""
+    link_reports = []
+    assert codex_root_cli is not None or not external_specs
+    for spec in external_specs:
+        step = plan_external_removal(target, codex_root_cli, spec)
+        if step.prior_state != "pointing_to_target":
+            step.state = "removed"
+            tx.external.append(step)
+            tx.write(target)
+            link_reports.append(f"• {spec.id}: prior_state={step.prior_state}，未触碰")
+            continue
+        tx.external.append(step)
+        tx.write(target)
+        try:
+            execute_external_removal(target, step)
+        except OSError as e:
+            failures = restore_external_links(target, tx)
+            if failures:
+                tx.status = "needs_human"
+                tx.detail = f"外部步骤删除失败且补偿失败: {e}; {failures}"
+                tx.write(target)
+                print(f"✗ {tx.detail}")
+                return None
+            tx.status = "failed"
+            tx.write(target)
+            print(f"✗ 外部链接删除失败（已补偿，可安全重试）: {e}")
+            return None
+        step.state = "removed"
+        tx.write(target)
+        link_reports.append(f"✓ 已移除 Codex workspace 技能链接 {spec.id}")
+    return link_reports
+
+
+def _commit_removal(target: Path, tx, plans, manifest_step):
+    """步骤 6：逐组 CAS commit（state.manifest 最后）。返回已提交数或 None=失败。"""
+    tx.status = "committing"
+    tx.write(target)
+    committed = 0
+    for step, *_ in plans:
+        result = commit_one(target, step, tx.tx_id)
+        if result.status != "committed":
+            print(f"✗ 卸载 commit 失败: {step.spec_id}: "
+                  f"{result.detail or result.status}——自动恢复现场")
+            recover(target)
+            return None
+        committed += 1
+        tx.write(target)
+    result = commit_one(target, manifest_step, tx.tx_id)
+    if result.status != "committed":
+        print(f"✗ Manifest 步骤 commit 失败: {result.detail or result.status}")
+        recover(target)
+        return None
+    return committed
+
+
 def run_uninstall(target: Path, *, codex_root_cli: Path | None = None) -> int:
     target = target.resolve()
     if not target.is_dir():
         print(f"✗ 目标目录不存在: {target}")
         return 1
 
-    lock_fd = acquire_install_lock(target)           # 步骤 0（全程持有）
+    lock_fd = acquire_install_lock(target)
     try:
-        # 步骤 1：读取 Manifest（锁内——P2 回归：锁外读取会与并发安装竞态，
-        # 拿到旧清单导致"新装资源被留下却删掉清单"）
-        try:
-            manifest = read_manifest(target)
-        except ManifestCorruptError as e:
-            print(f"✗ 安装清单损坏，拒绝卸载（人工处置后重试）: {e}")
-            return 1
+        manifest = _read_manifest_locked(target)
         if manifest is None:
-            print("没有安装清单，无法安全卸载。请运行 doctor 查看现状；若确为 kit 旧版本"
-                  "产物，先运行 install.py --adopt-legacy（§18）重建清单后再卸载。")
             return 1
+        codex_root_cli = _resolve_codex_root(target, codex_root_cli)
 
-        # codex_root 解析（锁内读 marker）：CLI 显式参数优先；
-        # 删除授权始终由 readlink == target 保证
-        if codex_root_cli is None:
-            marker_root = read_codex_workspace_marker(target)
-            if marker_root is not None:
-                codex_root_cli = marker_root
-                print(f"提示: 使用已记录的 Codex workspace: {marker_root}"
-                      f"（来自 .repo-memory-kit/codex-workspace-root）")
-        # 步骤 2：恢复遗留未完成事务
         rr = recover(target)
         if rr.status in ("blocked", "needs_human"):
             print(f"✗ {rr.detail}")
@@ -250,185 +389,73 @@ def run_uninstall(target: Path, *, codex_root_cli: Path | None = None) -> int:
         if rr.status != "no_action":
             print(f"• 已恢复遗留事务: {rr.status}")
 
-        # 步骤 3：创建事务
         tx = TransactionRecord.new(target, "uninstall")
         secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")
         secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}/backups")
         tx.status = "planning"
         tx.write(target)
 
-        # 步骤 4：Plan / Preflight（只读）——条目分类
-        residual: list[tuple[Any, str]] = []        # (entry, 原因)
-        removal_specs: list[ResourceSpec] = []
-        external_specs: list[ResourceSpec] = []
-        entries = manifest.entry_map()
-        for spec in REGISTRY:
-            entry = entries.get(spec.id)
-            if entry is None:
-                continue
-            try:
-                status = determine_status(target, spec, entry, codex_root_cli)
-            except ContainerUnreadableError as e:
-                residual.append((entry, f"容器不可读（漂移保护）: {e}"))
-                continue
-            except SecurityError as e:
-                # codex link 派生校验失败（workspace 结构异常）→ 漂移保护保留，
-                # 不让单个资源把整个卸载打崩
-                residual.append((entry, f"路径/权限校验失败（漂移保护）: {e}"))
-                continue
-            if spec.resource_type == "seed_file":
-                residual.append((entry, "seed_file 永不卸载（用户所有）"))
-                continue
-            if status is None:
-                residual.append((entry, "codex_link 未传 --codex-root，无法核验"))
-                continue
-            if status == "conflict":
-                residual.append((entry, "conflict（用户自有内容/记录不符）——漂移保护，保留"))
-                continue
-            if status == "drifted":
-                residual.append((entry, "drifted（内容与记录不符）——漂移保护，保留"))
-                continue
-            # managed / adopted_legacy → 进入移除
-            if spec.resource_type == "codex_link":
-                external_specs.append(spec)
-            else:
-                removal_specs.append(spec)
+        removal_specs, external_specs, residual = \
+            _classify_entries(target, manifest, codex_root_cli)
 
-        # 步骤 5：Plan + 内容生成（内存；读容器失败 → 事务 failed，现场干净）
-        plans = []
         try:
-            for group in group_specs(removal_specs):
-                spec0 = group[0]
-                dst = target / spec0.destination_path
-                pre_bytes, pre_mode = _read_container(dst)
-                content = build_removal_content(target, group, pre_bytes)
-                kind = "delete" if content is None else "replace"
-                step = CommitStep(
-                    spec_id=spec0.id,
-                    spec_ids=tuple(s.id for s in group),
-                    kind=kind,
-                    pre_container_hash=(hashlib.sha256(pre_bytes).hexdigest()
-                                       if pre_bytes is not None else None),
-                    post_container_hash=(hashlib.sha256(content).hexdigest()
-                                        if content is not None else None),
-                    pre_mode=pre_mode)
-                mode = pre_mode if pre_mode is not None else (spec0.expected_mode or 0o644)
-                plans.append((step, content, mode, group))
+            plans, manifest_step, manifest_content = \
+                _build_removal_plan(target, removal_specs, manifest, residual)
         except (OSError, ValueError) as e:
-            print(f"✗ 卸载中止：plan 阶段读取容器失败（目标被外部修改？）: {e}")
+            print(f"✗ 卸载中止：plan 阶段读取容器失败: {e}")
             tx.status = "failed"
             tx.write(target)
             return 1
 
-        # Manifest 的最后一步按残留集决定（§13 步骤 5）
-        reduced = reduced_manifest(manifest, [e for e, _ in residual])
-        reduced_bytes = manifest_payload_bytes(reduced)
-        m_pre_bytes, m_pre_mode = _read_container(
-            target / STATE_REGISTRY[MANIFEST_SPEC_ID].destination_path)
-        manifest_step = CommitStep(
-            spec_id=MANIFEST_SPEC_ID,
-            spec_ids=(MANIFEST_SPEC_ID,),
-            kind="delete" if not residual else "replace",
-            pre_container_hash=(hashlib.sha256(m_pre_bytes).hexdigest()
-                                if m_pre_bytes is not None else None),
-            post_container_hash=(None if not residual
-                                 else hashlib.sha256(reduced_bytes).hexdigest()),
-            pre_mode=m_pre_mode)
-        manifest_content = None if not residual else reduced_bytes
-
-        # ★ 完整 plan 一次性原子写入 → staging → staged 落盘 → validate → backup
-        tx.plan = [p[0] for p in plans] + [manifest_step]
-        tx.write(target)
-        tx.status = "staging"
-        tx.write(target)
-        for step, content, mode, group in plans:
-            if step.kind == "replace":
-                stage_resource(target, step.spec_id, tx.tx_id, content, mode=mode)
-        if manifest_step.kind == "replace":
-            stage_resource(target, MANIFEST_SPEC_ID, tx.tx_id,
-                           manifest_content, mode=0o600)
-        for step, content, mode, group in plans:
-            if not backup_container(target, step, tx.tx_id):
-                print(f"✗ 卸载中止：备份失败（目标在 plan 后被修改）: {step.spec_id}")
-                cleanup_staging(target, tx)
-                tx.status = "failed"
-                tx.write(target)
-                return 1
-        if not backup_container(target, manifest_step, tx.tx_id):
-            print("✗ 卸载中止：Manifest 备份失败")
-            cleanup_staging(target, tx)
-            tx.status = "failed"
-            tx.write(target)
+        if not _stage_and_backup(target, tx, plans, manifest_step, manifest_content):
             return 1
 
-        # 步骤 5.5：外部链接移除（意图先行——写序不变量 3）
-        link_reports: list[str] = []
-        assert codex_root_cli is not None or not external_specs, \
-            "codex_link 无 --codex-root 时不会有待移除链接（§5 返回 None → 残留集）"
-        for spec in external_specs:
-            step = plan_external_removal(target, codex_root_cli, spec)
-            if step.prior_state != "pointing_to_target":
-                # absent / other：只记录，不 unlink
-                step.state = "removed"
-                tx.external.append(step)
-                tx.write(target)
-                link_reports.append(
-                    f"• {spec.id}: prior_state={step.prior_state}，未触碰")
-                continue
-            tx.external.append(step)          # a. intent 先落盘 + fsync
-            tx.write(target)
-            try:
-                execute_external_removal(target, step)   # b. unlink + fsync(parent)
-            except OSError as e:
-                # 补偿本次已删除链接；失败 → needs_human
-                failures = restore_external_links(target, tx)
-                if failures:
-                    tx.status = "needs_human"
-                    tx.detail = f"外部步骤删除失败且补偿失败: {e}; {failures}"
-                    tx.write(target)
-                    print(f"✗ {tx.detail}")
-                    return 1
-                tx.status = "failed"
-                tx.write(target)
-                print(f"✗ 外部链接删除失败（已补偿，可安全重试）: {e}")
-                return 1
-            step.state = "removed"            # c. 记完成
-            tx.write(target)
-            link_reports.append(f"✓ 已移除 Codex workspace 技能链接 {spec.id}")
-
-        # 步骤 6：Commit（state.manifest 的 delete/replace 是最后一个提交步骤）
-        tx.status = "committing"
-        tx.write(target)
-        committed = 0
-        for step, *_ in plans:
-            result = commit_one(target, step, tx.tx_id)
-            if result.status != "committed":
-                print(f"✗ 卸载 commit 失败: {step.spec_id}: "
-                      f"{result.detail or result.status}——自动恢复现场")
-                rr2 = recover(target)
-                print(f"• 恢复结果: {rr2.status} {rr2.detail or ''}".rstrip())
-                return 1
-            committed += 1
-            tx.write(target)
-        result = commit_one(target, manifest_step, tx.tx_id)
-        if result.status != "committed":
-            print(f"✗ Manifest 步骤 commit 失败: {result.detail or result.status}")
-            rr2 = recover(target)
-            print(f"• 恢复结果: {rr2.status} {rr2.detail or ''}".rstrip())
+        link_reports = _remove_external_links(target, tx, external_specs, codex_root_cli)
+        if link_reports is None:
             return 1
 
-        # 步骤 7：收尾
+        committed = _commit_removal(target, tx, plans, manifest_step)
+        if committed is None:
+            return 1
+
         tx.status = "done"
         tx.write(target)
         cleanup_staging(target, tx)
         _cleanup_empty_dirs(target, [g for _, _, _, g in plans])
-        # marker 的清理：codex_root 可解析（CLI 或 marker 本身）= 链接已处理过
         for line in cleanup_legacy_state(target, remove_marker=True):
             print(f"  {line}")
     finally:
         os.close(lock_fd)
 
-    # 卸载报告
+    _uninstall_report(committed, link_reports, residual)
+    return 0
+
+
+def _read_manifest_locked(target):
+    """锁内读取 Manifest（P2 回归：锁外读取会与并发安装竞态）。"""
+    try:
+        manifest = read_manifest(target)
+    except ManifestCorruptError as e:
+        print(f"✗ 安装清单损坏，拒绝卸载: {e}")
+        return None
+    if manifest is None:
+        print("没有安装清单，无法安全卸载。请运行 doctor 查看现状；若确为 kit 旧版本"
+              "产物，先运行 install.py --adopt-legacy（§18）重建清单后再卸载。")
+        return None
+    return manifest
+
+
+def _resolve_codex_root(target, codex_root_cli):
+    if codex_root_cli is None:
+        marker_root = read_codex_workspace_marker(target)
+        if marker_root is not None:
+            codex_root_cli = marker_root
+            print(f"提示: 使用已记录的 Codex workspace: {marker_root}"
+                  f"（来自 .repo-memory-kit/codex-workspace-root）")
+    return codex_root_cli
+
+
+def _uninstall_report(committed, link_reports, residual):
     print(f"✓ 已移除 {committed} 个资源组")
     for line in link_reports:
         print(f"  {line}")
@@ -438,8 +465,7 @@ def run_uninstall(target: Path, *, codex_root_cli: Path | None = None) -> int:
             print(f"  - {entry.spec_id}: {reason}")
     else:
         print("• Manifest 已删除（完整卸载）")
-    print("卸载完成。用户数据（README.md 索引、记忆条目、.anchors.json、容器文件）未触碰。")
-    return 0
+    print("卸载完成。用户数据（记忆条目、容器文件）未触碰。")
 
 
 def _cleanup_empty_dirs(target: Path, groups: list[list[ResourceSpec]]) -> None:

@@ -397,7 +397,8 @@ def ensure_codex_links(target: Path, codex_root: Path,
 
 def run_install(target: Path, *, repair: bool = False,
                 codex_root: Path | None = None,
-                dry_run: bool = False) -> int:
+                dry_run: bool = False,
+                lightweight: bool = False) -> int:
     target = target.resolve()
     if not target.is_dir():
         print(f"✗ 目标目录不存在: {target}")
@@ -507,6 +508,17 @@ def run_install(target: Path, *, repair: bool = False,
                                         codex_root)
         write_manifest_atomic(target, new_manifest)
         legacy_reports = cleanup_legacy_state(target)     # v1 清单/marker 退役清理
+
+        # 步骤 11.5：治理 profile 标记（lightweight 模式下 repo-delivery/delivery-gate
+        # 可跳过非高风险变更的正式回执要求——见 delivery-gate 技能「治理等级」节）
+        from .registry import secure_open as _so, write_all as _wa
+        gov_fd = _so(target, ".repo-memory-kit/governance",
+                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        try:
+            _wa(gov_fd, ("lightweight\n" if lightweight else "strict\n").encode())
+            os.fsync(gov_fd)
+        finally:
+            os.close(gov_fd)
 
         # 步骤 12：done
         tx.status = "done"
