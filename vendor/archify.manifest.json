@@ -1,0 +1,11 @@
+{
+  "source": "https://github.com/tt-a1i/archify",
+  "upstream_commit": "30fd4632b41ee147c1796111665022c63d93d176",
+  "version": "2.17.0-dev.1",
+  "locked": "2026-09-15",
+  "skill_dir": "archify/",
+  "license": "MIT",
+  "snapshot_note": "上游 archify/ 子目录完整快照（剔除上游测试目录 test/——SKILL.md 工作流不引用）；registry 生成 specs 前校验聚合哈希，不符拒绝安装",
+  "file_count": 82,
+  "snapshot_sha256": "8ea24a21d36269a415f7b3086d387891edb4a5cdf9673e3ab33e13aae992e412"
+}

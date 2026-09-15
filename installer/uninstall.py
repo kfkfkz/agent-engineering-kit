@@ -38,6 +38,7 @@ from .registry import (
     secure_rmdir,
 )
 from .install import _read_container, group_specs
+from . import platform as _plat
 from .transaction import (
     CommitStep,
     ExternalStep,
@@ -185,8 +186,10 @@ def plan_external_removal(target: Path, codex_root_cli: Path,
     step = ExternalStep(spec_id=spec.id, skill_name=spec.link_skill_name,
                         codex_root=str(codex_root_cli), prior_state="absent")
 
+    step.operation = "remove"
     # 符号链接判定（POSIX 默认）
     if link.is_symlink():
+        step.strategy = "symlink"
         if os.readlink(link) == str(expected):
             step.prior_state = "pointing_to_target"
         else:
@@ -201,9 +204,11 @@ def plan_external_removal(target: Path, codex_root_cli: Path,
     if not source_md.is_file():
         return step                                  # 源已不存在
     import hashlib as _h
-    if _h.sha256(skill_md.read_bytes()).hexdigest() == \
-       _h.sha256(source_md.read_bytes()).hexdigest():
+    src_hash = _h.sha256(source_md.read_bytes()).hexdigest()
+    if _h.sha256(skill_md.read_bytes()).hexdigest() == src_hash:
         step.prior_state = "content_matches"         # 复制的 kit 内容
+        step.strategy = "copy"
+        step.expected_hash = src_hash                # 血统凭证——崩溃恢复时 kit 源可能已删
     else:
         step.prior_state = "other"                   # 被用户修改
     return step
@@ -221,7 +226,7 @@ def safe_unlink_external_link(link: Path, expected_target: str) -> None:
     隔离名确定性（.kit-iso-{basename}），崩溃后可被 recover 扫描到。"""
     from .atomic import rename_noreplace
     parent_fd = os.open(link.parent,
-                        os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
+                        os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_DIRECTORY)
     iso_name = f".kit-iso-{link.name}"
     try:
         # 0. 清理上次中断的孤儿（确定性同名隔离）
@@ -293,27 +298,34 @@ def _resolve_orphan(parent_fd: int, iso_name: str,
 
 
 def execute_external_removal(target: Path, step: ExternalStep) -> None:
-    """安全删除外部资源：符号链接（rename 隔离）或复制文件（hash 校验后删）。"""
+    """安全删除外部资源：符号链接（rename 隔离）或复制文件（hash 校验后
+    逐文件删除，只删受管 SKILL.md，空目录才 rmdir——绝不 rmtree 可能混入
+    用户文件的目录）。"""
+    import hashlib as _h
     link_spec = CodexLinkSpec(skill_name=step.skill_name)
     link_spec.validate(Path(step.codex_root), target)
     link = link_spec.derive_link_path(Path(step.codex_root))
     expected = link_spec.derive_target_path(target)
 
     if step.prior_state == "content_matches":
-        # 复制模式：删除整个技能目录（只含 SKILL.md）
+        # 复制模式：只删内容与 kit 源一致的受管 SKILL.md；
+        # 目录中存在任何其他内容 → 保留目录（用户文件），只报告受管文件已删
         skill_md = link / "SKILL.md"
         source_md = expected / "SKILL.md"
-        if skill_md.is_file():
-            import hashlib as _h
-            src_hash = (_h.sha256(source_md.read_bytes()).hexdigest()
-                        if source_md.is_file() else None)
-            dst_hash = (_h.sha256(skill_md.read_bytes()).hexdigest()
-                        if skill_md.is_file() else None)
-            if src_hash and dst_hash and src_hash == dst_hash:
-                import shutil as _shutil
-                _shutil.rmtree(link)     # 复制模式：删除整个目录
-                return
-        raise OSError(f"复制的技能内容已被修改，拒绝删除: {skill_md}")
+        if not skill_md.is_file():
+            return                              # 已不存在（崩溃重放/用户已删）
+        if not source_md.is_file():
+            raise OSError(f"kit 源文件缺失，无法校验副本内容: {source_md}")
+        src_hash = _h.sha256(source_md.read_bytes()).hexdigest()
+        dst_hash = _h.sha256(skill_md.read_bytes()).hexdigest()
+        if src_hash != dst_hash:
+            raise OSError(f"复制的技能内容已被修改，拒绝删除: {skill_md}")
+        skill_md.unlink()
+        try:
+            link.rmdir()                        # 仅空目录可删——用户文件则保留
+        except OSError:
+            pass
+        return
 
     # 符号链接模式
     expected_str = str(expected)
@@ -422,12 +434,13 @@ def _fail_tx(target, tx):
 
 
 def _remove_external_links(target: Path, tx, external_specs, codex_root_cli):
-    """步骤 5.5：外部链接移除（意图先行——写序不变量 3）。返回 link_reports 或 None=失败。"""
+    """步骤 5.5：外部链接移除（意图先行——写序不变量 3）。返回 link_reports 或 None=失败。
+    符号链接与复制模式都真实执行——copy 不再是"未触碰"的 no-op（P1 修复）。"""
     link_reports = []
     assert codex_root_cli is not None or not external_specs
     for spec in external_specs:
         step = plan_external_removal(target, codex_root_cli, spec)
-        if step.prior_state != "pointing_to_target":
+        if step.prior_state not in ("pointing_to_target", "content_matches"):
             step.state = "removed"
             tx.external.append(step)
             tx.write(target)
@@ -451,7 +464,10 @@ def _remove_external_links(target: Path, tx, external_specs, codex_root_cli):
             return None
         step.state = "removed"
         tx.write(target)
-        link_reports.append(f"✓ 已移除 Codex workspace 技能链接 {spec.id}")
+        if step.prior_state == "content_matches":
+            link_reports.append(f"✓ 已删除 Codex workspace 技能副本 {spec.id}")
+        else:
+            link_reports.append(f"✓ 已移除 Codex workspace 技能链接 {spec.id}")
     return link_reports
 
 
@@ -591,6 +607,12 @@ def _cleanup_empty_dirs(target: Path, groups: list[list[ResourceSpec]]) -> None:
                 parent = str(PurePosixPath(spec.destination_path).parent)
                 if parent.startswith((".claude/skills/", ".agents/skills/")):
                     candidates.add(parent)
+    # 祖先链纳入（archify 集成：嵌套目录树——文件全在深层时中间层从不在
+    # 任何文件的 parent 集合里，必须显式扩展才能逐层清空；.claude/skills 本身保留）
+    for rel in list(candidates):
+        parts = rel.split("/")
+        for i in range(3, len(parts)):
+            candidates.add("/".join(parts[:i]))
     candidates.update({".repo-memory-kit/bin", ".repo-memory-kit/tx", ".repo-memory-kit"})
     # 深度优先：先删子目录再尝试父目录
     for rel in sorted(candidates, key=lambda r: -r.count("/")):

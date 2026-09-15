@@ -13,7 +13,6 @@ zvec rebuild 不取 install.lock（派生数据，有自己的 rebuild.lock，§
 """
 from __future__ import annotations
 
-import fcntl
 import gc
 import hashlib
 import json
@@ -129,6 +128,7 @@ def compute_corpus_hash(docs: list[dict]) -> str:
 
 def rebuild(repo: Path) -> None:
     """§15.2 重建流程（rebuild.lock 进程锁；generation 原子发布）。"""
+    from . import platform as _plat
     from .registry import (secure_mkdir, secure_open, secure_replace,
                            secure_unlink, fsync_dir, write_all)
 
@@ -149,7 +149,7 @@ def rebuild(repo: Path) -> None:
     lock_fd = secure_open(repo, f"{ZVEC_REL}/rebuild.lock",
                           os.O_WRONLY | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _plat.lock_exclusive_nb(lock_fd)
     except BlockingIOError:
         os.close(lock_fd)
         sys.exit("另一个 rebuild 正在运行")
@@ -284,15 +284,16 @@ def open_current_generation(repo: Path, retries: int = 3):
     返回 (gen_dir, lock_fd)；查询期间保持 fd 打开，结束后 close（即释放）。
     "数据在"的判定用 .metadata.json（发布标记，与 .lock 同批创建）——
     zvec 0.7.0 的 RocksDB 布局没有设计稿所称的 _data.db 单文件。"""
+    from . import platform as _plat
     for _ in range(retries):
         gen_dir = read_current(repo)                 # pointer 校验（UUID + 逃逸检查）
         lock_file = gen_dir / ".lock"
         try:
-            fd = os.open(lock_file, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(lock_file, os.O_RDONLY | _plat.O_NOFOLLOW)
         except FileNotFoundError:
             continue                                 # 正被回收 → 重读 pointer
         try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            _plat.lock_shared_nb(fd)
         except BlockingIOError:
             os.close(fd)
             continue                                 # 清理方持 EX → 重读 pointer
@@ -305,6 +306,7 @@ def open_current_generation(repo: Path, retries: int = 3):
 def cleanup_old_generations(zvec_dir: Path, keep: int, min_age_seconds: int) -> None:
     """删除前必须对该 generation 的 .lock 取排他锁：取不到 = 有 reader 在用 → 跳过。
     min_age（第二道防线）之后仍会再次尝试，但正确性不依赖它。"""
+    from . import platform as _plat
     from .registry import SecurityError, validate_tx_id
     pointer = json.loads((zvec_dir / "current.json").read_text())
     current_name = pointer.get("generation", "")
@@ -328,11 +330,11 @@ def cleanup_old_generations(zvec_dir: Path, keep: int, min_age_seconds: int) -> 
             continue
         lock_file = g / ".lock"
         try:
-            fd = os.open(lock_file, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(lock_file, os.O_RDONLY | _plat.O_NOFOLLOW)
         except OSError:
             continue
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _plat.lock_exclusive_nb(fd)
         except BlockingIOError:
             os.close(fd)
             continue

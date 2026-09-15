@@ -188,14 +188,19 @@ def _glob_match(path: str, pattern: str) -> bool:
     return fnmatch.fnmatch(path, pattern)
 
 
-def _get_changed_files(repo: Path) -> list[str]:
-    """获取 git 变更的文件列表（工作区 + 最近提交）。"""
+def _get_changed_files(repo: Path, base: str | None = None) -> list[str]:
+    """获取 git 变更的文件列表。
+
+    base 给定时：diff base..HEAD + 工作区（多提交任务不漏改动）。
+    缺省：工作区 + 最近一次提交（旧行为）。
+    """
     files = set()
-    for cmd in [
-        ["git", "-C", str(repo), "diff", "--name-only", "HEAD"],
-        ["git", "-C", str(repo), "diff", "--name-only", "HEAD~1..HEAD"],
-        ["git", "-C", str(repo), "log", "-1", "--name-only", "--format="],
-    ]:
+    cmds = [["git", "-C", str(repo), "diff", "--name-only", "HEAD"]]
+    if base:
+        cmds.append(["git", "-C", str(repo), "diff", "--name-only", f"{base}..HEAD"])
+    else:
+        cmds.append(["git", "-C", str(repo), "diff", "--name-only", "HEAD~1..HEAD"])
+    for cmd in cmds:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
@@ -205,6 +210,32 @@ def _get_changed_files(repo: Path) -> list[str]:
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
     return sorted(files)
+
+
+def _new_test_files(repo: Path, base: str | None = None) -> list[str]:
+    """diff 中**新增**的测试文件（不是任何名字带 test 的文件——
+    P2 修复：存量测试文件与『测试方案.md』类文档不算回归测试）。"""
+    import re
+    new_files: list[str] = []
+    for ref in ([f"{base}..HEAD"] if base else ["HEAD~1..HEAD"]):
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=A", ref],
+                capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                new_files += [l.strip() for l in r.stdout.split("\n") if l.strip()]
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=A", "HEAD"],
+            capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            new_files += [l.strip() for l in r.stdout.split("\n") if l.strip()]
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    pattern = re.compile(r"(^|/)(tests?)(/|_)|[_-]test\.[a-z]+$|^test_|Test\.[a-z]+$")
+    return [f for f in set(new_files) if pattern.search(f)]
 
 
 def _check_artifacts(repo: Path, patterns: list[str]) -> tuple[bool, list[str]]:
@@ -239,9 +270,11 @@ def evaluate_change_precision(
 
     precision = allowed∩actual / actual
     同时检查 forbidden violations。
+    无变更 = 0.0（P2 修复：代码任务零改动不是完美精准，是无产出——
+    此前误给 1.0）。
     """
     if not changed_files:
-        return 1.0, [], []  # 没改动 = 无违规
+        return 0.0, [], []  # 无变更记录 = 无产出（非满分）
 
     allowed = []
     unexpected = []
@@ -257,15 +290,12 @@ def evaluate_change_precision(
         else:
             unexpected.append(f)
 
-    if not changed_files:
-        precision = 1.0
-    else:
-        precision = len(allowed) / len(changed_files)
-
+    precision = len(allowed) / len(changed_files)
     return precision, unexpected, forbidden
 
 
-def evaluate_evidence_chain(repo: Path, scenario: Scenario) -> dict[str, bool]:
+def evaluate_evidence_chain(repo: Path, scenario: Scenario,
+                            base: str | None = None) -> dict[str, bool]:
     """检查证据链完整性。"""
     checks = {
         "has_design_doc": False,
@@ -290,42 +320,57 @@ def evaluate_evidence_chain(repo: Path, scenario: Scenario) -> dict[str, bool]:
         found, _ = _check_artifacts(repo, ["docs/delivery-receipts/*.md"])
         checks["has_receipt"] = found
 
-    # 回归测试（diff 中有新增的测试文件）
-    changed = _get_changed_files(repo)
-    checks["has_regression_test"] = any(
-        "test" in f.lower() or "spec" in f.lower() for f in changed)
+    # 回归测试（diff 中**新增**的测试文件——P2 修复：不是任何名字含 test 的文件）
+    checks["has_regression_test"] = bool(_new_test_files(repo, base))
 
     return checks
 
 
 def evaluate_memory_usage(
-        repo: Path, scenario: Scenario) -> tuple[bool, bool]:
-    """检查记忆引用（不是"有没有调用"，而是"有没有实际引用"）。"""
+        repo: Path, scenario: Scenario,
+        base: str | None = None) -> tuple[bool, bool]:
+    """检查记忆引用：与场景**期望的记忆条目**求交（第七轮审计 P2：引用任意
+    无关条目即满分是骗分）——referenced = 引用了场景期望的条目且其存在；
+    consistent = 命中条目正文含决策关键词，且变更文件中也体现。"""
     if not scenario.memory_entry_path:
         return False, False
 
-    # 检查回执或设计文档中是否引用了记忆条目
+    import glob as _glob
+    import re as _re
+
+    # 场景期望的条目（glob 展开为磁盘上存在的集合）
+    expected = {str(p.relative_to(repo)).replace(os.sep, "/")
+                for p in _glob.glob(str(repo / scenario.memory_entry_path),
+                                    recursive=True)}
+
     receipt_files = list((repo / "docs" / "delivery-receipts").glob("*.md")) if \
         (repo / "docs" / "delivery-receipts").is_dir() else []
     design_files = list((repo / "docs" / "01-需求").rglob("*.md")) if \
         (repo / "docs" / "01-需求").is_dir() else []
 
     referenced = False
-    consistent = False
-    keyword = scenario.memory_keyword
-
+    matched_entries: list[Path] = []
     for f in receipt_files + design_files:
         try:
             text = f.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             continue
-        # 引用检查：提到了记忆路径或相关关键词
-        if scenario.memory_keyword and scenario.memory_keyword in text:
-            referenced = True
-        # 一致性检查：决策与记忆条目一致（关键词在 diff 文件中出现）
-        if keyword:
-            changed = _get_changed_files(repo)
-            for cf in changed:
+        for m in _re.finditer(r"docs/memory/[^\s\)\]】》\|，,；;]+\.md", text):
+            rel = m.group(0)
+            if rel in expected:
+                referenced = True
+                p = repo / rel
+                if p.is_file() and p not in matched_entries:
+                    matched_entries.append(p)
+
+    consistent = False
+    keyword = scenario.memory_keyword
+    if referenced and keyword:
+        # 关键词须出现在**命中的记忆条目正文**（决策确实来自该记忆）
+        in_entry = any(keyword in p.read_text(encoding="utf-8", errors="ignore")
+                       for p in matched_entries)
+        if in_entry:
+            for cf in _get_changed_files(repo, base):
                 full = repo / cf
                 if full.is_file():
                     try:
@@ -353,7 +398,8 @@ def run_tests(repo: Path, command: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-def evaluate_scenario(repo: Path, scenario: Scenario) -> BenchmarkResult:
+def evaluate_scenario(repo: Path, scenario: Scenario,
+                       base: str | None = None) -> BenchmarkResult:
     """对一个场景做完整评测。"""
     result = BenchmarkResult(scenario_id=scenario.id)
 
@@ -363,7 +409,7 @@ def evaluate_scenario(repo: Path, scenario: Scenario) -> BenchmarkResult:
     result.task_detail = detail
 
     # Evidence Completeness
-    evidence = evaluate_evidence_chain(repo, scenario)
+    evidence = evaluate_evidence_chain(repo, scenario, base)
     result.has_design_doc = evidence["has_design_doc"]
     result.has_test_plan = evidence["has_test_plan"]
     result.has_receipt = evidence["has_receipt"]
@@ -371,7 +417,7 @@ def evaluate_scenario(repo: Path, scenario: Scenario) -> BenchmarkResult:
     result.evidence_score = sum(evidence.values()) / 4 if evidence else 0
 
     # Change Precision
-    changed = _get_changed_files(repo)
+    changed = _get_changed_files(repo, base)
     result.actual_changed = changed
     precision, unexpected, forbidden = evaluate_change_precision(changed, scenario)
     result.precision_score = precision
@@ -379,7 +425,7 @@ def evaluate_scenario(repo: Path, scenario: Scenario) -> BenchmarkResult:
     result.forbidden_violations = forbidden
 
     # Memory Utilization
-    referenced, consistent = evaluate_memory_usage(repo, scenario)
+    referenced, consistent = evaluate_memory_usage(repo, scenario, base)
     result.memory_referenced = referenced
     result.memory_consistent = consistent
     result.memory_score = (int(referenced) + int(consistent)) / 2 if scenario.memory_keyword else 0
@@ -426,6 +472,7 @@ def main():
     ap.add_argument("--scenario", help="场景 ID（crud-add-field / bug-fix-regression / refactor-no-scope-creep）")
     ap.add_argument("--compare", nargs=2, metavar=("VANILLA", "KIT"),
                     help="对比两个仓库的结果")
+    ap.add_argument("--base", help="diff 基线 ref（多提交任务不漏改动；缺省=工作区+最近提交）")
     ap.add_argument("--json", action="store_true", help="输出 JSON 格式")
     args = ap.parse_args()
 
@@ -437,8 +484,8 @@ def main():
         if not scenario:
             print(f"✗ 未知场景: {args.scenario}")
             return 1
-        v_result = evaluate_scenario(vanilla_repo, scenario)
-        k_result = evaluate_scenario(kit_repo, scenario)
+        v_result = evaluate_scenario(vanilla_repo, scenario, args.base)
+        k_result = evaluate_scenario(kit_repo, scenario, args.base)
         print(compare_results(v_result, k_result))
         return 0
 
@@ -452,7 +499,7 @@ def main():
         print(f"✗ 未知场景: {args.scenario}")
         return 1
 
-    result = evaluate_scenario(Path(args.repo), scenario)
+    result = evaluate_scenario(Path(args.repo), scenario, args.base)
     if args.json:
         print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
     else:

@@ -160,19 +160,33 @@ def try_shared_lock(root: Path, rel: str):
     return _SharedLock()
 
 
+# ══════════════════════════ fd 级锁原语 ══════════════════════════
+
+def lock_exclusive_nb(fd: int) -> None:
+    """排他非阻塞锁（fcntl.flock）。冲突抛 BlockingIOError。"""
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def lock_shared_nb(fd: int) -> None:
+    """共享非阻塞锁。冲突抛 BlockingIOError。"""
+    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+
+
+def unlock_fd(fd: int) -> None:
+    """释放锁（flock 随 fd 关闭释放；显式解锁尽力）。"""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
 # ══════════════════════════ secure_* 家族（POSIX dir_fd 实现） ══════════════════════════
 # 路径校验（validate_relative_path）由 registry.py 调用方完成后再委托到这里。
 
 def _validate_rel(rel: str) -> Path:
-    """轻量路径校验（不依赖 registry——避免循环导入）。
-    与 registry.validate_relative_path 逻辑一致但独立实现。"""
-    from pathlib import PurePosixPath
-    p = PurePosixPath(rel)
-    if p.is_absolute() or not p.parts:
-        raise ValueError(f"secure_* 只接受非空相对路径: {rel!r}")
-    if any(part == ".." for part in p.parts):
-        raise ValueError(f"路径含 .. 组件: {rel!r}")
-    return Path(rel)
+    """轻量路径校验——委托 platform/pathcheck 唯一校验器。"""
+    from .pathcheck import validate_relative_rel
+    return validate_relative_rel(rel)
 
 
 def secure_walk_dir_fd(target: Path, dir_rel: str) -> int:

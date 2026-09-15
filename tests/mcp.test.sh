@@ -16,41 +16,59 @@ python3 -m installer "$P" >/dev/null 2>&1
 MCP="$P/.repo-memory-kit/bin/agent-engineering-mcp"
 [ -f "$MCP" ] || { echo "✗ MCP 服务器未安装"; exit 1; }
 
-# JSON-RPC 辅助函数
-mcp_rpc() {  # $1=请求 JSON → 输出响应 JSON（或空=通知）
-    printf '%s\n' "$1" | python3 "$MCP" "$P" 2>/dev/null
+# JSON-RPC 辅助函数（第七轮审计：initialize 成功前拒绝业务调用——
+# 每次调用先握手；输出取**最后一个** JSON 响应）
+INIT='{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}'
+mcp_rpc() {  # $1=请求 JSON → 输出最后一个响应（或空=通知）
+    printf '%s\n%s\n' "$INIT" "$1" | python3 "$MCP" "$P" 2>/dev/null | tail -1
 }
 mcp_rpc_multi() {  # $1=请求1 $2=请求2 → 输出合并响应
-    { printf '%s\n%s\n' "$1" "$2"; } | python3 "$MCP" "$P" 2>/dev/null
+    { printf '%s\n%s\n%s\n' "$INIT" "$1" "$2"; } | python3 "$MCP" "$P" 2>/dev/null
 }
 
 # ── T1 initialize + 版本协商 ──
-# T1a: 无版本参数 → 默认版本
-RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}')
+# T1a: 合法 initialize → 服务器信息 + 能力
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"ping"}')
+[ -n "$RESP" ] && ok "T1a 前置：合法 initialize 后连接可用" || bad "T1a 前置失败: $RESP"
+
+# T1a-2: initialize 缺必填参数（params={}）→ -32602（2025-11-25 schema 必填
+#        protocolVersion/capabilities/clientInfo——第七轮审计 P2）
+RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | python3 "$MCP" "$P" 2>/dev/null)
 printf '%s\n' "$RESP" | python3 -c "
 import json,sys; r=json.load(sys.stdin)
-res=r['result']
-assert res['protocolVersion']=='2026-07-28'  # 无参数→默认
-assert res['serverInfo']['name']=='agent-engineering-kit'
-assert 'tools' in res['capabilities']
-" && ok "T1a initialize（默认版本 2026-07-28）" || bad "T1a: $RESP"
+assert r['error']['code']==-32602
+" && ok "T1a-2 initialize 缺必填参数 → -32602" || bad "T1a-2: $RESP"
+
+# T1a-3: 初始化前调用业务方法 → -32002
+RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | python3 "$MCP" "$P" 2>/dev/null)
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['error']['code']==-32002
+" && ok "T1a-3 初始化前调用 → -32002" || bad "T1a-3: $RESP"
+
+# T1a-4: 初始化前 ping 仍可用（无状态健康检查）
+RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"ping"}' | python3 "$MCP" "$P" 2>/dev/null)
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['result']=={}
+" && ok "T1a-4 初始化前 ping 放行" || bad "T1a-4: $RESP"
 
 # T1b: 客户端发送支持版本 → 回显
-RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}')
+RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' | python3 "$MCP" "$P" 2>/dev/null)
 printf '%s\n' "$RESP" | python3 -c "
 import json,sys; r=json.load(sys.stdin)
 assert r['result']['protocolVersion']=='2025-06-18'  # 回显
 " && ok "T1b 版本协商：回显客户端版本" || bad "T1b: $RESP"
 
 # T1c: 客户端发送未知版本 → 默认版本
-RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}')
+RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' | python3 "$MCP" "$P" 2>/dev/null)
 printf '%s\n' "$RESP" | python3 -c "
 import json,sys; r=json.load(sys.stdin)
-assert r['result']['protocolVersion']=='2026-07-28'  # 不认识→默认
+assert r['result']['protocolVersion']=='2025-11-25'  # 不认识→默认
 " && ok "T1c 版本协商：未知版本→默认" || bad "T1c: $RESP"
 
 # T1d: 旧版本 2024-11-05 → 回显（向后兼容）
-RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}')
+RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}' | python3 "$MCP" "$P" 2>/dev/null)
 printf '%s\n' "$RESP" | python3 -c "
 import json,sys; r=json.load(sys.stdin)
 assert r['result']['protocolVersion']=='2024-11-05'  # 旧版也支持
@@ -112,8 +130,8 @@ assert r['error']['code']==-32601
 " && ok "未知方法 → -32601" || bad "方法错误码异常: $RESP"
 
 # ── T8 通知（无 id）→ 无响应 ──
-RESP=$(mcp_rpc '{"jsonrpc":"2.0","method":"notifications/initialized"}')
-[ -z "$RESP" ] && ok "通知无响应" || bad "通知产生了响应: $RESP"
+N_RESP=$(printf '%s\n%s\n' "$INIT" '{"jsonrpc":"2.0","method":"notifications/initialized"}' | python3 "$MCP" "$P" 2>/dev/null | grep -c '"jsonrpc"')
+[ "$N_RESP" = "1" ] && ok "通知无响应（仅前置 initialize 一条）" || bad "通知产生了响应: $N_RESP 条"
 
 # ── T9 ping ──
 RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":9,"method":"ping"}')

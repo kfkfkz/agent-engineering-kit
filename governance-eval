@@ -1,22 +1,36 @@
-"""governance.py — 确定性治理策略引擎。
+#!/usr/bin/env python3
+"""governance-eval — 确定性治理策略引擎（从 installer/governance.py 迁入并布线）。
 
 读取 governance.json 中的结构化规则，对 git diff 做机械匹配。
 Skill 可以建议风险等级，但本引擎是**唯一裁决者**——只认 diff + 规则 + 证据。
 
-核心原则：
+架构原则（与 doc-gate 同一哲学：Agent 是 sensor，引擎是 judge）：
 1. 扫描 diff 的新增/修改行（不扫全文件——存量代码不应触发）
 2. 删除的文件也参与匹配（删掉 security/ 同样触发）
 3. 每条规则独立判定，输出命中的规则 ID 和需要补的 action
 4. Agent 拿到的是"哪条规则命中、还缺什么"，不是模糊的"gate failed"
+
+用法:
+  git diff | governance-eval [仓库根目录]              # 人类可读摘要
+  governance-eval [仓库根目录] --diff <file> --json   # 机器可读（CI/delivery-gate）
+
+退出码: 0 = 评估完成（判定结果在输出里，本工具只评估不拦截）；
+       3 = 环境/用法错误。
 """
 from __future__ import annotations
 
+import argparse
 import fnmatch
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+class PolicyError(Exception):
+    """策略文件非法（fail-closed：阻断评估而非静默跳过）。"""
 
 
 @dataclass
@@ -45,13 +59,28 @@ class GovernanceResult:
 
     @property
     def needs_formal_receipt(self) -> bool:
-        """True = 需要正式回执文件。"""
-        return "receipt" in self.required_actions or "independent_review" in self.required_actions
+        """True = 需要正式回执文件（matched 规则或 default 要求均计入——
+        P1 修复：default require=receipt 时此前误报 false）。"""
+        merged = set(self.required_actions) | set(self.default_actions)
+        return "receipt" in merged or "independent_review" in merged
 
     @property
     def needs_independent_review(self) -> bool:
         """True = 需要独立审查（对抗复核）。"""
         return "independent_review" in self.required_actions
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "profile": self.profile,
+            "matched_rules": [
+                {"rule_id": m.rule_id, "files": m.matched_files, "required": m.required_actions}
+                for m in self.matched],
+            "required_actions": self.required_actions,
+            "all_actions": self.all_actions,
+            "is_inline_only": self.is_inline_only,
+            "needs_formal_receipt": self.needs_formal_receipt,
+            "needs_independent_review": self.needs_independent_review,
+        }
 
     def summary(self) -> str:
         """人类可读的治理摘要（delivery-gate 收口输出）。"""
@@ -71,16 +100,40 @@ class GovernanceResult:
         return "\n".join(lines)
 
 
+PROFILE_DEFAULTS: dict[str, list[str]] = {
+    "strict": ["receipt"],
+    "lightweight": ["inline_review"],
+}
+
+
 def load_policy(governance_path: Path) -> dict[str, Any]:
-    """读取治理策略 JSON。缺失 → 返回 strict 默认。"""
-    if not governance_path.is_file():
-        return {"version": 1, "profile": "strict",
-                "rules": [], "default": {"require": ["receipt"]}}
+    """组装策略（第七轮审计 P1：单一事实源）：
+    - profile 唯一权威 = 同目录 governance **文本 marker**（安装器每次 install
+      更新——切换 lightweight 即时生效；json 里不再存 profile）
+    - 团队规则 = governance.json（缺失 = 无规则；存在但非法 = PolicyError，fail-closed）
+    - 默认动作按 profile 派生（strict=receipt / lightweight=inline_review）"""
+    marker = governance_path.parent / "governance"
+    profile = "strict"
     try:
-        return json.loads(governance_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {"version": 1, "profile": "strict",
-                "rules": [], "default": {"require": ["receipt", "independent_review"]}}
+        if marker.is_file():
+            text = marker.read_text(encoding="utf-8").strip()
+            if text in PROFILE_DEFAULTS:
+                profile = text
+    except OSError:
+        pass
+    rules: list[dict[str, Any]] = []
+    if governance_path.is_file():
+        try:
+            data = json.loads(governance_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            raise PolicyError(f"governance.json 存在但不可解析（fail-closed）: {e}")
+        if not isinstance(data, dict):
+            raise PolicyError("governance.json 顶层必须是对象")
+        rules = data.get("rules", [])
+        if not isinstance(rules, list):
+            raise PolicyError("governance.json 的 rules 必须是数组")
+    return {"version": 1, "profile": profile, "rules": rules,
+            "default": {"require": list(PROFILE_DEFAULTS[profile])}}
 
 
 def _glob_to_regex(pattern: str) -> str:
@@ -144,10 +197,6 @@ def _added_lines(diff_text: str) -> list[tuple[str, int, str]]:
 def _deleted_files(diff_text: str) -> set[str]:
     """从 git diff 中提取被删除的文件。"""
     deleted = set()
-    for line in diff_text.split("\n"):
-        if line.startswith("diff --git") and " b/" in line:
-            pass  # 在后面检测 /dev/null
-    # 更简单的方法：--- a/file 后面跟 +++ /dev/null
     lines = diff_text.split("\n")
     for i, line in enumerate(lines):
         if line.startswith("--- a/"):
@@ -196,8 +245,11 @@ def evaluate_diff(diff_text: str, policy: dict[str, Any]) -> GovernanceResult:
         for regex_str in match_spec.get("added_lines_regex", []):
             try:
                 regex = re.compile(regex_str)
-            except re.error:
-                continue  # 无效正则跳过（策略文件问题，不崩溃）
+            except re.error as e:
+                # fail-closed：策略文件里的非法正则必须阻断评估——静默跳过
+                # 会让该规则的 required_actions 全部失效（P1 修复）
+                raise PolicyError(
+                    f"规则 {rule.get('id', 'unknown')} 的正则非法: {regex_str!r}: {e}")
             for fname, lineno, text in added:
                 if regex.search(text):
                     match.matched_lines.append((fname, lineno, text.strip()))
@@ -220,7 +272,42 @@ def evaluate_diff(diff_text: str, policy: dict[str, Any]) -> GovernanceResult:
     return result
 
 
-def evaluate(target: Path, diff_text: str) -> GovernanceResult:
-    """便捷入口：读取 governance 文件并评估 diff。"""
-    policy = load_policy(target / ".repo-memory-kit" / "governance.json")
-    return evaluate_diff(diff_text, policy)
+# ══════════════════════════ CLI ══════════════════════════
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="governance-eval",
+                                 description="确定性治理策略引擎（diff 评估）")
+    ap.add_argument("repo", nargs="?", default=".", help="目标仓库根目录（默认当前目录）")
+    ap.add_argument("--diff", help="diff 文件路径（缺省从 stdin 读）")
+    ap.add_argument("--json", action="store_true", help="机器可读输出")
+    args = ap.parse_args()
+
+    repo = Path(args.repo).resolve()
+    if args.diff:
+        try:
+            diff_text = Path(args.diff).read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"✗ 无法读取 diff 文件: {e}")
+            return 3
+    else:
+        if sys.stdin.isatty():
+            print("用法: git diff | governance-eval [仓库]   或   governance-eval --diff <file>")
+            return 3
+        diff_text = sys.stdin.read()
+
+    policy = load_policy(repo / ".repo-memory-kit" / "governance.json")
+    try:
+        result = evaluate_diff(diff_text, policy)
+    except PolicyError as e:
+        print(f"✗ 治理策略非法，评估阻断（fail-closed）: {e}")
+        return 3
+
+    if args.json:
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(result.summary())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

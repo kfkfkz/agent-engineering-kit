@@ -63,12 +63,13 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 | 场景 | Claude Code | Codex | 作用 |
 | --- | --- | --- | --- |
 | 完整功能、修复、重构、迁移 | `/repo-delivery 任务` | `$repo-delivery 任务` | 从宪章门禁推进到实现、验证和文档收口 |
+| 需求文档流水线（概要/详细/任务/测试方案） | `/design-pipeline 需求目录` | `$design-pipeline 需求目录` | Author 生成 → doc-gate 硬校验 → AI 评审 → 确定性门禁 → 冻结 |
 | 理解结构、调用链、影响面 | `/codebase-memory 问题` | `$codebase-memory 问题` | 用代码图谱取证并核验源码与索引覆盖 |
 | Bug、测试失败、异常行为 | `/systematic-debugging 问题` | `$systematic-debugging 问题` | 先复现和定位根因，再决定修复 |
 | 测试先行实现 | `/tdd 行为` | `$tdd 行为` | 按纵向切片执行 RED → GREEN → REFACTOR |
 | 新依赖、集成或技术选型 | `/reuse-research 需求` | `$reuse-research 需求` | 比较采用、扩展、组合和自建，记录证据 |
 | 漏洞与配置风险 | `/security-review 范围` | `$security-review 范围` | 检查应用数据流与 Agent 配置攻击面 |
-| 交付收口门禁 | `/delivery-gate` | `$delivery-gate` | diff 审查、对抗复核与验证闭环，结论以验证回执为证 |
+| 交付收口门禁 | `/delivery-gate` | `$delivery-gate` | diff 审查、治理引擎裁决、对抗复核与验证闭环，结论以验证回执为证 |
 | Spec Kit 迁移 | `/spec-migrate` | `$spec-migrate` | 检查/预览，增量迁移或转 SDD 目录结构 |
 | 跨会话或 Agent 交接 | `/task-handoff` | `$task-handoff` | 留下可复核、可恢复的任务状态 |
 | 巡检项目记忆 | `/memory-check` | `$memory-check` | 检查记忆与当前代码是否一致 |
@@ -99,7 +100,7 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 2. **需求拆分**：用 `codebase-memory` 找到订单查询入口、权限过滤、导出能力、调用链和受影响测试；`memory-recall` 检索相关的坑与域知识；把需求拆成功能点并列出待澄清问题。
 3. **需求确认**：把"加个导出"衍生为具体场景（如"运营在订单列表页筛选后导出当日对账单"），每个场景定义可观察产出（谁在哪个页面拿到什么）；场景与产出确认后作为验收依据；导出方式、异步任务、文件存储等会改公共契约的细节一并交用户裁决。
 4. **概要设计**：先对齐项目内同类已认可文档的骨架；功能设计按能力逐节写界面（菜单落位+原型）、前端展示清单（④接口的验收依据）与业务逻辑；需要新 CSV 组件时用 `reuse-research` 比较现有依赖、扩展点和新库。
-5. **详细设计**：产出《订单列表导出-详细设计》——每个接口、表结构、流程改动指到具体功能点；验收要点逐条溯源到场景与产出；测试与验证设计给出接缝分层与回归范围；随后过 `delivery-gate` 文档门禁（结构/字段/一致性/可验证性），发现缺漏回补后落回执。
+5. **概要设计 → 详细设计 → 任务清单 + 测试方案**：经 `design-pipeline` 产出——每个阶段过 `doc-gate` 硬校验（结构/追踪链/薄输入）+ AI 评审（独立上下文出 issues.json）+ 确定性门禁（severity 阈值判定），PASS 即冻结（哈希落盘）；发现缺漏定向修改后重新过门，连续 3 轮不达标升级人工。
 6. **任务拆分 + 编码**：`tdd` 按纵向切片推进——
    - RED：有权限的筛选结果应导出指定字段；
    - GREEN：完成最小导出链路；
@@ -188,15 +189,19 @@ systematic-debugging 根因定位
 ```text
 repo-delivery
   ├─ 读取项目指令、宪章和相关记忆
-  ├─ 判定：直接修改 / 缺陷修复 / 既有变更 / 新功能
+  ├─ 判定：直接修改 / 缺陷修复 / 既有变更 / 新功能（发现超预期影响面 → 动态升径）
   ├─ ① 需求拆分：codebase-memory + 业务域地图 + memory-recall 取证
-  ├─ ② 需求确认：衍生需求场景与产出定义（验收依据），待澄清问题交人裁决
-  ├─ ③ 概要设计：功能点（菜单/页面落位/关系）+ 交互流程 + 原型/页面内容
-  ├─ ④ 详细设计：《功能名-详细设计》（领域模型/分侧/数据库/接口/验收/测试与验证设计）
-  ├─ 设计定稿门禁：delivery-gate 文档形态（结构/字段/一致性/可验证性 + 回执）
-  ├─ ⑤ 任务拆分 → ⑥ tdd 编码与验证（systematic-debugging / security-review 按需）
-  ├─ delivery-gate：diff 审查、对抗复核与验证回执
-  └─ 回写既有设计文档，并提出记忆候选
+  ├─ ② 需求确认：原始需求（01-需求/）→ 衍生需求场景与产出定义（验收依据），
+  │   待澄清问题交人裁决；冻结时确认开发人员与上线时间（回填索引行）
+  ├─ ③④⑤ design-pipeline（03-SDD/NNN-名称/）：概要设计 → (UI设计)
+  │   → 业务流程设计（人工评审关口——通俗人读文档，嵌 UI 原型与流程图）
+  │   → 详细设计(含 API设计/数据库设计) → 任务清单+测试方案
+  │     每阶段：doc-gate 硬校验 → AI 评审(issues.json) → 确定性门禁 → 冻结
+  │     追踪链：场景 → 验收项A → 功能点F → 设计落点D → 用例TC → 任务T（全程机械校验）
+  │     每阶段通过即冻结并回填索引行的"当前功能开发阶段"列
+  ├─ ⑥ tdd 编码与验证（systematic-debugging / security-review 按需）
+  ├─ delivery-gate：governance-eval 治理裁决 + diff 审查 + 对抗复核 + 验证回执
+  └─ 线上联调清单（事实文档）+ 终稿 As-Built → 回写设计文档，提出记忆候选
 ```
 
 新功能走全链；直接修改与缺陷修复走短路，既有变更从影响面进入——不为小改动强加六道门禁。
@@ -264,9 +269,13 @@ repo-delivery
 
 覆盖两类风险：应用代码中的认证授权、注入、SSRF、路径/文件、敏感数据、支付回调与供应链；以及 Agent 指令、skills、MCP、hooks、安装脚本中的提示注入、过宽权限、秘密泄露和危险执行。HIGH/CRITICAL 必须给出可达路径，并由 `delivery-gate` 逆向验证。
 
+### design-pipeline
+
+需求文档工程流水线：从已冻结的需求.md 出发，编排 概要设计 → (UI设计) → 详细设计 → 任务清单+测试方案 的迭代式生成与评审。核心分工是 **sensor / judge 分离**——AI Reviewer（独立上下文）只产出 issues.json（无总分、无 PASS/FAIL），`doc-gate` 做全部确定性裁决（硬校验 + severity 阈值门禁）。每个阶段 PASS 即冻结（哈希落 reviews/），冻结后改动即哈希失配回 DRAFT；最多 3 轮修订，不达标升级人工。下游发现上游不可实现走打回流程（出待维护者裁决清单，不改需求.md——人工产物）。任务清单的预计修改范围直接喂 Change Precision 评测。
+
 ### delivery-gate
 
-收口门禁，两种形态。**代码形态**：阶段一对最终 diff 做正确性、宪章、兼容性、测试、维护性和安全自审，高危发现做对抗式复核（运行环境提供子 Agent 时交给未参与实现的独立审查者）；阶段二从项目自身的 CI、构建文件和宪章提取实际门禁执行验证闭环。**设计文档形态**：设计阶段产出（需求澄清/业务流程设计/详细设计/任务清单）进入下一阶段前做结构完整性、字段覆盖、一致性、可验证性四维审查，高风险设计决策同样对抗复核。两种形态共用结论枚举 `READY`、`NOT READY`、`NEEDS HUMAN REVIEW`，未运行的检查不会被写成通过；验证回执（`docs/delivery-receipts/`）是声称验证通过的唯一证据形态。
+代码交付门禁（设计文档门禁已由 design-pipeline 接管）。阶段一：`governance-eval` 治理引擎对 diff 做确定性规则匹配（命中规则 + required_actions），叠加对最终 diff 的正确性、宪章、兼容性、测试、维护性和安全自审，高危发现做对抗式复核（运行环境提供子 Agent 时交给未参与实现的独立审查者），并对照任务清单预计修改范围检查范围蔓延。阶段二从项目自身的 CI、构建文件和宪章提取实际门禁执行验证闭环。结论枚举 `READY`、`NOT READY`、`NEEDS HUMAN REVIEW`，未运行的检查不会被写成通过；验证回执（`docs/delivery-receipts/`）是声称验证通过的唯一证据形态。
 
 ### spec-migrate 与 task-handoff
 
@@ -336,7 +345,7 @@ PROFILE 在有效 `confirmed` 条目达到 10 条时创建；后续积累达到�
 ```text
 .claude/skills/                 Claude Code 项目技能
 .agents/skills/                 Codex 项目技能
-.repo-memory-kit/bin/           校验器、生成器和 Spec 迁移器
+.repo-memory-kit/bin/           校验器、生成器、Spec 迁移器、doc-gate 与 governance-eval
 docs/memory/RULES.md            记忆规则
 docs/memory/_*_TEMPLATE.md      条目模板（pitfall/decision/playbook/PROFILE）
 docs/memory/README.md           用户笔记种子（首次创建，此后归用户）

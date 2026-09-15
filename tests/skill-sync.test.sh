@@ -10,7 +10,7 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "✓ $1"; }
 bad() { fail=$((fail+1)); echo "✗ $1"; }
 
-KIT_SKILLS="memory-check memory-capture repo-delivery codebase-memory systematic-debugging tdd reuse-research security-review delivery-gate spec-migrate task-handoff"
+KIT_SKILLS="memory-check memory-capture repo-delivery codebase-memory systematic-debugging tdd reuse-research security-review delivery-gate spec-migrate task-handoff design-pipeline"
 
 # 先安装到临时目录(确保副本由 install.sh 正确生成)
 P="$T/proj"

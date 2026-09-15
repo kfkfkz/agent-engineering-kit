@@ -1,0 +1,760 @@
+#!/usr/bin/env python3
+"""doc-gate — 需求文档流水线确定性门禁（Hard Validator + Review Gate + 状态查询）。
+
+设计依据: docs/design/document-pipeline.md v1
+原则: LLM 是 sensor（issues.json），本工具是 judge（确定性裁决）。
+状态派生: FROZEN ⇔ reviews/<stage>.gate.json 存在且 status==PASS
+          且 sha256(当前文档) == gate.json 记录的哈希。
+
+用法:
+  doc-gate freeze <SDD目录> [--by 维护者]        维护者签写冻结记录后落哈希凭证
+  doc-gate check <需求目录> --stage <阶段> [--json]
+  doc-gate gate  <需求目录> --stage <阶段> [--no-review] [--json]
+  doc-gate status <需求目录> [--json]
+
+阶段: 需求分析 / 概要设计 / UI设计 / 详细设计(三文档) / 计划。
+      <SDD目录> = docs/03-SDD/NNN-名称/；原始需求在 docs/01-需求/NNN-名称/（不进门禁）。
+
+退出码: 0 = PASS / 校验通过；1 = NEEDS_REVISION / 校验有 FAIL；
+       2 = BLOCKED；3 = 用法/环境错误。
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+DEFAULT_POLICY = {"max_blocker": 0, "max_major": 0, "max_minor": 5, "max_iterations": 3}
+
+# ══════════════════════════ 阶段定义 ══════════════════════════
+
+STAGES = {
+    "需求分析": {
+        "docs": ["需求分析.md"],
+        "upstream": [],
+        "review": False,  # 人工产物（维护者签写冻结记录 + freeze 落哈希凭证）
+        "sections": {"需求分析.md": ["背景", "目标", "非目标", "场景与验收依据",
+                                      "验收项", "非功能要求", "待确认事项", "冻结记录"]},
+    },
+    "概要设计": {
+        "docs": ["概要设计.md"],
+        "upstream": ["需求分析"],
+        "review": "optional",
+        "sections": {"概要设计.md": ["设计目标", "现状分析", "总体方案",
+                                     "功能点设计", "方案取舍", "数据与接口影响", "风险"]},
+    },
+    "业务流程设计": {
+        "docs": ["业务流程设计.md"],
+        "upstream": ["概要设计"],
+        "review": False,  # 人工评审是门禁（评审记录 + freeze）
+        "sections": {"业务流程设计.md": ["修订记录", "简介", "业务流程总览",
+                                        "功能设计", "数据与接口概览", "评审记录"]},
+    },
+    "UI设计": {
+        "docs": ["UI设计.md"],
+        "upstream": ["概要设计"],
+        "review": True,
+        "sections": {"UI设计.md": ["界面目标", "用户核心任务", "信息架构", "页面清单",
+                                   "设计系统落地", "交互规则", "响应式与兼容",
+                                   "可访问性", "验证清单"]},
+    },
+    "详细设计": {
+        "docs": ["详细设计.md", "API设计.md", "数据库设计.md"],
+        "upstream": ["业务流程设计"],
+        "review": True,
+        "sections": {
+            "详细设计.md": ["设计范围", "业务逻辑", "异常处理", "安全设计",
+                           "可观测性与配置", "发布与回滚"],
+            "API设计.md": ["接口清单", "接口详细设计"],
+            "数据库设计.md": ["表变更清单", "详细变更"],
+        },
+    },
+    "计划": {
+        "docs": ["任务清单.md", "测试方案.md"],
+        "upstream": ["详细设计"],
+        "review": "optional",
+        "sections": {
+            "任务清单.md": ["任务", "执行记录", "回归范围确认", "完成标准"],
+            "测试方案.md": ["测试接缝", "用例清单", "边界与异常覆盖",
+                            "环境与数据", "回归范围", "通过标准"],
+        },
+    },
+}
+
+UI_STATES = ["加载中", "空态", "错误", "禁用", "成功"]
+
+# 人工签核阶段：评审权在人，doc-gate 只落哈希凭证
+HUMAN_SIGNOFF = {
+    "需求分析": (r"冻结状态[:：]\s*(已冻结|未冻结)", "已冻结"),
+    "业务流程设计": (r"评审结论[:：]\s*(通过|未评审|未通过)", "通过"),
+}
+
+
+# ══════════════════════════ 基础工具 ══════════════════════════
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _sha256(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _block(text: str, pos: int) -> str:
+    """从标题位置取到下一个同级或更高级标题前的文本块。"""
+    ends = [e for e in (text.find("\n### ", pos + 1),
+                         text.find("\n## ", pos + 1)) if e != -1]
+    end = min(ends) if ends else len(text)
+    return text[pos:end]
+
+
+def _placeholders(text: str) -> list[str]:
+    return re.findall(r"〈[^〉]+〉", text)
+
+
+def _repo_root(start: Path) -> Path | None:
+    for p in [start, *start.parents]:
+        if (p / ".repo-memory-kit").is_dir() or (p / ".git").exists() or (p / ".svn").exists():
+            return p
+    return None
+
+
+def _load_policy(root: Path | None) -> dict:
+    policy = dict(DEFAULT_POLICY)
+    if root:
+        f = root / ".repo-memory-kit" / "doc-policy.json"
+        text = _read(f)
+        if text:
+            try:
+                user = json.loads(text)
+                if isinstance(user, dict):
+                    for k in DEFAULT_POLICY:
+                        if k in user:
+                            policy[k] = user[k]
+            except json.JSONDecodeError:
+                pass  # 策略文件损坏 → 用默认（不静默崩溃）
+    return policy
+
+
+# ══════════════════════════ 解析器 ══════════════════════════
+
+def parse_scenarios(text: str) -> dict[str, dict]:
+    """场景 N → {前置, 操作, 结果}（值为原文，空串=缺失）。"""
+    out = {}
+    for m in re.finditer(r"^###\s*场景\s*(\d+)：(.*)$", text, re.M):
+        block = _block(text, m.start())
+        item = {}
+        for key in ("前置", "操作", "结果"):
+            km = re.search(rf"\*\*{key}\*\*：(.*)", block)
+            item[key] = km.group(1).strip() if km else ""
+        out[m.group(1)] = item
+    return out
+
+
+def parse_a_items(text: str) -> dict[str, dict]:
+    """A-ID → {scenarios: [n], text}（验收项）。"""
+    out = {}
+    for m in re.finditer(r"^- \[[ x]\]\s*(A\d+)：(.*)$", text, re.M):
+        rest = m.group(2).strip()
+        out[m.group(1)] = {"scenarios": re.findall(r"场景\s*(\d+)", rest), "text": rest}
+    return out
+
+
+def parse_f_items(text: str) -> dict[str, dict]:
+    """F-ID → {covers: [A-ID]}（概要设计功能点）。"""
+    out = {}
+    for m in re.finditer(r"^###\s*(F\d+)：(.*)$", text, re.M):
+        block = _block(text, m.start())
+        cov = re.search(r"覆盖验收项：\s*(.+)", block)
+        out[m.group(1)] = {"covers": re.findall(r"A\d+", cov.group(1)) if cov else []}
+    return out
+
+
+def parse_d_items(text: str) -> dict[str, dict]:
+    """D-ID → {f: [F-ID], a: [A-ID]}（详细设计落点）。"""
+    out = {}
+    for m in re.finditer(r"^###\s*(D\d+)：(.*)$", text, re.M):
+        refm = re.search(r"（对应\s*([^）]+)）", m.group(2))
+        refs = refm.group(1) if refm else ""
+        out[m.group(1)] = {"f": re.findall(r"F\d+", refs), "a": re.findall(r"A\d+", refs)}
+    return out
+
+
+def parse_tc_items(text: str) -> dict[str, dict]:
+    """TC-ID → {accepts: [A-ID]}（测试方案用例清单行）。"""
+    out = {}
+    for m in re.finditer(r"^\|\s*(TC-\d+)\s*\|(.+)$", text, re.M):
+        cells = [c.strip() for c in m.group(2).split("|")]
+        accepts = re.findall(r"A\d+", cells[1]) if len(cells) > 1 else []
+        out[m.group(1)] = {"accepts": accepts}
+    return out
+
+
+def parse_t_items(text: str) -> dict[str, dict]:
+    """T-ID → {designs: [D/TC-ID], has_scope, has_verify}（任务清单）。"""
+    out = {}
+    for m in re.finditer(r"^###\s*(T\d+)：(.*)$", text, re.M):
+        block = _block(text, m.start())
+        des = re.search(r"对应设计：\s*(.+)", block)
+        scope = re.search(r"预计修改范围：\s*(.+)", block)
+        verify = re.search(r"验证方式：\s*(.+)", block)
+        out[m.group(1)] = {
+            "designs": re.findall(r"(?:D\d+|TC-\d+)", des.group(1)) if des else [],
+            "has_scope": bool(scope and _placeholders(scope.group(1)) == []
+                            and scope.group(1).strip() not in ("", "无")),
+            "has_verify": bool(verify and _placeholders(verify.group(1)) == []
+                               and verify.group(1).strip() != ""),
+        }
+    return out
+
+
+def parse_page_items(text: str) -> dict[str, dict]:
+    """PAGE-ID → {refs, states_ok}（UI设计页面清单）。"""
+    out = {}
+    for m in re.finditer(r"^###\s*(PAGE-\d+)：(.*)$", text, re.M):
+        refm = re.search(r"（对应\s*([^）]+)）", m.group(2))
+        refs = refm.group(1) if refm else ""
+        block = _block(text, m.start())
+        has_na = "不适用" in block
+        states_ok = has_na or all(s in block for s in UI_STATES)
+        out[m.group(1)] = {"refs": re.findall(r"(?:F\d+|A\d+)", refs), "states_ok": states_ok}
+    return out
+
+
+def req_freeze_state(text: str) -> str:
+    m = re.search(r"冻结状态[:：]\s*(已冻结|未冻结)", text or "")
+    return m.group(1) if m else "未记录"
+
+
+# ══════════════════════════ 冻结状态 ══════════════════════════
+
+def stage_frozen(req_dir: Path, stage: str) -> tuple[str, str]:
+    """返回 (状态, 说明)。状态: FROZEN / DRAFT / BLOCKED / NOT_GATED / MISSING。
+
+    FROZEN = gate.json PASS 且所有文档哈希一致；哈希失配 = DRAFT（改动即解冻）。
+    """
+    if stage == "需求分析":
+        # 第七轮审计 P1：文本"已冻结"不是凭证——必须有 gate.json 绑定内容哈希，
+        # 冻结后改动需求.md 会被哈希检出（下游上游检查自动失效）
+        if not (req_dir / "需求分析.md").is_file():
+            return "MISSING", "需求分析.md 不存在"
+        gate = _read(req_dir / "reviews" / "需求分析.gate.json")
+        if gate is None:
+            state = req_freeze_state(_read(req_dir / "需求分析.md"))
+            return "DRAFT", (f"未过 doc-gate freeze（冻结记录：{state}——"
+                             f"文本不构成冻结凭证）")
+        try:
+            g = json.loads(gate)
+        except json.JSONDecodeError:
+            return "DRAFT", "需求.gate.json 损坏"
+        if g.get("status") != "PASS":
+            return "DRAFT", f"需求门禁最近判定 {g.get('status')}"
+        want = (g.get("doc_hashes") or {}).get("需求分析.md")
+        cur = _sha256(req_dir / "需求分析.md")
+        if want != cur:
+            return "DRAFT", "需求分析.md 冻结后有改动（哈希失配）——需维护者重审并重新 freeze"
+        return "FROZEN", f"gate.json PASS（{g.get('approved_by', '未知')} 冻结）"
+
+    gate_file = req_dir / "reviews" / f"{stage}.gate.json"
+    data = _read(gate_file)
+    if data is None:
+        return "NOT_GATED", "无 gate.json（未过门禁）"
+    try:
+        gate = json.loads(data)
+    except json.JSONDecodeError:
+        return "DRAFT", "gate.json 损坏"
+    if gate.get("status") == "BLOCKED":
+        return "BLOCKED", "最近判定 BLOCKED（人工介入）"
+    if gate.get("status") != "PASS":
+        return "DRAFT", f"最近判定 {gate.get('status')}"
+    for doc, want in (gate.get("doc_hashes") or {}).items():
+        cur = _sha256(req_dir / doc)
+        if cur is None:
+            return "DRAFT", f"{doc} 已不存在"
+        if cur != want:
+            return "DRAFT", f"{doc} 冻结后有改动（哈希失配）"
+    return "FROZEN", f"gate.json PASS（iteration {gate.get('iteration')}）"
+
+
+# ══════════════════════════ 硬校验引擎 ══════════════════════════
+
+class Checks:
+    def __init__(self, stage: str):
+        self.stage = stage
+        self.items: list[dict] = []
+
+    def add(self, group: str, name: str, ok: bool, detail: str = "") -> None:
+        self.items.append({"group": group, "name": name,
+                           "status": "PASS" if ok else "FAIL", "detail": detail})
+
+    @property
+    def fails(self) -> list[dict]:
+        return [c for c in self.items if c["status"] == "FAIL"]
+
+    def to_dict(self) -> dict:
+        return {"stage": self.stage, "checks": self.items,
+                "summary": {"pass": len(self.items) - len(self.fails),
+                            "fail": len(self.fails)}}
+
+
+def _check_structure(c: Checks, doc: str, text: str, required: list[str]) -> None:
+    headers = re.findall(r"^##\s+(.+)$", text, re.M)
+    def _norm(h: str) -> str:
+        h = re.split(r"[（(]", h.strip())[0].strip()
+        return re.sub(r"^\d+(\.\d+)*[.、\s]*", "", h)   # 剥编号前缀（"1. 简介"→"简介"）
+    have = {_norm(h) for h in headers}
+    missing = [s for s in required if s not in have]
+    c.add("structure", f"必填章节：{doc}",
+          not missing, "缺失: " + "、".join(missing) if missing else "")
+
+
+def _check_placeholders(c: Checks, doc: str, text: str) -> None:
+    ph = _placeholders(text)
+    c.add("placeholder", f"占位符已替换：{doc}", not ph,
+          f"残留 {len(ph)} 处: {'、'.join(ph[:3])}…" if ph else "")
+
+
+def run_checks(req_dir: Path, stage: str) -> Checks:
+    """对一个阶段跑全部硬校验（含上游冻结与需求意图检查）。"""
+    c = Checks(stage)
+    spec = STAGES[stage]
+
+    # ── 上游冻结 ──
+    for up in spec["upstream"]:
+        st, why = stage_frozen(req_dir, up)
+        c.add("upstream", f"上游已冻结：{up}", st == "FROZEN", why)
+
+    # ── 需求意图（薄输入拒绝——任何阶段都校验最上游，需求分析阶段本身也检查）──
+    req_text = _read(req_dir / "需求分析.md")
+    if req_text is not None:
+        scen = parse_scenarios(req_text)
+        ok_scen = bool(scen) and all(
+            s["前置"] and s["操作"] and s["结果"]
+            and not _placeholders(s["前置"] + s["操作"] + s["结果"])
+            for s in scen.values())
+        c.add("intent", "需求场景完整（前置/操作/结果 已填）", ok_scen,
+              "场景为空或 Given/When/Then 未填写/仍为占位符" if not ok_scen else "")
+        a_items = parse_a_items(req_text)
+        ok_a = bool(a_items) and all(not _placeholders(v["text"]) for v in a_items.values())
+        c.add("intent", "验收项非占位", ok_a,
+              "验收项为空或仍为占位符" if not ok_a else "")
+
+    # ── 本阶段文档 ──
+    for doc in spec["docs"]:
+        text = _read(req_dir / doc)
+        if text is None:
+            c.add("structure", f"文档存在：{doc}", False, "文件不存在")
+            continue
+        _check_structure(c, doc, text, spec["sections"][doc])
+        _check_placeholders(c, doc, text)
+
+    # ── 各阶段追踪链 ──
+    req_a = parse_a_items(req_text) if req_text else {}
+
+    if stage == "概要设计":
+        text = _read(req_dir / "概要设计.md") or ""
+        f_items = parse_f_items(text)
+        covered = [a for f in f_items.values() for a in f["covers"]]
+        dangling = [a for f in f_items.values() for a in f["covers"] if a not in req_a]
+        c.add("trace", "每个验收项被 ≥1 功能点覆盖",
+              bool(f_items) and set(req_a) <= set(covered),
+              f"未覆盖: {('、'.join(sorted(set(req_a) - set(covered))) or '无')}")
+        c.add("id", "功能点引用无悬空", not dangling,
+              f"悬空: {'、'.join(dangling)}" if dangling else "")
+
+    if stage == "UI设计":
+        text = _read(req_dir / "UI设计.md") or ""
+        pages = parse_page_items(text)
+        c.add("id", "页面清单非空", bool(pages), "无 PAGE 项")
+        bad_states = [p for p, v in pages.items() if not v["states_ok"]]
+        c.add("ui", "每页状态枚举完整（或 N/A）",
+              not bad_states, f"缺状态: {'、'.join(bad_states)}" if bad_states else "")
+        f_all = parse_f_items(_read(req_dir / "概要设计.md") or "")
+        dangling = [r for v in pages.values() for r in v["refs"]
+                    if r not in f_all and r not in req_a]
+        c.add("id", "页面引用无悬空", not dangling,
+              f"悬空: {'、'.join(dangling)}" if dangling else "")
+
+    if stage == "详细设计":
+        d_items: dict = {}
+        for doc in ("详细设计.md", "API设计.md", "数据库设计.md"):
+            text = _read(req_dir / doc)
+            d_items.update(parse_d_items(text) if text is not None else {})
+        f_all = parse_f_items(_read(req_dir / "概要设计.md") or "")
+        covered_f = [f for v in d_items.values() for f in v["f"]]
+        c.add("trace", "每个功能点有 ≥1 设计落点",
+              bool(d_items) and set(f_all) <= set(covered_f),
+              f"未落点: {('、'.join(sorted(set(f_all) - set(covered_f))) or '无')}")
+        dangling = [r for v in d_items.values() for r in v["f"] + v["a"]
+                    if (r.startswith("F") and r not in f_all)
+                    or (r.startswith("A") and r not in req_a)]
+        c.add("id", "落点引用无悬空", not dangling,
+              f"悬空: {'、'.join(dangling)}" if dangling else "")
+
+    if stage == "计划":
+        task_text = _read(req_dir / "任务清单.md") or ""
+        test_text = _read(req_dir / "测试方案.md") or ""
+        t_items = parse_t_items(task_text)
+        tc_items = parse_tc_items(test_text)
+        d_all: dict = {}
+        for doc in ("详细设计.md", "API设计.md", "数据库设计.md"):
+            text = _read(req_dir / doc)
+            d_all.update(parse_d_items(text) if text is not None else {})
+
+        covered_a = [a for v in tc_items.values() for a in v["accepts"]]
+        c.add("trace", "每个验收项有 ≥1 测试用例",
+              bool(tc_items) and set(req_a) <= set(covered_a),
+              f"未覆盖: {('、'.join(sorted(set(req_a) - set(covered_a))) or '无')}")
+        bad_tc = [tc for tc, v in tc_items.items() if not v["accepts"]]
+        c.add("id", "用例挂接验收项", not bad_tc,
+              f"未挂接: {'、'.join(bad_tc)}" if bad_tc else "")
+        bad_t = [t for t, v in t_items.items()
+                 if not v["designs"] or not v["has_verify"] or not v["has_scope"]]
+        c.add("trace", "每任务绑定设计+验证方式+预计范围", not bad_t,
+              f"缺项: {'、'.join(bad_t)}" if bad_t else "")
+        dangling = [r for v in t_items.values() for r in v["designs"]
+                    if (r.startswith("TC") and r not in tc_items)
+                    or (r.startswith("D") and r not in d_all)]
+        c.add("id", "任务引用无悬空", not dangling,
+              f"悬空: {'、'.join(dangling)}" if dangling else "")
+
+    return c
+
+
+# ══════════════════════════ gate 判定 ══════════════════════════
+
+VALID_SEVERITIES = ("blocker", "major", "minor")
+ISSUE_FIELDS = ("id", "severity", "location", "problem", "required_change")
+
+
+def _validate_issues(req_dir: Path, stage: str, spec: dict,
+                     text: str) -> tuple[list[dict] | None, str]:
+    """解析并严格校验 issues.json 内容。返回 (issues 或 None=不可用, 错误说明)。
+
+    P1 完整性修复：绑定被评审文档的 SHA——评审后文档再改动即过期（旧 clean
+    review 不能冻结新版本）；stage 必须匹配；severity/schema 非法直接拒绝。
+    """
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None, "issues.json 不是合法 JSON"
+    if not isinstance(data, dict):
+        return None, "issues.json 顶层必须是对象"
+    if data.get("stage") != stage:
+        return None, f"issues.json 的 stage={data.get('stage')!r} 与门禁阶段 {stage!r} 不符"
+    # 评审绑定：记录的 doc_hashes 必须覆盖本阶段全部文档且与当前一致
+    recorded = data.get("doc_hashes")
+    if not isinstance(recorded, dict) or not recorded:
+        return None, ("issues.json 缺 doc_hashes（评审必须记录被评审文档的 "
+                      "sha256——防旧评审冻结新版本）")
+    for doc in spec["docs"]:
+        want = recorded.get(doc)
+        cur = _sha256(req_dir / doc) if (req_dir / doc).is_file() else None
+        if want is None:
+            return None, f"issues.json 的 doc_hashes 未覆盖 {doc}"
+        if want != cur:
+            return None, (f"{doc} 在评审后有改动（哈希失配）——评审已过期，"
+                          f"需对当前版本重新评审")
+    issues = data.get("issues")
+    if not isinstance(issues, list):
+        return None, "issues 必须是数组"
+    seen_ids: set[str] = set()
+    for i, issue in enumerate(issues):
+        if not isinstance(issue, dict):
+            return None, f"issues[{i}] 不是对象"
+        for field in ISSUE_FIELDS:
+            if not str(issue.get(field, "")).strip():
+                return None, f"issues[{i}] 缺必填字段 {field}（id/severity/location/problem/required_change）"
+        sev = str(issue.get("severity", "")).strip().lower()
+        if sev not in VALID_SEVERITIES:
+            return None, (f"issues[{i}].severity={sev!r} 非法"
+                          f"（只允许 blocker/major/minor）")
+        issue["severity"] = sev
+        if issue.get("id") in seen_ids:
+            return None, f"issues[{i}].id 重复: {issue.get('id')}"
+        seen_ids.add(issue.get("id"))
+    return issues, ""
+
+
+def _consecutive_failures(log_file: Path) -> int:
+    """从 gate.log 尾部统计**连续**不达标轮数（PASS 清零——P2 修复：
+    此前累计全部历史行数，历史 PASS 三次后一次失败即 BLOCKED）。"""
+    if not log_file.exists():
+        return 0
+    count = 0
+    for line in reversed(log_file.read_text(encoding="utf-8").splitlines()):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("status") == "PASS":
+            break
+        count += 1
+    return count
+
+
+def _was_blocked(log_file: Path) -> bool:
+    """最近一次判定是否 BLOCKED（BLOCKED 状态由人工介入解除——重跑只有
+    PASS 才能解冻，防止自动重试碰运气）。"""
+    if not log_file.exists():
+        return False
+    for line in reversed(log_file.read_text(encoding="utf-8").splitlines()):
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        return entry.get("status") == "BLOCKED"
+    return False
+
+
+def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
+    if stage in HUMAN_SIGNOFF:
+        print(f"✗ {stage} 是人工签核阶段：评审权在人（签写评审记录后由 freeze 落哈希凭证）")
+        return 3
+    spec = STAGES[stage]
+
+    checks = run_checks(req_dir, stage)
+    reviews_dir = req_dir / "reviews"
+    reviews_dir.mkdir(parents=True, exist_ok=True)
+    (reviews_dir / "hard-checks.json").write_text(
+        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # P1：必审阶段拒绝 --no-review（此前可绕过 AI 评审直接 PASS）
+    if no_review and spec["review"] is True:
+        print(f"✗ 阶段 {stage} 是必审阶段（review=True），不允许 --no-review")
+        return 3
+
+    policy = _load_policy(_repo_root(req_dir))
+    issues: list[dict] = []
+    if not no_review:
+        text = _read(reviews_dir / f"{stage}.issues.json")
+        if text is None:
+            # optional 阶段缺评审文件 = 未做评审，按硬校验判（合法）；
+            # 必审阶段缺文件 = 拒绝（硬校验也挂时优先报硬问题）
+            if spec["review"] is True and not checks.fails:
+                print(f"✗ 阶段 {stage} 需要先跑 AI 评审（reviews/{stage}.issues.json 缺失或损坏）")
+                return 3
+        else:
+            issues, err = _validate_issues(req_dir, stage, spec, text)
+            if issues is None:
+                if not checks.fails:
+                    print(f"✗ 评审不可用: {err}")
+                    return 3
+                issues = []
+
+    upstream_issues = [i for i in issues if i.get("upstream")]
+    counted = [i for i in issues if not i.get("upstream")]
+    n_blocker = sum(1 for i in counted if i["severity"] == "blocker")
+    n_major = sum(1 for i in counted if i["severity"] == "major")
+    n_minor = sum(1 for i in counted if i["severity"] == "minor")
+
+    log_file = reviews_dir / f"{stage}.gate.log"
+    consecutive = _consecutive_failures(log_file)
+    was_blocked = _was_blocked(log_file)
+
+    hard_fail = checks.fails
+    over = (n_blocker > policy["max_blocker"] or n_major > policy["max_major"]
+            or n_minor > policy["max_minor"])
+    current_attempt = consecutive + 1        # 本次是第几次失败尝试
+    if not hard_fail and not over and not upstream_issues:
+        status = "PASS"          # BLOCKED 后人工修复 → PASS 才解冻
+    elif upstream_issues and not hard_fail and not over:
+        # P1：上游打回未决 → 不得冻结（下游建立在被质疑的上游上）
+        status = "BLOCKED"
+    elif was_blocked:
+        status = "BLOCKED"       # 此前已 BLOCKED：只有 PASS 能解冻（人工介入后重评审）
+    elif current_attempt >= policy["max_iterations"]:
+        # 第七轮审计 P2：第 max_iterations 次失败本身即 BLOCKED（此前晚一轮）
+        status = "BLOCKED"
+    else:
+        status = "NEEDS_REVISION"
+
+    doc_hashes = {doc: _sha256(req_dir / doc) for doc in spec["docs"]
+                  if (req_dir / doc).is_file()}
+    fix_targets = ([i.get("id", "?") for i in counted][:10]
+                   if status != "PASS" else [])
+    gate = {
+        "stage": stage, "status": status, "time": datetime.now().isoformat(timespec="seconds"),
+        "hard": {"pass": len(checks.items) - len(hard_fail), "fail": len(hard_fail),
+                 "failed": [f"{c['group']}/{c['name']}" for c in hard_fail]},
+        "review": {"blocker": n_blocker, "major": n_major, "minor": n_minor,
+                   "upstream_pending": len(upstream_issues),
+                   "fix_targets": fix_targets},
+        "policy": policy, "iteration": consecutive + 1, "doc_hashes": doc_hashes,
+        "failed_because": (
+            ["hard checks FAIL: " + "；".join(c["name"] for c in hard_fail[:5])] if hard_fail else [])
+            + ([f"severity 超阈值: blocker={n_blocker}/{policy['max_blocker']}, "
+                f"major={n_major}/{policy['max_major']}, minor={n_minor}/{policy['max_minor']}"]
+               if over else [])
+            + ([f"上游打回未决 {len(upstream_issues)} 项（待维护者裁决）"]
+               if upstream_issues else []),
+        "next": ("进入下一阶段（文档已冻结）" if status == "PASS"
+                 else "维护者裁决上游问题后对本阶段重新评审"
+                 if upstream_issues and not hard_fail and not over
+                 else "定向修改上述问题后重新提交"
+                 if status == "NEEDS_REVISION"
+                 else f"已连续 {policy['max_iterations']} 轮不达标——升级人工介入"
+                 if not was_blocked else "BLOCKED 未解除：人工介入后需重新评审且判定 PASS"),
+    }
+    gate_file = reviews_dir / f"{stage}.gate.json"
+    gate_file.write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+    with log_file.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"time": gate["time"], "stage": stage, "status": status,
+                            "iteration": gate["iteration"]}, ensure_ascii=False) + "\n")
+
+    if as_json:
+        print(json.dumps(gate, ensure_ascii=False, indent=2))
+    else:
+        print(f"阶段 {stage} 门禁判定: {status}（连续不达标 {consecutive} 轮）")
+        for chk in hard_fail:
+            print(f"  ✗ HARD {chk['name']}: {chk['detail']}")
+        if upstream_issues:
+            print(f"  ⚠ 打回上游 {len(upstream_issues)} 项（待维护者裁决，不冻结）")
+        if status != "PASS":
+            print(f"  下一步: {gate['next']}")
+    return {"PASS": 0, "NEEDS_REVISION": 1, "BLOCKED": 2}[status]
+
+
+def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool) -> int:
+    """人工签核阶段的冻结凭证（需求分析/业务流程设计）：hard checks 全过 +
+    人工签核已写（评审权在人，本工具只落哈希凭证），写 reviews/<阶段>.gate.json
+    绑定该阶段文档的 sha256。签核后任何改动 = 哈希失配。"""
+    if stage not in HUMAN_SIGNOFF:
+        print(f"✗ 阶段 {stage} 不是人工签核阶段（用 gate 子命令走机器门禁）")
+        return 3
+    doc = STAGES[stage]["docs"][0]
+    sign_re, want_state = HUMAN_SIGNOFF[stage]
+    checks = run_checks(req_dir, stage)
+    doc_text = _read(req_dir / doc)
+    if doc_text is None:
+        print(f"✗ {doc} 不存在")
+        return 3
+    m = re.search(sign_re, doc_text)
+    signed = m.group(1) if m else "未记录"
+    if signed != want_state:
+        print(f"✗ 人工签核未完成（当前：{signed}）——评审权在人，"
+              f"先在 {doc} 签写签核记录")
+        return 3
+    if checks.fails:
+        print(f"✗ {stage} 硬校验未过（{len(checks.fails)} 项），冻结被拒：")
+        for c in checks.fails:
+            print(f"  ✗ [{c['group']}] {c['name']}: {c['detail']}")
+        return 3
+    reviews_dir = req_dir / "reviews"
+    reviews_dir.mkdir(parents=True, exist_ok=True)
+    (reviews_dir / "hard-checks.json").write_text(
+        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    gate = {
+        "stage": stage, "status": "PASS",
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "approved_by": approved_by or "维护者",
+        "doc_hashes": {doc: _sha256(req_dir / doc)},
+        "frozen_by": "doc-gate freeze（人工签核 + 哈希凭证）",
+    }
+    (reviews_dir / f"{stage}.gate.json").write_text(
+        json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+    with (reviews_dir / f"{stage}.gate.log").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"time": gate["time"], "stage": stage,
+                            "status": "PASS", "approved_by": gate["approved_by"]},
+                           ensure_ascii=False) + "\n")
+    if as_json:
+        print(json.dumps(gate, ensure_ascii=False, indent=2))
+    else:
+        print(f"✓ {stage} 已签核冻结（凭证绑定 sha256；approved_by={gate['approved_by']}）——"
+              f"下游阶段可开始")
+    return 0
+
+
+# ══════════════════════════ 子命令 ══════════════════════════
+
+def cmd_check(req_dir: Path, stage: str, as_json: bool) -> int:
+    if stage not in STAGES:
+        print(f"✗ 未知阶段: {stage}（可选: {'、'.join(STAGES)}）")
+        return 3
+    checks = run_checks(req_dir, stage)
+    reviews_dir = req_dir / "reviews"
+    reviews_dir.mkdir(parents=True, exist_ok=True)
+    (reviews_dir / "hard-checks.json").write_text(
+        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    if as_json:
+        print(json.dumps(checks.to_dict(), ensure_ascii=False, indent=2))
+    else:
+        print(f"硬校验 {stage}: {checks.to_dict()['summary']['pass']} 通过 / "
+              f"{len(checks.fails)} 失败")
+        for chk in checks.fails:
+            print(f"  ✗ [{chk['group']}] {chk['name']}: {chk['detail']}")
+    return 1 if checks.fails else 0
+
+
+def cmd_status(req_dir: Path, as_json: bool) -> int:
+    report = {}
+    lines = [f"需求目录: {req_dir.name}"]
+    for stage in STAGES:
+        st, why = stage_frozen(req_dir, stage)
+        report[stage] = {"state": st, "detail": why}
+        lines.append(f"  {stage:<6s} {st:<10s} {why}")
+    for extra in ("线上联调功能验证清单.md", "终稿.md"):
+        p = req_dir / extra
+        if p.is_file():
+            ph = len(_placeholders(_read(p) or ""))
+            report[extra] = {"exists": True, "placeholders": ph}
+            lines.append(f"  {extra} 存在（占位符 {ph} 处）")
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print("\n".join(lines))
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="doc-gate", description="需求文档流水线确定性门禁")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("check", "gate"):
+        p = sub.add_parser(name)
+        p.add_argument("dir", help="需求目录（docs/01-需求/NNN-名称/）")
+        p.add_argument("--stage", required=True, help=f"阶段: {'、'.join(STAGES)}")
+        p.add_argument("--json", action="store_true")
+        if name == "gate":
+            p.add_argument("--no-review", action="store_true",
+                           help="跳过 AI 评审（仅硬校验判定——限 review=optional 阶段）")
+    fp = sub.add_parser("freeze", help="人工签核阶段冻结凭证（需求分析/业务流程设计）")
+    fp.add_argument("dir")
+    fp.add_argument("--stage", default="需求分析",
+                    help="需求分析 / 业务流程设计")
+    fp.add_argument("--by", default="", help="签核人（进 approved_by）")
+    fp.add_argument("--json", action="store_true")
+    sp = sub.add_parser("status")
+    sp.add_argument("dir")
+    sp.add_argument("--json", action="store_true")
+    args = ap.parse_args()
+
+    req_dir = Path(args.dir).resolve()
+    if not req_dir.is_dir():
+        print(f"✗ 需求目录不存在: {req_dir}")
+        return 3
+    if args.cmd == "check":
+        return cmd_check(req_dir, args.stage, args.json)
+    if args.cmd == "gate":
+        return cmd_gate(req_dir, args.stage, args.no_review, args.json)
+    if args.cmd == "freeze":
+        return cmd_freeze(req_dir, args.stage,
+                          getattr(args, "by", ""), getattr(args, "json", False))
+    return cmd_status(req_dir, args.json)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

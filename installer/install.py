@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import platform as _plat
 from .manifest import (
     Manifest,
     ManifestCorruptError,
@@ -56,6 +57,7 @@ from .registry import (
 )
 from .transaction import (
     CommitStep,
+    ExternalStep,
     TransactionRecord,
     acquire_install_lock,
     backup_container,
@@ -196,7 +198,7 @@ def group_specs(specs: list[ResourceSpec]) -> list[list[ResourceSpec]]:
 def _read_container(dst: Path) -> tuple[bytes | None, int | None]:
     """只读一次容器（O_NOFOLLOW）；返回 (bytes | None, mode | None)。"""
     try:
-        fd = os.open(dst, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(dst, os.O_RDONLY | _plat.O_NOFOLLOW)
     except FileNotFoundError:
         return None, None
     try:
@@ -360,43 +362,77 @@ def assemble_manifest(target: Path, preflight: PreflightResult,
 # ══════════════════════════ §16 安装方向的 codex 链接（post-commit 尽力步骤） ══════════════════════════
 
 def ensure_codex_links(target: Path, codex_root: Path,
-                       preflight: PreflightResult,
-                       strategy: str = "symlink") -> list[str]:
-    """安装方向技能暴露到 workspace。
-    strategy="symlink"：os.symlink（POSIX 默认——单一事实源）。
-    strategy="copy"：复制 SKILL.md（Windows 默认——不依赖 symlink 权限）。"""
+                       preflight: PreflightResult, tx,
+                       strategy: str = "symlink") -> tuple[list[str], list[str]]:
+    """安装方向技能暴露到 workspace——统一外部事务模型（第七轮审计 P1：
+    外部资源创建进事务状态机，不靠字符串报告表达成功/失败）。
+
+    意图先行（写序不变量 3 对外部副作用同样成立）：
+    1. 逐技能记录 ExternalStep(operation=create, state=intent) 落盘
+    2. 创建（symlink / copy——copy 记录源 SKILL.md sha256 作血统）
+    3. state=applied 落盘
+
+    冲突（目标被用户内容占用）→ 记入 failures，不创建、不覆盖；
+    调用方检查 failures 决定 needs_human。返回 (reports, failures)。"""
+    import hashlib as _hashlib
     import shutil as _shutil
     reports: list[str] = []
+    failures: list[str] = []
     for spec in preflight.external_set:
         link_spec = CodexLinkSpec(skill_name=spec.link_skill_name)
         link_spec.validate(codex_root, target)
         link = link_spec.derive_link_path(codex_root)
         expected = link_spec.derive_target_path(target)
+        source_md = expected / "SKILL.md"
+        src_hash = (_hashlib.sha256(source_md.read_bytes()).hexdigest()
+                    if source_md.is_file() else None)
+        step = ExternalStep(
+            spec_id=spec.id, skill_name=spec.link_skill_name,
+            codex_root=str(codex_root), prior_state="absent",
+            operation="create", strategy=strategy, expected_hash=src_hash)
         if strategy == "copy":
-            source = expected / "SKILL.md"
             dest = link / "SKILL.md"
             if dest.is_file():
-                if dest.read_bytes() == source.read_bytes():
-                    continue
-                reports.append(f"✗ {dest} 已存在且内容不同，拒绝覆盖")
+                if src_hash and _hashlib.sha256(
+                        dest.read_bytes()).hexdigest() == src_hash:
+                    step.prior_state, step.state = "content_matches", "applied"
+                    tx.external.append(step); tx.write(target)
+                    continue                       # 已在（重装幂等）
+                step.prior_state = "other"
+                tx.external.append(step); tx.write(target)
+                failures.append(f"{dest} 已存在且内容不同，保留现场未创建")
                 continue
             if link.exists() and not link.is_dir():
-                reports.append(f"✗ {link} 已存在且不是目录，拒绝创建")
+                step.prior_state = "other"
+                tx.external.append(step); tx.write(target)
+                failures.append(f"{link} 已存在且不是目录，保留现场未创建")
                 continue
+            tx.external.append(step); tx.write(target)      # intent 先行
             link.mkdir(parents=True, exist_ok=True)
-            _shutil.copy2(source, dest)
+            _shutil.copy2(source_md, dest)
+            step.state = "applied"
+            tx.write(target)
             reports.append(f"✓ 已复制技能到 Codex workspace {dest}")
         else:
             if link.is_symlink():
                 if os.readlink(link) == str(expected):
-                    continue
-                reports.append(f"✗ {link} 已指向其他目标，拒绝覆盖")
+                    step.prior_state, step.state = "pointing_to_target", "applied"
+                    tx.external.append(step); tx.write(target)
+                    continue                       # 已在（重装幂等）
+                step.prior_state = "other"
+                tx.external.append(step); tx.write(target)
+                failures.append(f"{link} 已指向其他目标，保留现场未创建")
                 continue
             if link.exists():
-                reports.append(f"✗ {link} 已存在且不是符号链接，拒绝创建")
+                step.prior_state = "other"
+                tx.external.append(step); tx.write(target)
+                failures.append(f"{link} 已存在且不是符号链接，保留现场未创建")
                 continue
+            tx.external.append(step); tx.write(target)      # intent 先行
             link.parent.mkdir(parents=True, exist_ok=True)
             os.symlink(str(expected), link)
+            step.state = "applied"
+            tx.write(target)
             reports.append(f"✓ 已创建 Codex workspace 技能链接 {link}")
     if preflight.external_set:
         from .registry import STATE_REGISTRY, secure_open, write_all
@@ -408,7 +444,7 @@ def ensure_codex_links(target: Path, codex_root: Path,
             os.fsync(fd)
         finally:
             os.close(fd)
-    return reports
+    return reports, failures
 
 
 # ══════════════════════════ 主流程（§12） ══════════════════════════
@@ -438,6 +474,7 @@ def run_install(target: Path, *, repair: bool = False,
 
         # 步骤 3：创建事务 + 基础设施目录（§11.1 不变量 1 例外）
         tx = TransactionRecord.new(target, "install")
+        tx.link_strategy = link_strategy      # 进 HMAC 保护记录——恢复不得改变产物类型（P1）
         secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")
         secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}/backups")
         tx.status = "planning"
@@ -549,22 +586,62 @@ def run_install(target: Path, *, repair: bool = False,
         write_manifest_atomic(target, new_manifest)
         legacy_reports = cleanup_legacy_state(target)     # v1 清单/marker 退役清理
 
-        # 步骤 11.5：治理 profile 标记（lightweight 模式下 repo-delivery/delivery-gate
-        # 可跳过非高风险变更的正式回执要求——见 delivery-gate 技能「治理等级」节）
+        # 步骤 11.5：治理 profile 标记 + 默认策略（lightweight 模式下
+        # repo-delivery/delivery-gate 可跳过非高风险变更的正式回执要求——
+        # 见 delivery-gate 技能「治理等级」节）
         from .registry import secure_open as _so, write_all as _wa
+        profile = "lightweight" if lightweight else "strict"
         gov_fd = _so(target, ".repo-memory-kit/governance",
                      os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         try:
-            _wa(gov_fd, ("lightweight\n" if lightweight else "strict\n").encode())
+            _wa(gov_fd, (profile + "\n").encode())
             os.fsync(gov_fd)
         finally:
             os.close(gov_fd)
+        # governance.json：**只存团队规则**（第七轮审计 P1：profile 双事实源——
+        # marker 每次 install 更新而 json 仅首建，切换 lightweight 后 json 仍是
+        # strict 导致切换无效。现在 profile 唯一权威在 marker，默认动作由引擎按
+        # profile 派生）。**规则不存在才写**——团队定制在升级重装时保留。
+        gov_json = target / ".repo-memory-kit" / "governance.json"
+        if not gov_json.is_file():
+            policy = {
+                "version": 1,
+                "rules": [
+                    {"id": "SEC-001",
+                     "require": ["receipt", "independent_review"],
+                     "match": {"paths": ["**/security/**", "**/auth/**"]}},
+                    {"id": "DB-001",
+                     "require": ["receipt", "independent_review"],
+                     "match": {"files": ["*migration*", "*schema*",
+                                         "*ddl*", "*.sql"]}},
+                ],
+            }
+            gov2_fd = _so(target, ".repo-memory-kit/governance.json",
+                          os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            try:
+                _wa(gov2_fd,
+                    (json.dumps(policy, ensure_ascii=False, indent=2) + "\n").encode())
+                os.fsync(gov2_fd)
+            finally:
+                os.close(gov2_fd)
 
         # 步骤 12：workspace 链接（在 done 之前——P2 回归：done 先写则崩溃
         # 窗口内 recover 无从补偿；链接在 done 前失败 → committing → 可恢复）
-        link_reports = (ensure_codex_links(target, codex_root, preflight,
-                                           strategy=link_strategy)
-                        if codex_root is not None else [])
+        link_reports, link_failures = [], []
+        if codex_root is not None:
+            link_reports, link_failures = ensure_codex_links(
+                target, codex_root, preflight, tx, strategy=link_strategy)
+        if link_failures:
+            # 第七轮审计 P1：外部冲突不得吞掉——内部资源已提交，needs_human
+            # 保留现场（绝不覆盖用户内容）；人工处理后 --recover=roll-forward 补建
+            tx.status = "needs_human"
+            tx.detail = ("外部技能暴露冲突（用户内容占用目标）: "
+                         + "; ".join(link_failures[:3]))
+            tx.write(target)
+            print(f"✗ {tx.detail}")
+            print("  人工移除冲突内容后运行: python3 -m installer "
+                  "--recover=roll-forward <target> 补建链接")
+            return 1
 
         # 步骤 13：done + 清理
         tx.status = "done"

@@ -15,12 +15,18 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 IS_WINDOWS = sys.platform == "win32"
+
+# ── 平台条件标志：Windows 无 O_NOFOLLOW/O_DIRECTORY，取 0（路径安全由
+#    windows_fs 的 islink 预检承担——compatible 档语义）──
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 
 # ── 延迟导入：避免在非目标平台上加载不必要的模块 ──
 
@@ -84,13 +90,31 @@ def fsync_directory(root: Path, rel: str) -> None:
 def exclusive_lock(root: Path, rel: str):
     """排他非阻塞锁——生命周期操作（install/uninstall/recover）。
     冲突时 sys.exit（与现有行为一致）。"""
-    _fs.exclusive_lock(root, rel)
+    with _fs.exclusive_lock(root, rel):
+        yield
 
 
 def try_shared_lock(root: Path, rel: str) -> Any:
     """尝试获取共享锁（doctor 用）。
     返回：锁对象（有 .release()）或 None 或 False（被排他持有）。"""
     return _fs.try_shared_lock(root, rel)
+
+
+# ══════════════════════════ fd 级锁原语（transaction/zvec 等已持有 fd 的调用方） ══════════════════════════
+
+def lock_exclusive_nb(fd: int) -> None:
+    """对已打开的 fd 加排他非阻塞锁。冲突统一抛 BlockingIOError。"""
+    _fs.lock_exclusive_nb(fd)
+
+
+def lock_shared_nb(fd: int) -> None:
+    """对已打开的 fd 加共享非阻塞锁。冲突统一抛 BlockingIOError。"""
+    _fs.lock_shared_nb(fd)
+
+
+def unlock_fd(fd: int) -> None:
+    """释放 fd 上的锁（尽力，失败忽略——进程退出即释放）。"""
+    _fs.unlock_fd(fd)
 
 
 # ══════════════════════════ secure_* 家族（registry.py 委托入口） ══════════════════════════

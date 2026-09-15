@@ -192,18 +192,50 @@ def try_shared_lock(root: Path, rel: str):
     return _SharedLock()
 
 
+# ══════════════════════════ fd 级锁原语 ══════════════════════════
+
+def lock_exclusive_nb(fd: int) -> None:
+    """排他非阻塞锁（msvcrt）。冲突统一转换为 BlockingIOError。"""
+    import msvcrt
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    except BlockingIOError:
+        raise
+    except OSError as e:
+        raise BlockingIOError(f"msvcrt 锁冲突: {e}") from e
+
+
+def lock_shared_nb(fd: int) -> None:
+    """共享非阻塞锁（msvcrt）。冲突统一转换为 BlockingIOError。"""
+    import msvcrt
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBRLCK, 1)
+    except BlockingIOError:
+        raise
+    except OSError as e:
+        raise BlockingIOError(f"msvcrt 锁冲突: {e}") from e
+
+
+def unlock_fd(fd: int) -> None:
+    """释放锁（尽力，失败忽略）。"""
+    import msvcrt
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
 # ══════════════════════════ secure_* 家族（Windows compatible 实现） ══════════════════════════
 # path-based + islink/junction 预检——TOCTOU 保护弱于 POSIX（检查与打开间有理论竞窗）。
 
 def _validate_rel(rel: str) -> Path:
-    """轻量路径校验（不依赖 registry——避免循环导入）。"""
-    from pathlib import PurePosixPath
-    p = PurePosixPath(rel)
-    if p.is_absolute() or not p.parts:
-        raise ValueError(f"secure_* 只接受非空相对路径: {rel!r}")
-    if any(part == ".." for part in p.parts):
-        raise ValueError(f"路径含 .. 组件: {rel!r}")
-    return Path(rel)
+    """轻量路径校验——委托 platform/pathcheck 唯一校验器（第七轮审计：
+    后端不再复制一套校验逻辑，防止分叉）。"""
+    from .pathcheck import validate_relative_rel
+    return validate_relative_rel(rel)
 
 
 def secure_walk_dir_fd(target: Path, dir_rel: str) -> int:

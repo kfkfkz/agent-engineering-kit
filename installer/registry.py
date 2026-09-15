@@ -115,12 +115,13 @@ LEGACY_CODEX_SECTION = "[mcp_servers.agent-engineering]"
 KIT_SKILLS = [
     "memory-check", "memory-capture", "repo-delivery", "codebase-memory",
     "systematic-debugging", "tdd", "reuse-research", "security-review",
-    "delivery-gate", "spec-migrate", "task-handoff",
+    "delivery-gate", "spec-migrate", "task-handoff", "design-pipeline",
 ]
 
 KIT_TOOLS = [
     "validate-memory.sh", "memory-build", "spec-migrate", "memory-recall",
     "domain-check", "session-reminder", "agent-engineering-mcp",
+    "doc-gate", "governance-eval",
 ]
 
 
@@ -245,9 +246,47 @@ def _codex_link_specs() -> list[ResourceSpec]:
 
 
 # 面向用户仓库的全部资源（有序——组锚/顺序校验的依据）
+def _archify_specs() -> list[ResourceSpec]:
+    """vendor/archify/ 快照逐文件展开为 owned_file spec（两棵技能树）。
+    - 供应链锁定：快照聚合哈希与 vendor/archify.manifest.json 不符 → SecurityError
+      （拒绝生成 specs——安装/卸载/doctor 全部走 REGISTRY，一处锁定全局生效）
+    - Node.js ≥18 是**运行时**可选能力：文件照常安装，运行时缺失由 doctor 报
+      DEGRADED（§14 能力缺失语义），不阻断基础安装
+    - vendor 缺失（异常的仓库状态）→ 空列表（kit 自身问题，不静默炸安装）"""
+    import hashlib as _hashlib
+    vendor = KIT_DIR / "vendor" / "archify"
+    manifest_path = KIT_DIR / "vendor" / "archify.manifest.json"
+    if not vendor.is_dir() or not manifest_path.is_file():
+        return []
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        raise SecurityError("vendor/archify.manifest.json 不可解析")
+    files = sorted(p for p in vendor.rglob("*") if p.is_file())
+    digest = _hashlib.sha256()
+    for p in files:
+        digest.update(str(p.relative_to(vendor)).encode())
+        digest.update(b"\0")
+        digest.update(_hashlib.sha256(p.read_bytes()).digest())
+    if digest.hexdigest() != manifest.get("snapshot_sha256"):
+        raise SecurityError("vendor/archify 快照哈希与 manifest 不符——供应链锁定，拒绝安装")
+    specs: list[ResourceSpec] = []
+    for p in files:
+        rel = p.relative_to(vendor).as_posix()
+        for tree in (".claude", ".agents"):
+            specs.append(ResourceSpec(
+                id=f"archify-{tree}-{rel.replace('/', '-')}",
+                source_path=f"vendor/archify/{rel}",
+                destination_path=f"{tree}/skills/archify/{rel}",
+                resource_type="owned_file",
+                locator=None, merge_policy="replace",
+                expected_mode=None, capability="archify"))
+    return specs
+
+
 REGISTRY: list[ResourceSpec] = (
     _root_specs() + _memory_specs() + _skill_specs()
-    + _bin_specs() + _codex_link_specs()
+    + _bin_specs() + _codex_link_specs() + _archify_specs()
 )
 
 # kit 内部状态文件（同级信任、同约束）
@@ -426,19 +465,19 @@ def validate_tx_id(tx_id: str) -> uuid.UUID:
     return parsed
 
 
-def validate_relative_path(rel: str) -> PurePosixPath:
-    """secure_* 文件入口的第一道校验（校验完整文件路径，v12）：
-    - 必须是非空**相对**路径——os.open(绝对路径, dir_fd=...) 会忽略 dir_fd，
-      以 "/" 开头即逃逸出 target
-    - 禁止 .. 组件——包括最后一个组件
-    （PurePosixPath 归一化会吞掉单点组件；根目录文件如 "AGENTS.md" 合法——
-    其父目录串 "." 由 secure_walk_dir_fd 特判。）"""
-    p = PurePosixPath(rel)
-    if p.is_absolute() or not p.parts:
-        raise SecurityError(f"secure_* 只接受非空相对路径: {rel!r}")
-    if any(part == ".." for part in p.parts):
-        raise SecurityError(f"路径含 .. 组件: {rel!r}")
-    return p
+def validate_relative_path(rel: str) -> Path:
+    """secure_* 文件入口的第一道校验（校验完整文件路径）。
+    **唯一校验器在 platform/pathcheck**（第七轮审计 P1：此前固定 PurePosixPath，
+    Windows 的 C:\\x / UNC / ..\\outside 全部逃逸）——本函数只是把 ValueError
+    归一为 SecurityError 的适配层，POSIX/Windows 后端的 _validate_rel 同源委托。
+    - 必须是非空**相对**路径——os.open(绝对路径, dir_fd=...) 会忽略 dir_fd
+    - 拒绝盘符/根/UNC/.. 组件/NUL（按目标平台语义）
+    （根目录文件如 "AGENTS.md" 合法——其父目录串 "." 由 secure_walk_dir_fd 特判。）"""
+    from .platform.pathcheck import validate_relative_rel
+    try:
+        return validate_relative_rel(rel)
+    except ValueError as e:
+        raise SecurityError(str(e))
 
 
 def _wrap_fs_error(func, *args, **kwargs):

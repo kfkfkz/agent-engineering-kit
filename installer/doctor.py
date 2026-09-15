@@ -173,6 +173,32 @@ def run_doctor_checks(target: Path,
                                 f"kit 版本不一致（已装={manifest.kit_version}，"
                                 f"当前={current_kit_version()}）"))
 
+    # 可选能力 archify：文件已装但 Node.js 运行时缺失 → DEGRADED（§14 能力缺失
+    # 语义——基础功能不受影响，图表生成降级为 mermaid 回退）
+    if any(s.id.startswith("archify-") for s in REGISTRY if s.id in entries):
+        node_ok = False
+        node_bin = None
+        import shutil as _shutil
+        import subprocess as _subprocess
+        for node_name in ("node", "node.exe"):
+            node_bin = _shutil.which(node_name)
+            if node_bin:
+                try:
+                    r = _subprocess.run([node_bin, "--version"],
+                                        capture_output=True, text=True, timeout=5)
+                    major = (r.stdout or "").strip().lstrip("vV").split(".")[0]
+                    node_ok = r.returncode == 0 and major.isdigit() and int(major) >= 18
+                except (OSError, ValueError):
+                    node_ok = False
+                if node_ok:
+                    break
+        if not node_ok:
+            add("DEGRADED", Finding(
+                "archify-capability", ".claude/skills/archify/",
+                "degraded",
+                "archify 图表能力降级：需要 Node.js ≥18（未检测到可用运行时）——"
+                "业务流程图回退 mermaid，基础功能不受影响"))
+
     overall = "HEALTHY"
     for status in _PRIORITY:
         if status in statuses:

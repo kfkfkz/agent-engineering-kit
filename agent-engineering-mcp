@@ -28,9 +28,13 @@ _BOUND_REPO = os.path.dirname(os.path.dirname(KIT_BIN))
 # 客户端在 initialize.params.protocolVersion 发来版本号：
 #   - 在支持列表内 → 回显该版本（客户端继续）
 #   - 不在列表内 → 回 DEFAULT（客户端自行决定是否继续）
+#
+# 只声明 initialize 握手时代（legacy era）真正实现的版本——2026-07-28
+# (modern era) 移除了 initialize、要求 server/discover 与每请求 _meta，
+# 我们未实现，不宣称支持（P1 诚实化：声明与 wire 行为必须一致）。
 # 参考：https://modelcontextprotocol.io/specification
-SUPPORTED_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2026-07-28"]
-DEFAULT_PROTOCOL_VERSION = "2026-07-28"
+SUPPORTED_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
+DEFAULT_PROTOCOL_VERSION = "2025-11-25"
 SERVER_NAME = "agent-engineering-kit"
 SERVER_VERSION = "1.1.0"
 
@@ -193,6 +197,9 @@ def tool_kit_status(args):
     return status
 
 
+_initialized = False   # 生命周期状态：initialize 成功前拒绝业务调用（ping 除外）
+
+
 TOOL_HANDLERS = {
     "memory_recall": tool_memory_recall,
     "memory_build": tool_memory_build,
@@ -207,10 +214,26 @@ def handle_request(req):
     req_id = req.get("id")
 
     if method == "initialize":
-        params = req.get("params", {})
+        # 2025-11-25 schema：InitializeRequest 必须携带 protocolVersion、
+        # capabilities、clientInfo——缺失返回 -32602（第七轮审计 P2：
+        # params={} 此前被当正常路径初始化）
+        params = req.get("params")
+        if (not isinstance(params, dict)
+                or not isinstance(params.get("protocolVersion"), str)
+                or not isinstance(params.get("capabilities"), dict)
+                or not isinstance(params.get("clientInfo"), dict)):
+            return {
+                "jsonrpc": "2.0", "id": req_id,
+                "error": {"code": -32602,
+                          "message": "Invalid params: initialize requires "
+                                     "protocolVersion (string), capabilities "
+                                     "(object) and clientInfo (object)"},
+            }
         client_version = params.get("protocolVersion", "")
         negotiated = (client_version if client_version in SUPPORTED_VERSIONS
                       else DEFAULT_PROTOCOL_VERSION)
+        global _initialized
+        _initialized = True
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -223,6 +246,14 @@ def handle_request(req):
 
     if method == "notifications/initialized":
         return None  # notification, no response
+
+    # 初始化前调用（ping 除外——无状态健康检查）→ -32002 ServerNotInitialized
+    if method != "ping" and not _initialized:
+        return {
+            "jsonrpc": "2.0", "id": req_id,
+            "error": {"code": -32002,
+                      "message": "Server not initialized: send initialize first"},
+        }
 
     if method == "tools/list":
         return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}}

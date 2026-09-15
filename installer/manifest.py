@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from . import platform as _plat
 from .registry import (
     STATE_REGISTRY,
     SecurityError,
@@ -121,7 +122,7 @@ def read_manifest(target: Path) -> Manifest | None:
     未知 spec_id 的条目按 §4 忽略（不进 entries）。"""
     path = target / MANIFEST_REL
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | _plat.O_NOFOLLOW)
     except FileNotFoundError:
         return None
     except OSError as e:

@@ -338,6 +338,56 @@ print("roll-forward OK")
 PY
 [ $? = 0 ] && ok "恢复分类：全部提交 → roll-forward（Manifest 补写）" || bad "roll-forward"
 
+# 6.3b copy 策略崩溃恢复（P1 审计：roll-forward 曾无条件补 symlink——
+#     copy 安装崩溃后被恢复成 symlink 产物，且 Windows 上直接失败）
+X3B="$T/crash-rollfwd-copy"
+CR="$T/codex-ws-copy"
+mkdir -p "$X3B" "$CR/.agents/skills"
+python3 - "$X3B" "$CR" <<'PY' >/dev/null 2>&1
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import install as inst
+from installer import transaction as txm
+from installer.registry import KIT_SKILLS
+
+t, c = Path(sys.argv[1]), Path(sys.argv[2])
+# 第一次完整安装（symlink 默认）：写 marker + 链接 + manifest
+inst.run_install(t, codex_root=c)
+# 清掉全部链接（模拟"链接创建前"的磁盘状态）
+for skill in KIT_SKILLS:
+    link = c / ".agents" / "skills" / skill
+    if link.is_symlink():
+        link.unlink()
+# 第二次安装（copy）：注入崩溃——ensure_codex_links 抛异常（步骤 12 前）
+orig = inst.ensure_codex_links
+def boom(*a, **k):
+    raise RuntimeError("crash before links")
+inst.ensure_codex_links = boom
+try:
+    inst.run_install(t, codex_root=c, link_strategy="copy")
+    raise SystemExit("崩溃注入失败——run_install 未抛异常")
+except RuntimeError:
+    pass
+finally:
+    inst.ensure_codex_links = orig
+# 恢复：roll-forward 必须按事务记录的 link_strategy=copy 补建副本
+r = txm.recover(t)
+assert r.status == "roll_forward_completed", f"期望 roll_forward，实际 {r.status}: {r.detail}"
+symlinks = copies = 0
+for skill in KIT_SKILLS:
+    link = c / ".agents" / "skills" / skill
+    assert link.exists(), f"链接未补建: {link}"
+    if link.is_symlink():
+        symlinks += 1
+    else:
+        assert (link / "SKILL.md").is_file(), f"副本缺 SKILL.md: {link}"
+        copies += 1
+assert copies > 0 and symlinks == 0, f"恢复改变了产物类型: copies={copies} symlinks={symlinks}"
+print("copy 崩溃恢复 OK")
+PY
+[ $? = 0 ] && ok "copy 安装崩溃恢复按策略补建副本（不再变成 symlink）" || bad "copy 崩溃恢复改变产物类型"
+
 # 6.4 CONFLICT 现场分类 → needs_human（evidence 保留）
 X4="$T/crash-conflict"
 mkdir -p "$X4"
@@ -923,6 +973,218 @@ assert "max(rc," not in src, \
 print("mechanism verified")
 PYEOF
 
+
+# ══════════ 十五、copy 模式卸载（P1 审计：曾是成功返回的 no-op）══════════
+P15="$T/copy-uninstall"
+WS15="$T/copy-ws"
+mkdir -p "$P15"
+"$SRC/install.sh" "$P15" --codex-root "$WS15" --link-strategy copy >/dev/null 2>&1
+COPIES=$(find "$WS15/.agents/skills" -name SKILL.md 2>/dev/null | wc -l)
+[ "$COPIES" -gt 0 ] && ok "copy 安装产生 $COPIES 个副本" || bad "copy 安装无副本"
+# 用户自加文件混入技能目录——卸载必须保留（不 rmtree）
+echo "user note" > "$WS15/.agents/skills/tdd/my-notes.md"
+UN15=0; python3 -m installer --uninstall "$P15" --codex-root "$WS15" >/dev/null 2>&1 || UN15=$?
+check "15.1 copy 卸载退出码 0" 0 "$UN15"
+LEFT=$(find "$WS15/.agents/skills" -name SKILL.md 2>/dev/null | wc -l)
+[ "$LEFT" = "0" ] && ok "15.2 副本全部删除（此前 no-op 保留全部）" || bad "15.2 残留 $LEFT 个副本"
+[ -f "$WS15/.agents/skills/tdd/my-notes.md" ] \
+    && ok "15.3 用户文件保留（只删受管 SKILL.md，不 rmtree）" \
+    || bad "15.3 用户文件被误删"
+OTHERS=$(find "$WS15/.agents/skills" -mindepth 1 -maxdepth 1 -not -name "tdd" 2>/dev/null | wc -l)
+[ "$OTHERS" = "0" ] && ok "15.4 空技能目录已清理（仅留含用户文件的 tdd）" || bad "15.4 空目录残留"
+
+
+# ══════════ 十六、外部事务模型负向矩阵（第七轮审计 P1-2/P1-3）══════════
+
+# 16.1 preflight 后的竞争窗口：workspace 被用户内容占用 → needs_human（不再吞掉返回 0）
+P16="$T/ext-conflict"
+WS16="$T/ext-ws16"
+mkdir -p "$P16"
+python3 - "$P16" "$WS16" <<'PY' > "$T/ext-conflict.log" 2>&1
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+import installer.install as inst
+
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+ws.mkdir(parents=True, exist_ok=True)
+# race 窗口注入：真实 preflight 通过后、ensure_codex_links 执行前，用户内容出现
+real_pf = inst.run_preflight
+def race_pf(*a, **k):
+    pf = real_pf(*a, **k)
+    tdd = ws / ".agents" / "skills" / "tdd"
+    tdd.mkdir(parents=True, exist_ok=True)
+    (tdd / "SKILL.md").write_text("user-owned content", encoding="utf-8")
+    return pf
+inst.run_preflight = race_pf
+rc = inst.run_install(target, codex_root=ws, link_strategy="copy")
+print(f"RACE_RC={rc}")
+PY
+RC16=$(grep -o "RACE_RC=[0-9]*" "$T/ext-conflict.log" | cut -d= -f2)
+check "16.1a 外部冲突安装退出码 1（此前返回 0）" 1 "${RC16:-none}"
+grep -q "外部技能暴露冲突" "$T/ext-conflict.log" \
+    && ok "16.1b 冲突进事务状态机（needs_human，不再靠字符串报告）" \
+    || bad "16.1b 冲突未进事务: $(tail -2 "$T/ext-conflict.log")"
+grep -q "user-owned content" "$WS16/.agents/skills/tdd/SKILL.md" \
+    && ok "16.1c 用户内容未被覆盖" || bad "16.1c 用户内容被覆盖"
+python3 - "$P16" <<'PY' > "$T/ext-tx.log" 2>&1
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+txs = txm.find_unresolved(Path(sys.argv[1]).resolve())
+assert len(txs) == 1 and txs[0].status == "needs_human", \
+    f"期望 1 个 needs_human 事务: {[(t.tx_id, t.status) for t in txs]}"
+PY
+[ $? = 0 ] && ok "16.1d needs_human 事务落盘（阻断后续生命周期直至人工处理）" || bad "16.1d 事务状态异常"
+
+# 16.2 人工移除冲突内容 → --recover=roll-forward 补建（create 记录 + hash 血统）
+rm -rf "$WS16/.agents/skills/tdd"
+python3 - "$P16" <<'PY' >/dev/null 2>&1
+import os, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+
+t = Path(sys.argv[1]).resolve()
+lock = txm.acquire_install_lock(t)
+rr = txm.recover_manual(t, "roll-forward")
+os.close(lock)
+assert rr.status == "roll_forward_completed", f"{rr.status}: {rr.detail}"
+skill_md = t.parent.parent / Path(sys.argv[0])  # unused
+PY
+RC162=$?
+check "16.2a 人工恢复 roll-forward 完成" 0 "$RC162"
+[ -f "$WS16/.agents/skills/tdd/SKILL.md" ] \
+    && ok "16.2b 冲突解除后 tdd 副本补建" || bad "16.2b 副本未补建"
+
+# 16.3 copy 卸载崩溃 → roll-forward 补删（第七轮 P1-2：此前反向补偿重拷）
+P17="$T/ext-rollfwd-del"
+WS17="$T/ext-ws17"
+mkdir -p "$P17"
+"$SRC/install.sh" "$P17" --codex-root "$WS17" --link-strategy copy >/dev/null 2>&1
+COPIES17=$(find "$WS17/.agents/skills" -name SKILL.md | wc -l)
+[ "$COPIES17" -gt 0 ] && ok "16.3a 前置：$COPIES17 个副本在位" || bad "16.3a 副本未创建"
+python3 - "$P17" "$WS17" <<'PY' >/dev/null 2>&1
+import os, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+from installer.registry import resolve_spec
+
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+import hashlib
+lock = txm.acquire_install_lock(target)
+tx = txm.TransactionRecord.new(target, "uninstall")
+tx.link_strategy = "copy"
+txm.secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")
+txm.secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}/backups")
+tx.status = "planning"; tx.write(target)
+spec = resolve_spec("memory-rules")
+tx.plan = [txm.CommitStep(spec_id="memory-rules", spec_ids=("memory-rules",),
+                          kind="delete",
+                          pre_container_hash=txm.file_sha256(target / spec.destination_path),
+                          post_container_hash=None, pre_mode=None)]
+skill_md = ws / ".agents" / "skills" / "tdd" / "SKILL.md"
+tx.external = [txm.ExternalStep(
+    spec_id="codex-link-tdd", skill_name="tdd", codex_root=str(ws),
+    prior_state="content_matches", state="intent", operation="remove",
+    strategy="copy",
+    expected_hash=hashlib.sha256(skill_md.read_bytes()).hexdigest())]
+tx.status = "committing"; tx.write(target)
+r1 = txm.commit_one(target, tx.plan[0], tx.tx_id)
+assert r1.status == "committed"
+os.close(lock)                     # —— 崩溃（intent 已落盘、副本未删）——
+r = txm.recover(target)
+assert r.status == "roll_forward_completed", f"{r.status}: {r.detail}"
+assert not skill_md.is_file(), f"副本未被补删（反向补偿）: {skill_md}"
+PY
+[ $? = 0 ] && ok "16.3b copy 卸载崩溃 → roll-forward 补删副本（不再反向补偿）" || bad "16.3b roll-forward 反向补偿"
+
+# 16.4 副本被用户改过 → roll-forward 拒删保留现场（血统不符 → needs_human）
+P18="$T/ext-user-modified"
+WS18="$T/ext-ws18"
+mkdir -p "$P18"
+"$SRC/install.sh" "$P18" --codex-root "$WS18" --link-strategy copy >/dev/null 2>&1
+echo "user modified the copy" > "$WS18/.agents/skills/tdd/SKILL.md"
+python3 - "$P18" "$WS18" <<'PY' >/dev/null 2>&1
+import os, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+from installer.registry import resolve_spec
+
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+import hashlib
+lock = txm.acquire_install_lock(target)
+tx = txm.TransactionRecord.new(target, "uninstall")
+tx.link_strategy = "copy"
+txm.secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")
+txm.secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}/backups")
+tx.status = "planning"; tx.write(target)
+spec = resolve_spec("memory-rules")
+tx.plan = [txm.CommitStep(spec_id="memory-rules", spec_ids=("memory-rules",),
+                          kind="delete",
+                          pre_container_hash=txm.file_sha256(target / spec.destination_path),
+                          post_container_hash=None, pre_mode=None)]
+# expected_hash 是 plan 时点的 kit 源血统（副本已被改过 → 不匹配）
+source = target / ".agents" / "skills" / "tdd" / "SKILL.md"
+tx.external = [txm.ExternalStep(
+    spec_id="codex-link-tdd", skill_name="tdd", codex_root=str(ws),
+    prior_state="content_matches", state="intent", operation="remove",
+    strategy="copy",
+    expected_hash=hashlib.sha256(source.read_bytes()).hexdigest())]
+tx.status = "committing"; tx.write(target)
+r1 = txm.commit_one(target, tx.plan[0], tx.tx_id)
+assert r1.status == "committed"
+os.close(lock)
+r = txm.recover(target)
+assert r.status == "needs_human", f"血统不符应 needs_human: {r.status}"
+modified = ws / ".agents" / "skills" / "tdd" / "SKILL.md"
+assert modified.read_text().strip() == "user modified the copy", "用户改过的副本被误删/改写"
+PY
+[ $? = 0 ] && ok "16.4 副本被用户改过 → needs_human + 现场保留（血统保护）" || bad "16.4 用户改写副本被误删"
+
+
+# ══════════ 十七、archify 集成（vendor 快照 + 逐文件两棵树 + 卸载）══════════
+P19="$T/archify-install"
+mkdir -p "$P19"
+python3 -m installer "$P19" >/dev/null 2>&1
+[ -f "$P19/.claude/skills/archify/bin/archify.mjs" ] \
+    && [ -f "$P19/.agents/skills/archify/SKILL.md" ] \
+    && ok "17.1 archify 装入两棵技能树" || bad "17.1 archify 未部署"
+N19=$(find "$P19/.claude/skills/archify" -type f | wc -l)
+[ "$N19" -ge 80 ] && ok "17.2 archify 文件齐（$N19 个）" || bad "17.2 文件缺（$N19）"
+
+# 供应链锁定：篡改 vendor → 安装拒绝（SecurityError）
+cp vendor/archify/SKILL.md "$T/sk.orig"
+echo "# tampered" >> vendor/archify/SKILL.md
+python3 -m installer "$P19" > "$T/tamper.log" 2>&1
+RC_T=$?
+[ "$RC_T" != "0" ] && grep -q "供应链\|快照哈希" "$T/tamper.log" \
+    && ok "17.3 vendor 篡改 → 安装拒绝（供应链锁定生效）" \
+    || bad "17.3 篡改未拦截: rc=$RC_T"
+cp "$T/sk.orig" vendor/archify/SKILL.md
+[ "$(sha256sum vendor/archify/SKILL.md | cut -d' ' -f1)" = "$(sha256sum "$T/sk.orig" | cut -d' ' -f1)" ] \
+    && ok "17.4 vendor 已还原" || bad "17.4 vendor 还原失败"
+
+# doctor：Node 在位 → 无 archify 降级
+python3 -m installer --doctor "$P19" > "$T/doc19.log" 2>&1
+! grep -q "archify 图表能力降级" "$T/doc19.log" \
+    && ok "17.5 doctor：Node 在位，archify 不降级" || bad "17.5 误报降级"
+
+# Node 缺失 → DEGRADED（PATH 换成只含 python3 的目录模拟）
+mkdir -p "$T/fakebin"
+ln -sf "$(command -v python3)" "$T/fakebin/python3"
+PATH="$T/fakebin" python3 -m installer --doctor "$P19" > "$T/doc19b.log" 2>&1
+grep -q "archify 图表能力降级" "$T/doc19b.log" \
+    && ok "17.6 Node 缺失 → doctor 报 DEGRADED（能力降级不阻断）" \
+    || bad "17.6 缺 Node 未报降级"
+
+# 卸载 → archify 树全清
+python3 -m installer --uninstall "$P19" >/dev/null 2>&1
+[ ! -e "$P19/.claude/skills/archify" ] && [ ! -e "$P19/.agents/skills/archify" ] \
+    && ok "17.7 archify 树卸载干净（含嵌套空目录）" || bad "17.7 残留"
 
 echo
 echo "通过 $pass / 失败 $fail"

@@ -17,3 +17,9 @@
 - Adapted concepts: TDD 的 RED/GREEN/REFACTOR 纪律，以及从测试摩擦识别架构问题。
 
 完整的本项目许可见 [LICENSE](LICENSE)。上游名称仅用于归属说明，不表示上游作者为本项目背书。
+
+## archify
+
+- 来源：https://github.com/tt-a1i/archify
+- 许可：MIT（上游 LICENSE 与 THIRD_PARTY_NOTICES.md 随 vendor 快照保留于 vendor/archify/）
+- 用途：设计流水线的业务流程图/架构图渲染（vendor 快照锁定，安装器逐文件部署）

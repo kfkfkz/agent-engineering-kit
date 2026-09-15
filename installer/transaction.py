@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import hmac
 import json
@@ -22,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
+from . import platform as _plat
 from .manifest import Manifest, build_manifest_from_tx
 from .registry import (
     CodexLinkSpec,
@@ -95,14 +95,21 @@ class CommitStep:
 
 @dataclass
 class ExternalStep:
-    """target 外的副作用（codex link 删除）。
-    意图先行：state="intent" 落盘 fsync → unlink → state="removed" 落盘。
+    """target 外的副作用——统一外部事务模型（第七轮审计重构）。
+    意图先行：state="intent" 落盘 fsync → 执行 → state="applied" 落盘。
+    - operation="remove"（卸载）/ "create"（安装）
+    - strategy="symlink" | "copy"（恢复不得改变产物类型）
+    - expected_hash = plan 时点 kit 源 SKILL.md 的 sha256（copy 血统——崩溃恢复
+      时 kit 源可能已删，必须由记录携带）
     恢复以磁盘现状为准（§11.7），state 是线索不是事实。"""
     spec_id: str
     skill_name: str
     codex_root: str                # 本次卸载 CLI 重传的 --codex-root（HMAC 保护下可回放）
     prior_state: Literal["absent", "pointing_to_target", "content_matches", "other"]
-    state: Literal["intent", "removed"] = "intent"
+    state: Literal["intent", "applied"] = "intent"
+    operation: Literal["create", "remove"] = "remove"
+    strategy: Literal["symlink", "copy"] = "symlink"
+    expected_hash: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -111,16 +118,24 @@ class ExternalStep:
             "codex_root": self.codex_root,
             "prior_state": self.prior_state,
             "state": self.state,
+            "operation": self.operation,
+            "strategy": self.strategy,
+            "expected_hash": self.expected_hash,
         }
 
     @classmethod
     def from_dict(cls, data: Any) -> "ExternalStep":
+        # "removed" 是 v1 语义（等价 applied）——**不得在此映射**：MAC 覆盖原始
+        # 载荷，from_dict 必须字节级往返；等价性在消费点处理
         return cls(
             spec_id=str(data["spec_id"]),
             skill_name=str(data["skill_name"]),
             codex_root=str(data["codex_root"]),
             prior_state=str(data["prior_state"]),   # type: ignore[arg-type]
             state=str(data.get("state", "intent")),  # type: ignore[arg-type]
+            operation=str(data.get("operation") or "remove"),  # type: ignore[arg-type]
+            strategy=str(data.get("strategy") or "symlink"),    # type: ignore[arg-type]
+            expected_hash=data.get("expected_hash"),
         )
 
 
@@ -136,6 +151,7 @@ class TransactionRecord:
     mac: str | None = None                  # 载入时填充；写入时由 write_transaction_atomic 计算
     mac_verified: bool = False              # find_unresolved 载入即验证（§11.4）
     codex_root_old: str | None = None       # marker 旧值（HMAC 保护——回滚恢复）
+    link_strategy: str = "symlink"           # 本事务外部链接策略（HMAC 保护——恢复不得改变产物类型）
 
     def to_dict(self) -> dict:
         return {
@@ -147,6 +163,7 @@ class TransactionRecord:
             "created_at": self.created_at,
             "detail": self.detail,
             "codex_root_old": self.codex_root_old,
+            "link_strategy": self.link_strategy,
         }
 
     @classmethod
@@ -160,6 +177,7 @@ class TransactionRecord:
             created_at=str(data.get("created_at", "")),
             detail=data.get("detail"),
             codex_root_old=data.get("codex_root_old"),
+            link_strategy=str(data.get("link_strategy") or "symlink"),
         )
 
     @classmethod
@@ -199,7 +217,7 @@ def acquire_install_lock(target: Path) -> int:
     fd = secure_open(target, ".repo-memory-kit/install.lock",
                      os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _plat.lock_exclusive_nb(fd)
     except BlockingIOError:
         os.close(fd)
         sys.exit("✗ 另一个 kit 生命周期进程正在运行（install.lock 被持有），退出")
@@ -213,13 +231,13 @@ def try_open_install_lock_shared(target: Path) -> int | None:
     - -1   → 锁被排他持有，或打开异常（如 ELOOP 符号链接）→ INCOMPLETE"""
     lock_path = target / ".repo-memory-kit" / "install.lock"
     try:
-        fd = os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(lock_path, os.O_RDONLY | _plat.O_NOFOLLOW)
     except FileNotFoundError:
         return None
     except OSError:
         return -1
     try:
-        fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        _plat.lock_shared_nb(fd)
     except BlockingIOError:
         os.close(fd)
         return -1
@@ -244,7 +262,7 @@ def load_tx_key(target: Path) -> bytes | None:
     读 33 字节且要求恰好 32（v11）：os.read(fd, 32) 对超长损坏文件（如 40 字节）
     会返回前 32 字节被误接受——读 33 才能确认无多余内容。"""
     try:
-        fd = os.open(tx_key_path(target), os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(tx_key_path(target), os.O_RDONLY | _plat.O_NOFOLLOW)
     except OSError:
         return None
     try:
@@ -270,7 +288,7 @@ def ensure_tx_key(target: Path) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     fresh = os.urandom(32)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _plat.O_NOFOLLOW, 0o600)
     except FileExistsError:
         existing = load_tx_key(target)          # 并发：他方刚建好
         if existing is None:
@@ -283,11 +301,8 @@ def ensure_tx_key(target: Path) -> bytes:
     finally:
         os.close(fd)
     # 密钥目录项持久化（v11）：新建文件必须 fsync 父目录，否则崩溃后密钥可能消失
-    dir_fd = os.open(path.parent, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+    # （Windows 无目录 fsync——NTFS 日志保证，platform no-op）
+    _plat.fsync_directory(path.parent, ".")
     persisted = load_tx_key(target)             # 落盘后回读
     if persisted != fresh:
         raise SecurityError(f"tx key 落盘后回读不一致: {path}")
@@ -336,7 +351,7 @@ def load_transaction(target: Path, tx_id: str) -> TransactionRecord | None:
     validate_tx_id(tx_id)
     path = target / ".repo-memory-kit" / "tx" / tx_id / "record.json"
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | _plat.O_NOFOLLOW)
     except FileNotFoundError:
         return None
     try:
@@ -374,6 +389,16 @@ def validate_tx_record(tx: TransactionRecord) -> list[str]:
         errors.append(str(e))
     if tx.kind not in ("install", "uninstall"):
         errors.append(f"kind 非法: {tx.kind!r}")
+    if tx.link_strategy not in ("symlink", "copy"):
+        errors.append(f"link_strategy 非法: {tx.link_strategy!r}")
+    for step in tx.external:
+        if step.operation not in ("create", "remove"):
+            errors.append(f"{step.spec_id}: external.operation 非法: {step.operation!r}")
+        if step.strategy not in ("symlink", "copy"):
+            errors.append(f"{step.spec_id}: external.strategy 非法: {step.strategy!r}")
+        if step.strategy == "copy" and step.operation == "remove" \
+                and step.expected_hash is None:
+            errors.append(f"{step.spec_id}: copy 删除步骤缺 expected_hash（血统凭证）")
     # needs_human 也在可恢复集内（§11.9 人工恢复入口对其选择策略；
     # find_unresolved 的扫描集含 needs_human——v9）
     if tx.status not in ("planning", "staging", "committing", "needs_human"):
@@ -481,7 +506,7 @@ def backup_container(target: Path, step: CommitStep, tx_id: str) -> bool:
         return True
     paths = derive_transaction_paths(target, step.spec_id, tx_id)
     try:
-        src_fd = os.open(paths.dst, os.O_RDONLY | os.O_NOFOLLOW)
+        src_fd = os.open(paths.dst, os.O_RDONLY | _plat.O_NOFOLLOW)
     except OSError:
         return False
     try:
@@ -594,7 +619,7 @@ def restore_from_backup(target: Path, dst_rel: str, backup: Path, tx_id: str,
     # backup 读取允许路径形式（O_NOFOLLOW 防最终组件）：读到的内容必须匹配
     # HMAC 保护的 pre_hash——被换内容只会导致校验失败（fail-safe，无写入）
     try:
-        backup_fd = os.open(backup, os.O_RDONLY | os.O_NOFOLLOW)
+        backup_fd = os.open(backup, os.O_RDONLY | _plat.O_NOFOLLOW)
     except OSError:
         return False
 
@@ -714,6 +739,41 @@ def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]
     返回失败清单；非空 → needs_human。"""
     failures = []
     for rec in tx.external:
+        if rec.operation == "create":
+            continue                              # 卸载事务只收尾 remove 步骤
+        if rec.prior_state == "content_matches":
+            # 复制模式补删（第七轮审计 P1：此处曾误放补偿重拷逻辑——roll-forward
+            # 是完成删除，不是撤销它）：
+            # - 副本已不在 → 已完成
+            # - 内容与 plan 时 expected_hash 一致 → 删受管文件 + 空目录 rmdir
+            # - 内容已变（非 kit 血统）→ 保留现场待人工（绝不删用户内容）
+            try:
+                spec = resolve_spec(rec.spec_id)
+                if rec.skill_name != spec.link_skill_name:
+                    failures.append(f"{rec.spec_id}: 记录的 skill_name 与 Registry 不符")
+                    continue
+                codex_root = Path(rec.codex_root)
+                link_spec = CodexLinkSpec(skill_name=spec.link_skill_name)
+                link_spec.validate(codex_root, target)
+                link = link_spec.derive_link_path(codex_root)
+                dest = link / "SKILL.md"
+                if not dest.is_file():
+                    rec.state = "applied"         # 已不在 = 已完成
+                    continue
+                cur = hashlib.sha256(dest.read_bytes()).hexdigest()
+                if rec.expected_hash is None or cur != rec.expected_hash:
+                    failures.append(
+                        f"{rec.spec_id}: 副本内容与 plan 时血统不符，保留现场待人工: {dest}")
+                    continue
+                dest.unlink()
+                try:
+                    link.rmdir()                  # 仅空目录可删
+                except OSError:
+                    pass
+                rec.state = "applied"
+            except (OSError, SecurityError) as e:
+                failures.append(f"{rec.spec_id}: {e}")
+            continue
         if rec.prior_state != "pointing_to_target":
             continue
         try:
@@ -737,32 +797,31 @@ def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]
                 except OSError:
                     return False
             if not _lexists(link) and not _lexists(iso):
-                if rec.state != "removed":
-                    rec.state = "removed"      # 原路径和隔离名都不在 → 完成
+                rec.state = "applied"          # 原路径和隔离名都不在 → 完成
                 continue
             # 原路径或隔离名存在 → 走安全删除（内部会处理孤儿和原子恢复）
             safe_unlink_external_link(link, expected)
-            rec.state = "removed"
+            rec.state = "applied"
         except (OSError, SecurityError) as e:
             failures.append(f"{rec.spec_id}: {e}")
     return failures
 
 
-def restore_external_links(target: Path, tx: TransactionRecord) -> list[str]:
-    """可补偿外部步骤的逆操作：以**磁盘现状**为准（记录只是线索）。
-    - 只处理 prior_state == "pointing_to_target" 的步骤
-    - 链接路径由 skill_name + codex_root 经 CodexLinkSpec 重新派生并验证
-    - 链接仍在磁盘上（无论记录处于 intent 还是 removed）→ 无需补偿；
-      链接已消失 → 重建（覆盖崩溃窗口：unlink 后、removed 记录前）
-    - 返回失败清单；非空 → 调用方进 needs_human（绝不静默吞掉）"""
+def complete_external_creations(target: Path, tx: TransactionRecord) -> list[str]:
+    """安装方向 roll-forward 的外部步骤收尾：create 意图已记录但未完成的
+    （state=intent），按记录的 strategy/expected_hash 补建并核验。
+    **绝不删除**——roll-forward 是完成创建，不是撤销它。
+    - 目标已存在且与预期一致 → 已完成
+    - 目标被用户内容占用 → 保留现场待人工（failures）
+    - copy 补建前核验 kit 源血统（sha256 == expected_hash）
+    返回失败清单；非空 → needs_human。"""
+    import shutil as _shutil
     failures = []
     for rec in tx.external:
-        if rec.prior_state != "pointing_to_target":
+        if rec.operation != "create" or rec.state in ("applied", "removed"):
             continue
         try:
             spec = resolve_spec(rec.spec_id)
-            # ★ 双重验证（v11）：记录中的 skill_name 必须等于 Registry 的
-            # link_skill_name；codex_root 必须过 CodexLinkSpec.validate
             if rec.skill_name != spec.link_skill_name:
                 failures.append(f"{rec.spec_id}: 记录的 skill_name 与 Registry 不符")
                 continue
@@ -771,10 +830,119 @@ def restore_external_links(target: Path, tx: TransactionRecord) -> list[str]:
             link_spec.validate(codex_root, target)
             link = link_spec.derive_link_path(codex_root)
             expected = link_spec.derive_target_path(target)
+            if rec.strategy == "copy":
+                dest = link / "SKILL.md"
+                if dest.is_file():
+                    if rec.expected_hash and hashlib.sha256(
+                            dest.read_bytes()).hexdigest() == rec.expected_hash:
+                        rec.state = "applied"     # 已在（幂等）
+                        continue
+                    failures.append(f"{rec.spec_id}: 副本目标被占用且内容不同，保留现场: {dest}")
+                    continue
+                if link.exists() and not link.is_dir():
+                    failures.append(f"{rec.spec_id}: 目标被非目录内容占用，保留现场: {link}")
+                    continue
+                source_md = expected / "SKILL.md"
+                if (not source_md.is_file()) or (
+                        rec.expected_hash is None
+                        or hashlib.sha256(source_md.read_bytes()).hexdigest()
+                        != rec.expected_hash):
+                    failures.append(f"{rec.spec_id}: kit 源缺失或血统不符: {source_md}")
+                    continue
+                link.mkdir(parents=True, exist_ok=True)
+                _shutil.copy2(source_md, dest)
+                rec.state = "applied"
+            else:
+                if link.is_symlink():
+                    if os.readlink(link) == str(expected):
+                        rec.state = "applied"     # 已在（幂等）
+                    else:
+                        failures.append(f"{rec.spec_id}: 链接已存在但指向不同，保留现场: {link}")
+                    continue
+                if link.exists():
+                    failures.append(f"{rec.spec_id}: 目标被非链接内容占用，保留现场: {link}")
+                    continue
+                link.parent.mkdir(parents=True, exist_ok=True)
+                os.symlink(str(expected), link)
+                rec.state = "applied"
+        except (OSError, SecurityError) as e:
+            failures.append(f"{rec.spec_id}: {e}")
+    return failures
+
+
+def _recreate_external_link(link: Path, expected: Path, strategy: str) -> None:
+    """按策略重建外部技能暴露——恢复不得改变产物类型（P1：copy 安装崩溃
+    后 roll-forward 曾被无条件补成 symlink）。"""
+    if strategy == "copy":
+        import shutil as _shutil
+        link.mkdir(parents=True, exist_ok=True)
+        _shutil.copy2(expected / "SKILL.md", link / "SKILL.md")
+    else:
+        link.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(str(expected), link)
+
+
+def restore_external_links(target: Path, tx: TransactionRecord) -> list[str]:
+    """回滚补偿：只撤销**本事务已执行**的外部副作用（磁盘现状为准，记录是线索）。
+
+    remove 步骤（卸载回滚）——删除已发生的效果要恢复：
+    - prior_state == "pointing_to_target"：链接已消失 → 按记录 strategy 重建
+      （覆盖崩溃窗口：unlink 后、applied 记录前）
+    - prior_state == "content_matches"：副本 SKILL.md 已删 → 从 kit 源重拷
+      （回滚时内部资源已恢复，kit 源在位）
+
+    create 步骤（安装回滚）——本事务创建的效果要撤销：
+    - 副本内容 == expected_hash（本事务产物）→ 删 SKILL.md + 空目录 rmdir
+    - 符号链接指向 expected → unlink
+    - 内容不同/缺失 → 非本事务效果，不动（绝不删用户内容）
+
+    恢复不得改变产物类型（copy 重建为 copy）。返回失败清单；非空 → needs_human。"""
+    import shutil as _shutil
+    failures = []
+    for rec in tx.external:
+        try:
+            spec = resolve_spec(rec.spec_id)
+            if rec.skill_name != spec.link_skill_name:
+                failures.append(f"{rec.spec_id}: 记录的 skill_name 与 Registry 不符")
+                continue
+            codex_root = Path(rec.codex_root)
+            link_spec = CodexLinkSpec(skill_name=spec.link_skill_name)
+            link_spec.validate(codex_root, target)
+            link = link_spec.derive_link_path(codex_root)
+            expected = link_spec.derive_target_path(target)
+
+            if rec.operation == "create":
+                # 安装回滚：只撤销本事务创建的产物
+                if rec.strategy == "copy":
+                    dest = link / "SKILL.md"
+                    if (dest.is_file() and rec.expected_hash
+                            and hashlib.sha256(dest.read_bytes()).hexdigest()
+                            == rec.expected_hash):
+                        dest.unlink()
+                        try:
+                            link.rmdir()
+                        except OSError:
+                            pass
+                elif link.is_symlink() and os.readlink(link) == str(expected):
+                    link.unlink()
+                continue
+
+            # remove 步骤的回滚补偿
+            if rec.prior_state == "content_matches":
+                if (link / "SKILL.md").is_file():
+                    continue                 # 副本仍在，无需补偿
+                source_md = expected / "SKILL.md"
+                if not source_md.is_file():
+                    failures.append(f"{rec.spec_id}: 补偿失败——kit 源缺失: {source_md}")
+                    continue
+                link.mkdir(parents=True, exist_ok=True)
+                _shutil.copy2(source_md, link / "SKILL.md")
+                continue
+            if rec.prior_state != "pointing_to_target":
+                continue
             if link.is_symlink() or link.exists():
                 continue                     # 删除未发生或用户已自行处理
-            link.parent.mkdir(parents=True, exist_ok=True)
-            os.symlink(str(expected), link)
+            _recreate_external_link(link, expected, rec.strategy)
         except (OSError, SecurityError) as e:
             failures.append(f"{rec.spec_id}: {e}")
     return failures
@@ -866,27 +1034,27 @@ def recover(target: Path) -> RecoveryResult:
             if tx.kind == "install":
                 _write_manifest(target, _rollforward_manifest(
                     target, classified["NEW"]))
-                # P2 回归：roll-forward 补建 workspace 链接（崩溃窗口——
-                # 内部资源已提交但链接创建前崩溃；从 marker 读 codex_root）
-                from .registry import read_codex_workspace_marker
-                marker = read_codex_workspace_marker(target)
-                if marker is not None:
-                    from .uninstall import safe_unlink_external_link
-                    import glob as _glob
-                    from .registry import CodexLinkSpec, KIT_SKILLS
-                    for skill in KIT_SKILLS:
-                        ls = CodexLinkSpec(skill_name=skill)
-                        ls.validate(marker, target)
-                        link = ls.derive_link_path(marker)
-                        expected = str(ls.derive_target_path(target))
-                        if link.is_symlink() or link.exists():
-                            continue         # 已存在（用户处理或部分成功）
-                        link.parent.mkdir(parents=True, exist_ok=True)
-                        os.symlink(expected, link)
-            # 外部步骤：install 事务无外部步骤；uninstall 的 roll-forward 只补删
-            # （complete_external_removals），绝不重建已删除的链接
-            failures = (complete_external_removals(target, tx)
-                        if tx.kind == "uninstall" else [])
+                # 外部 create 步骤按记录补建（意图先行——第七轮审计：统一外部
+                # 事务模型；记录含 strategy/expected_hash，copy 血统可验）
+                failures = complete_external_creations(target, tx)
+                if not failures and not tx.external:
+                    # 崩溃早于 ensure_codex_links（无 create 记录）→ marker 回退：
+                    # 从 marker + KIT_SKILLS 按 link_strategy 补建（升级场景）
+                    from .registry import read_codex_workspace_marker
+                    marker = read_codex_workspace_marker(target)
+                    if marker is not None:
+                        from .registry import CodexLinkSpec, KIT_SKILLS
+                        for skill in KIT_SKILLS:
+                            ls = CodexLinkSpec(skill_name=skill)
+                            ls.validate(marker, target)
+                            link = ls.derive_link_path(marker)
+                            expected = ls.derive_target_path(target)
+                            if link.is_symlink() or link.exists():
+                                continue     # 已存在（用户处理或部分成功）
+                            _recreate_external_link(link, expected, tx.link_strategy)
+            else:
+                # uninstall 的 roll-forward 只补删，绝不重建已删除的链接
+                failures = complete_external_removals(target, tx)
             if failures:
                 tx.status = "needs_human"
                 tx.detail = f"外部步骤收尾失败: {failures}"
@@ -988,9 +1156,12 @@ def recover_manual(target: Path, strategy: str) -> RecoveryResult:
         if tx.kind == "install":
             _write_manifest(target, _rollforward_manifest(
                 target, classified["NEW"] + classified["OLD"]))
-        # 同 recover()：卸载 roll-forward 补删不重建；install 无外部步骤
-        failures = (complete_external_removals(target, tx)
-                    if tx.kind == "uninstall" else [])
+        # 同 recover()：install 方向补建 create（记录含 strategy/血统）；
+        # 卸载方向补删不重建
+        if tx.kind == "install":
+            failures = complete_external_creations(target, tx)
+        else:
+            failures = complete_external_removals(target, tx)
         if failures:
             tx.status = "needs_human"
             tx.detail = f"外部步骤收尾失败: {failures}"
