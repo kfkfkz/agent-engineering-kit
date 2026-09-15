@@ -134,12 +134,14 @@ cd <SDD目录>/diagrams
 node ../.claude/skills/archify/bin/archify.mjs validate workflow <名称>.json --quality showcase --json
 # 3. 交付（编译为自包含 HTML，生成 receipt）
 node ../.claude/skills/archify/bin/archify.mjs deliver workflow <名称>.json <名称>.html
-# 4. 无头浏览器截图嵌回 业务流程设计.md
-google-chrome --headless --screenshot=<名称>.png --window-size=1600,N <名称>.html
+# 4. 视觉校验——同时自动产出证据截图（浅/深双主题 × 1440/2048 双尺寸）
+node ../.claude/skills/archify/bin/archify.mjs visual-check <名称>.html --json
 ```
 
-产物：`diagrams/<名称>.json`（权威可编辑源）+ `.html`（可交互交付物）+
-`.receipt.json`（校验回执）+ `.png`（文档嵌入）。**校验边界**：archify validate
+产物：`diagrams/<名称>.json`（权威可编辑源）+ `.html`（可交互交付物——
+**读者可在页面上直接导出 PNG/SVG/WebM**）+ visual-check 证据截图
+（`<名称>.visual-check.1440x900.light.png` 等——文档嵌入用 light 版）。
+本机无 Chrome 时 visual-check 报 skipped——文档只嵌 HTML 引用不嵌图，如实披露。**校验边界**：archify validate
 只证明图能正确渲染/结构合法，不证明架构事实正确——事实仍由代码取证与门禁负责。
 
 生成后 `doc-gate check --stage 业务流程设计`（结构）→ **停下交维护者/业务方
