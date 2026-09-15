@@ -397,7 +397,7 @@ run_rc python3 "$DG" init 020-登记测试 --repo "$REPO"
 assert_eq "init 退出码 0" "$rc" "0"
 [ -f "$REPO/docs/01-需求/020-登记测试/原始需求.md" ] \
     && ok "init 建 01-需求 侧原始需求" || bad "init 缺原始需求"
-N20=$(ls "$REPO/docs/03-SDD/020-登记测试" 2>/dev/null | wc -l)
+N20=$(find "$REPO/docs/03-SDD/020-登记测试" -maxdepth 1 -type f 2>/dev/null | wc -l)
 [ "$N20" = "11" ] && ok "init 建 03-SDD 侧 11 件设计模板" || bad "init 设计模板 $N20 件"
 grep -q "^| 020-登记测试" "$REPO/docs/01-需求/README.md" \
     && ok "init 登记索引行" || bad "索引行未登记"
@@ -766,6 +766,82 @@ printf '{"version":1,"profile":"strict","rules":[{"id":"BAD-1","require":["recei
     > "$REPO/.repo-memory-kit/governance.json"
 run_rc python3 "$KIT/governance-eval" "$REPO" --diff "$T/sec.diff"
 assert_eq "非法正则 fail-closed（阻断非静默跳过）" "$rc" "3"
+
+# ════════════════ S8 上游指纹（第八轮审计 P1：上游重冻结 → 下游递归失效）════════════════
+D_FP="$REPO/docs/03-SDD/019-上游指纹"
+cp -r "$D" "$D_FP"; rm -rf "$D_FP/reviews"
+run_rc python3 "$DG" freeze "$D_FP" --by 维护者甲
+assert_eq "FP 需求分析冻结（v1）" "$rc" "0"
+run_rc python3 "$DG" gate "$D_FP" --stage 概要设计
+assert_eq "FP 概要设计冻结（绑定 v1 指纹）" "$rc" "0"
+OUT="$(python3 "$DG" status "$D_FP")"
+echo "$OUT" | grep -q "概要设计.*FROZEN" && ok "FP 前提：概要设计 FROZEN" || bad "FP 前提失败: $OUT"
+# 需求分析改内容 → 重新 freeze（v2）→ 概要设计必须递归失效
+echo "v2 口径变更" >> "$D_FP/需求分析.md"
+run_rc python3 "$DG" freeze "$D_FP" --by 维护者甲
+assert_eq "FP 需求分析重冻结（v2）" "$rc" "0"
+OUT="$(python3 "$DG" status "$D_FP")"
+echo "$OUT" | grep -q "概要设计.*DRAFT.*上游 需求分析 已重新冻结" \
+    && ok "FP 上游重冻结 → 概要设计递归失效（DRAFT）" \
+    || bad "FP 概要设计未失效: $OUT"
+# 概要设计重过门禁后恢复 FROZEN（此时绑定 v2 指纹）
+run_rc python3 "$DG" gate "$D_FP" --stage 概要设计
+assert_eq "FP 概要设计重过门禁（绑定 v2）" "$rc" "0"
+OUT="$(python3 "$DG" status "$D_FP")"
+echo "$OUT" | grep -q "概要设计.*FROZEN" && ok "FP 重门禁后恢复 FROZEN" || bad "FP 恢复失败: $OUT"
+# 级联：业务流程设计与详细设计在 v2 下同样失效（链式传导）
+OUT="$(python3 "$DG" status "$D_FP")"
+echo "$OUT" | grep -q "需求分析.*FROZEN" \
+    && ok "FP v2 需求分析自身 FROZEN" || bad "FP v2 需求分析异常"
+
+# ════════════════ S9 init 安全矩阵（第八轮审计 P1：symlink 逃逸/半初始化）════════════════
+D_INIT="$REPO"
+OUTSIDE="$T/outside-escape"
+mkdir -p "$OUTSIDE" "$D_INIT/docs/03-SDD"
+mkdir -p "$D_INIT/docs/01-需求/040-逃逸"
+ln -s "$OUTSIDE" "$D_INIT/docs/03-SDD/040-逃逸"
+run_rc python3 "$DG" init 040-逃逸 --repo "$D_INIT"
+assert_eq "S9a SDD 侧 symlink 逃逸被拒" "$rc" "3"
+N_OUT=$(find "$OUTSIDE" -mindepth 1 2>/dev/null | wc -l)
+assert_eq "S9b 仓库外零写入" "$N_OUT" "0"
+rm -rf "$D_INIT/docs/01-需求/040-逃逸" "$D_INIT/docs/03-SDD/040-逃逸"
+ln -s "$OUTSIDE" "$D_INIT/docs/01-需求/041-逃逸"
+run_rc python3 "$DG" init 041-逃逸 --repo "$D_INIT"
+assert_eq "S9c 01-需求侧 symlink 逃逸被拒" "$rc" "3"
+assert_eq "S9d 仓库外仍零写入" "$(find "$OUTSIDE" -mindepth 1 2>/dev/null | wc -l)" "0"
+rm "$D_INIT/docs/01-需求/041-逃逸"
+ln -s "/nonexistent-broken" "$D_INIT/docs/03-SDD/042-断链"
+run_rc python3 "$DG" init 042-断链 --repo "$D_INIT"
+assert_eq "S9e broken symlink 被拒" "$rc" "3"
+rm "$D_INIT/docs/03-SDD/042-断链"
+mv "$D_INIT/docs/01-需求/README.md" "$T/readme.bak"
+run_rc python3 "$DG" init 043-无索引 --repo "$D_INIT"
+assert_eq "S9f 索引缺失被拒" "$rc" "3"
+[ ! -d "$D_INIT/docs/01-需求/043-无索引" ] && [ ! -d "$D_INIT/docs/03-SDD/043-无索引" ] \
+    && ok "S9g 索引缺失零写入（无半初始化）" || bad "S9g 半初始化残留"
+mv "$T/readme.bak" "$D_INIT/docs/01-需求/README.md"
+printf '# 无表格\n' > "$D_INIT/docs/01-需求/README.md"
+run_rc python3 "$DG" init 044-无表 --repo "$D_INIT"
+assert_eq "S9h 索引无表格被拒" "$rc" "3"
+[ ! -d "$D_INIT/docs/03-SDD/044-无表" ] \
+    && ok "S9i 无表格零写入" || bad "S9i 无表半初始化"
+# 还原索引（从 _模板 恢复种子格式——测试仓库非 git，用主夹具的 README 重建）
+python3 - "$D_INIT" <<'PY'
+import sys, pathlib
+repo = pathlib.Path(sys.argv[1])
+content = repo.joinpath("docs/01-需求/README.md")
+tpl = repo / "docs" / "01-需求" / "_模板"
+# README 已被覆盖为无表版本——重建最小索引（含 001 示例行）
+text = """# 需求指派索引
+
+| 序号 | 需求 | 需求状态 | 当前功能开发阶段 | 全局目录名称 | 开发人员 | 需求所属版本 | 需求上线时间 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 001-（示例） | （示例） | 草拟 | 需求分析 | 001-（示例） |  |  | 未定 |
+"""
+content.write_text(text, encoding="utf-8")
+PY
+run_rc python3 "$DG" init 045-正常登记 --repo "$D_INIT"
+assert_eq "S9j 正常路径不受影响" "$rc" "0"
 
 # ════════════════ 汇总 ════════════════
 echo

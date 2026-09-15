@@ -132,6 +132,26 @@ def load_policy(governance_path: Path) -> dict[str, Any]:
         rules = data.get("rules", [])
         if not isinstance(rules, list):
             raise PolicyError("governance.json 的 rules 必须是数组")
+        # 第八轮审计 P2：逐条规则 schema 校验——元素非法 → 受控 fail-closed，
+        # 不在 evaluate_diff 里 traceback
+        for i, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                raise PolicyError(f"rules[{i}] 不是对象（得到 {type(rule).__name__}）")
+            rid = rule.get("id", f"rules[{i}]")
+            if not isinstance(rule.get("id", ""), str):
+                raise PolicyError(f"{rid}: id 必须是字符串")
+            require = rule.get("require", [])
+            if not isinstance(require, list) or not all(
+                    isinstance(a, str) for a in require):
+                raise PolicyError(f"{rid}: require 必须是字符串数组")
+            match = rule.get("match", {})
+            if not isinstance(match, dict):
+                raise PolicyError(f"{rid}: match 必须是对象")
+            for key in ("paths", "files", "added_lines_regex"):
+                if key in match and not (
+                        isinstance(match[key], list)
+                        and all(isinstance(x, str) for x in match[key])):
+                    raise PolicyError(f"{rid}: match.{key} 必须是字符串数组")
     return {"version": 1, "profile": profile, "rules": rules,
             "default": {"require": list(PROFILE_DEFAULTS[profile])}}
 
@@ -154,18 +174,41 @@ def _file_matches_pattern(filepath: str, pattern: str) -> bool:
     return fnmatch.fnmatch(filepath, pattern)
 
 
+def _unquote_git_path(path: str) -> str:
+    """还原 git core.quotePath 转义的路径（"\346\265\213" 八进制 → UTF-8）。
+    引号包裹的路径才需要还原；裸路径原样返回。"""
+    if not (path.startswith('"') and path.endswith('"') and len(path) >= 2):
+        return path
+    inner = path[1:-1]
+    out = bytearray()
+    i = 0
+    while i < len(inner):
+        if inner[i] == "\\" and i + 3 < len(inner) + 1:
+            oct_part = inner[i + 1:i + 4]
+            if len(oct_part) == 3 and all(c in "01234567" for c in oct_part):
+                out += bytes([int(oct_part, 8)])
+                i += 4
+                continue
+        out += inner[i].encode("utf-8", "surrogateescape")
+        i += 1
+    try:
+        return out.decode("utf-8")
+    except UnicodeDecodeError:
+        return path
+
+
 def _diff_files(diff_text: str) -> set[str]:
-    """从 git diff 输出中提取变更的文件路径。"""
+    """从 git diff 输出中提取变更的文件路径（支持 quotePath 转义还原）。"""
     files = set()
     for line in diff_text.split("\n"):
         if line.startswith("+++ b/") or line.startswith("--- a/"):
-            path = line[6:] if line.startswith("+++ b/") else line[6:]
+            path = _unquote_git_path(line[6:])
             if path != "/dev/null":
                 files.add(path)
         elif line.startswith("diff --git"):
             parts = line.split(" b/", 1)
             if len(parts) == 2:
-                files.add(parts[1])
+                files.add(_unquote_git_path(parts[1].rstrip('"')))
     return files
 
 
@@ -295,8 +338,8 @@ def main() -> int:
             return 3
         diff_text = sys.stdin.read()
 
-    policy = load_policy(repo / ".repo-memory-kit" / "governance.json")
     try:
+        policy = load_policy(repo / ".repo-memory-kit" / "governance.json")
         result = evaluate_diff(diff_text, policy)
     except PolicyError as e:
         print(f"✗ 治理策略非法，评估阻断（fail-closed）: {e}")

@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from datetime import datetime
@@ -239,32 +240,59 @@ def req_freeze_state(text: str) -> str:
 
 # ══════════════════════════ 冻结状态 ══════════════════════════
 
+def _stage_fingerprint(req_dir: Path, stage: str) -> str | None:
+    """上游阶段的指纹 = digest(status + doc_hashes + 其上游指纹)——
+    任何上游重冻结（内容或其上游变化）都会改变指纹，驱动下游递归失效
+    （第八轮审计 P1：此前只校验本阶段哈希，上游 v2 重冻结后旧下游仍 FROZEN）。"""
+    gate = _read(req_dir / "reviews" / f"{stage}.gate.json")
+    if gate is None:
+        return None
+    try:
+        g = json.loads(gate)
+    except json.JSONDecodeError:
+        return None
+    ident = {"status": g.get("status"),
+             "doc_hashes": g.get("doc_hashes"),
+             "upstream_fingerprints": g.get("upstream_fingerprints")}
+    return hashlib.sha256(
+        json.dumps(ident, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
 def stage_frozen(req_dir: Path, stage: str) -> tuple[str, str]:
     """返回 (状态, 说明)。状态: FROZEN / DRAFT / BLOCKED / NOT_GATED / MISSING。
 
-    FROZEN = gate.json PASS 且所有文档哈希一致；哈希失配 = DRAFT（改动即解冻）。
+    FROZEN = gate.json PASS 且文档哈希一致 且 上游指纹与冻结时一致；
+    上游重冻结/本阶段改动 → DRAFT（下游需重过门禁——递归失效）。
     """
-    if stage == "需求分析":
-        # 第七轮审计 P1：文本"已冻结"不是凭证——必须有 gate.json 绑定内容哈希，
-        # 冻结后改动需求.md 会被哈希检出（下游上游检查自动失效）
-        if not (req_dir / "需求分析.md").is_file():
-            return "MISSING", "需求分析.md 不存在"
-        gate = _read(req_dir / "reviews" / "需求分析.gate.json")
+    if stage in HUMAN_SIGNOFF:
+        # 人工签核阶段（需求分析/业务流程设计）：文本签核不是凭证——必须有
+        # gate.json 绑定内容哈希，签核后改动会被哈希检出
+        doc = STAGES[stage]["docs"][0]
+        if not (req_dir / doc).is_file():
+            return "MISSING", f"{doc} 不存在"
+        gate = _read(req_dir / "reviews" / f"{stage}.gate.json")
         if gate is None:
-            state = req_freeze_state(_read(req_dir / "需求分析.md"))
-            return "DRAFT", (f"未过 doc-gate freeze（冻结记录：{state}——"
-                             f"文本不构成冻结凭证）")
+            sign_re, _want = HUMAN_SIGNOFF[stage]
+            m = re.search(sign_re, _read(req_dir / doc) or "")
+            signed = m.group(1) if m else "未记录"
+            return "DRAFT", (f"未过 doc-gate freeze（签核状态：{signed}——"
+                            f"文本不构成凭证）")
         try:
             g = json.loads(gate)
         except json.JSONDecodeError:
-            return "DRAFT", "需求.gate.json 损坏"
+            return "DRAFT", f"{stage}.gate.json 损坏"
         if g.get("status") != "PASS":
-            return "DRAFT", f"需求门禁最近判定 {g.get('status')}"
-        want = (g.get("doc_hashes") or {}).get("需求分析.md")
-        cur = _sha256(req_dir / "需求分析.md")
+            return "DRAFT", f"{stage}最近判定 {g.get('status')}"
+        want = (g.get("doc_hashes") or {}).get(doc)
+        cur = _sha256(req_dir / doc)
         if want != cur:
-            return "DRAFT", "需求分析.md 冻结后有改动（哈希失配）——需维护者重审并重新 freeze"
-        return "FROZEN", f"gate.json PASS（{g.get('approved_by', '未知')} 冻结）"
+            return "DRAFT", f"{doc} 签核后有改动（哈希失配）——需人工重审并重新 freeze"
+        recorded = g.get("upstream_fingerprints") or {}
+        for up in STAGES[stage]["upstream"]:
+            cur_fp = _stage_fingerprint(req_dir, up)
+            if cur_fp is None or recorded.get(up) != cur_fp:
+                return "DRAFT", f"上游 {up} 已重新冻结（指纹失配）——需重新签核"
+        return "FROZEN", f"gate.json 通过（{g.get('approved_by', '未知')} 签核）"
 
     gate_file = req_dir / "reviews" / f"{stage}.gate.json"
     data = _read(gate_file)
@@ -284,6 +312,15 @@ def stage_frozen(req_dir: Path, stage: str) -> tuple[str, str]:
             return "DRAFT", f"{doc} 已不存在"
         if cur != want:
             return "DRAFT", f"{doc} 冻结后有改动（哈希失配）"
+    # 上游指纹核验（第八轮审计 P1）：任一上游重冻结 → 本阶段失效，需重过门禁
+    recorded = gate.get("upstream_fingerprints") or {}
+    for up in STAGES[stage]["upstream"]:
+        cur_fp = _stage_fingerprint(req_dir, up)
+        if cur_fp is None:
+            return "DRAFT", f"上游 {up} 的 gate 凭证缺失"
+        if recorded.get(up) != cur_fp:
+            return "DRAFT", (f"上游 {up} 已重新冻结（指纹失配）——"
+                            f"本阶段需重过门禁")
     return "FROZEN", f"gate.json PASS（iteration {gate.get('iteration')}）"
 
 
@@ -596,6 +633,9 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
                    "upstream_pending": len(upstream_issues),
                    "fix_targets": fix_targets},
         "policy": policy, "iteration": consecutive + 1, "doc_hashes": doc_hashes,
+        "upstream_fingerprints": {
+            up: _stage_fingerprint(req_dir, up)
+            for up in STAGES[stage]["upstream"]},
         "failed_because": (
             ["hard checks FAIL: " + "；".join(c["name"] for c in hard_fail[:5])] if hard_fail else [])
             + ([f"severity 超阈值: blocker={n_blocker}/{policy['max_blocker']}, "
@@ -664,6 +704,9 @@ def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool) -> in
         "time": datetime.now().isoformat(timespec="seconds"),
         "approved_by": approved_by or "维护者",
         "doc_hashes": {doc: _sha256(req_dir / doc)},
+        "upstream_fingerprints": {
+            up: _stage_fingerprint(req_dir, up)
+            for up in STAGES[stage]["upstream"]},
         "frozen_by": "doc-gate freeze（人工签核 + 哈希凭证）",
     }
     (reviews_dir / f"{stage}.gate.json").write_text(
@@ -685,70 +728,105 @@ REQ_TPL_SDD = ["需求分析.md", "概要设计.md", "UI设计.md", "业务流�
               "测试方案.md", "线上联调功能验证清单.md", "终稿.md"]
 
 
+def _path_is_link(p: Path) -> bool:
+    """符号链接或 Windows junction。"""
+    if p.is_symlink():
+        return True
+    if hasattr(os, "isjunction"):
+        try:
+            return os.path.isjunction(p)
+        except OSError:
+            return True
+    return False
+
+
+def _preflight_dest(repo: Path, rel: str) -> None:
+    """预检目标路径链：任何已存在的组件是符号链接/junction → 拒绝（第八轮
+    审计 P1：init 曾可用预置 symlink 把模板写出仓库）。"""
+    cur = repo
+    for part in Path(rel).parts:
+        cur = cur / part
+        if _path_is_link(cur):
+            raise ValueError(f"路径组件是符号链接/junction，拒绝写入: {cur}")
+
+
+def _copy_exclusive(src: Path, dst: Path) -> None:
+    """O_CREAT|O_EXCL 复制（不覆盖既有文件；最终组件为 symlink 时 EEXIST 拒绝）。"""
+    data = src.read_bytes()
+    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def cmd_init(repo: Path, name: str, as_json: bool) -> int:
-    """需求登记脚手架（维护者单一入口，幂等）：原始需求确认与指派后一次运行——
-    1. docs/01-需求/NNN-名称/原始需求.md（模板，维护者填内容）
-    2. docs/03-SDD/NNN-名称/ 全部设计文档模板骨架
-    3. docs/01-需求/README.md 索引表追加该需求行（已存在同号行则跳过）
-    已存在的文件一律不覆盖。"""
+    """需求登记脚手架（维护者单一入口，幂等）——**全预检后一次性写入**
+    （第八轮审计 P1：此前 mkdir/copy2 可沿预置 symlink 写出仓库；README
+    缺失检查在写入之后造成半初始化）。任何预检失败 → 不写任何文件。"""
     import re as _re
-    import shutil as _shutil
     if not _re.fullmatch(r"\d+-[^/\\\s]+", name) or ".." in name:
         print(f"✗ 需求名格式应为 NNN-名称（如 014-识别驱动脱敏）：{name!r}")
         return 3
     tpl_dir = repo / "docs" / "01-需求" / "_模板"
+    # ── 预检（顺序即依赖；任何失败都不触碰磁盘）──
     missing = [t for t in ["原始需求.md"] + REQ_TPL_SDD
                if not (tpl_dir / t).is_file()]
     if missing:
         print(f"✗ 模板缺失（{len(missing)} 件）——先运行 kit 安装/修复，_模板/ 是 kit 受管资源")
         return 3
-    req_dir = repo / "docs" / "01-需求" / name
-    sdd_dir = repo / "docs" / "03-SDD" / name
-    created: list[str] = []
-    skipped: list[str] = []
-    # 1. 原始需求（01-需求 侧）
-    req_dir.mkdir(parents=True, exist_ok=True)
-    dst = req_dir / "原始需求.md"
-    if dst.exists():
-        skipped.append(str(dst.relative_to(repo)))
-    else:
-        _shutil.copy2(tpl_dir / "原始需求.md", dst)
-        created.append(str(dst.relative_to(repo)))
-    # 2. 设计文档骨架（03-SDD 侧）
-    sdd_dir.mkdir(parents=True, exist_ok=True)
-    for t in REQ_TPL_SDD:
-        dst = sdd_dir / t
-        if dst.exists():
-            skipped.append(str(dst.relative_to(repo)))
-        else:
-            _shutil.copy2(tpl_dir / t, dst)
-            created.append(str(dst.relative_to(repo)))
-    # 3. 索引行登记（README 种子由 kit 安装创建；此处只追加行）
     index_path = repo / "docs" / "01-需求" / "README.md"
-    row_added = False
     if not index_path.is_file():
         print(f"✗ 索引不存在（{index_path}）——kit 安装会创建索引种子，请先安装/修复")
         return 3
     lines = index_path.read_text(encoding="utf-8").split("\n")
     nnn = name.split("-", 1)[0]
-    if any(_l.strip().startswith(f"| {nnn}-") and "---" not in _l for _l in lines):
-        skipped.append("索引行（同号已存在）")
+    row_exists = any(_l.strip().startswith(f"| {nnn}-") and "---" not in _l
+                     for _l in lines)
+    last_row = max((i for i, _l in enumerate(lines)
+                    if _l.strip().startswith("|")), default=None)
+    if last_row is None:
+        print("✗ 索引格式异常（未找到表格）——请人工登记")
+        return 3
+    req_rel = f"docs/01-需求/{name}"
+    sdd_rel = f"docs/03-SDD/{name}"
+    try:
+        _preflight_dest(repo, req_rel)
+        _preflight_dest(repo, sdd_rel)
+    except ValueError as e:
+        print(f"✗ {e}")
+        return 3
+    # ── 写入（O_EXCL——已存在文件报错由幂等语义吸收）──
+    req_dir = repo / req_rel
+    sdd_dir = repo / sdd_rel
+    created: list[str] = []
+    skipped: list[str] = []
+    req_dir.mkdir(parents=True, exist_ok=True)
+    dst = req_dir / "原始需求.md"
+    if dst.exists():
+        skipped.append(f"{req_rel}/原始需求.md")
     else:
-        # 找最后一个表格行（| 开头），追加其后
-        last_row = max((i for i, _l in enumerate(lines)
-                        if _l.strip().startswith("|")), default=None)
-        if last_row is None:
-            print("✗ 索引格式异常（未找到表格）——请人工登记")
-            return 3
+        _copy_exclusive(tpl_dir / "原始需求.md", dst)
+        created.append(f"{req_rel}/原始需求.md")
+    sdd_dir.mkdir(parents=True, exist_ok=True)
+    for t in REQ_TPL_SDD:
+        dst = sdd_dir / t
+        if dst.exists():
+            skipped.append(f"{sdd_rel}/{t}")
+        else:
+            _copy_exclusive(tpl_dir / t, dst)
+            created.append(f"{sdd_rel}/{t}")
+    row_added = False
+    if not row_exists:
         row = (f"| {name} | （填写需求名） | 草拟 | 需求分析 | {name} | "
                f"（实现人） | （版本） | 未定 |")
         lines.insert(last_row + 1, row)
         index_path.write_text("\n".join(lines), encoding="utf-8")
         row_added = True
     if as_json:
-        print(json.dumps({"name": name, "created": created,
-                          "skipped": skipped, "index_row_added": row_added},
-                         ensure_ascii=False, indent=2))
+        print(json.dumps({"name": name, "created": created, "skipped": skipped,
+                          "index_row_added": row_added}, ensure_ascii=False, indent=2))
     else:
         for c in created:
             print(f"✓ 已创建 {c}")
@@ -757,6 +835,7 @@ def cmd_init(repo: Path, name: str, as_json: bool) -> int:
         print(f"{'✓' if row_added else '•'} 索引行{'已登记' if row_added else '（同号已存在，跳过）'}")
         print(f"下一步：维护者填写 原始需求.md → Agent 衍生需求分析 → 维护者签核后 doc-gate freeze")
     return 0
+
 
 
 # ══════════════════════════ 子命令 ══════════════════════════

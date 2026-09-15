@@ -209,9 +209,18 @@ TOOL_HANDLERS = {
 
 
 def handle_request(req):
-    """Handle a single JSON-RPC request. Returns response dict or None (for notifications)."""
-    method = req.get("method")
+    """Handle a single JSON-RPC request. Returns response dict or None (for notifications).
+
+    第八轮审计 P1：合法 JSON 可以是数组/标量/null——envelope 校验先行，
+    非对象或缺 method → -32600（结构化错误，不崩溃）。"""
+    if not isinstance(req, dict):
+        return {"jsonrpc": "2.0", "id": None, "error": {
+            "code": -32600, "message": "Invalid Request: not an object"}}
     req_id = req.get("id")
+    method = req.get("method")
+    if not isinstance(method, str):
+        return {"jsonrpc": "2.0", "id": req_id, "error": {
+            "code": -32600, "message": "Invalid Request: method must be a string"}}
 
     if method == "initialize":
         # 2025-11-25 schema：InitializeRequest 必须携带 protocolVersion、
@@ -317,7 +326,12 @@ def main():
             sys.stdout.flush()
             continue
 
-        resp = handle_request(req)
+        try:
+            resp = handle_request(req)
+        except Exception as e:  # 协议边界：任何意外异常 → -32603，不终止服务
+            sys.stderr.write(f"[mcp] internal error: {type(e).__name__}: {e}\n")
+            resp = {"jsonrpc": "2.0", "id": None, "error": {
+                "code": -32603, "message": "Internal error"}}
         if resp is not None:
             sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
             sys.stdout.flush()

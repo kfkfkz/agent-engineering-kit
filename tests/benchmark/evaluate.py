@@ -195,11 +195,11 @@ def _get_changed_files(repo: Path, base: str | None = None) -> list[str]:
     缺省：工作区 + 最近一次提交（旧行为）。
     """
     files = set()
-    cmds = [["git", "-C", str(repo), "diff", "--name-only", "HEAD"]]
+    cmds = [["git", "-c", "core.quotePath=false", "-C", str(repo), "diff", "--name-only", "HEAD"]]
     if base:
-        cmds.append(["git", "-C", str(repo), "diff", "--name-only", f"{base}..HEAD"])
+        cmds.append(["git", "-c", "core.quotePath=false", "-C", str(repo), "diff", "--name-only", f"{base}..HEAD"])
     else:
-        cmds.append(["git", "-C", str(repo), "diff", "--name-only", "HEAD~1..HEAD"])
+        cmds.append(["git", "-c", "core.quotePath=false", "-C", str(repo), "diff", "--name-only", "HEAD~1..HEAD"])
     for cmd in cmds:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
@@ -212,30 +212,39 @@ def _get_changed_files(repo: Path, base: str | None = None) -> list[str]:
     return sorted(files)
 
 
-def _new_test_files(repo: Path, base: str | None = None) -> list[str]:
-    """diff 中**新增**的测试文件（不是任何名字带 test 的文件——
-    P2 修复：存量测试文件与『测试方案.md』类文档不算回归测试）。"""
+def _regression_test_files(repo: Path, base: str | None = None) -> list[str]:
+    """回归测试 = 变更（新增**或修改**）且非空的测试文件——第八轮审计 P2：
+    此前只认全新文件（给既有测试加用例判 false），且空的新文件也判 true。"""
     import re
-    new_files: list[str] = []
+    changed: set[str] = set()
     for ref in ([f"{base}..HEAD"] if base else ["HEAD~1..HEAD"]):
         try:
             r = subprocess.run(
-                ["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=A", ref],
+                ["git", "-c", "core.quotePath=false", "-C", str(repo),
+                 "diff", "--name-only", ref],
                 capture_output=True, text=True, timeout=10)
             if r.returncode == 0:
-                new_files += [l.strip() for l in r.stdout.split("\n") if l.strip()]
+                changed.update(l.strip() for l in r.stdout.split("\n") if l.strip())
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
     try:
         r = subprocess.run(
-            ["git", "-C", str(repo), "diff", "--name-only", "--diff-filter=A", "HEAD"],
+            ["git", "-c", "core.quotePath=false", "-C", str(repo),
+             "diff", "--name-only", "HEAD"],
             capture_output=True, text=True, timeout=10)
         if r.returncode == 0:
-            new_files += [l.strip() for l in r.stdout.split("\n") if l.strip()]
+            changed.update(l.strip() for l in r.stdout.split("\n") if l.strip())
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
     pattern = re.compile(r"(^|/)(tests?)(/|_)|[_-]test\.[a-z]+$|^test_|Test\.[a-z]+$")
-    return [f for f in set(new_files) if pattern.search(f)]
+    out = []
+    for f in changed:
+        if not pattern.search(f):
+            continue
+        p = repo / f
+        if p.is_file() and p.stat().st_size > 0:   # 空文件不算
+            out.append(f)
+    return out
 
 
 def _check_artifacts(repo: Path, patterns: list[str]) -> tuple[bool, list[str]]:
@@ -321,7 +330,7 @@ def evaluate_evidence_chain(repo: Path, scenario: Scenario,
         checks["has_receipt"] = found
 
     # 回归测试（diff 中**新增**的测试文件——P2 修复：不是任何名字含 test 的文件）
-    checks["has_regression_test"] = bool(_new_test_files(repo, base))
+    checks["has_regression_test"] = bool(_regression_test_files(repo, base))
 
     return checks
 
@@ -338,10 +347,17 @@ def evaluate_memory_usage(
     import glob as _glob
     import re as _re
 
-    # 场景期望的条目（glob 展开为磁盘上存在的集合）
-    expected = {str(p.relative_to(repo)).replace(os.sep, "/")
-                for p in _glob.glob(str(repo / scenario.memory_entry_path),
-                                    recursive=True)}
+    # 场景期望的条目（glob 展开为磁盘上存在的集合——返回 str 需转 Path，
+    # 并验证解析后仍位于仓库内；第八轮审计 P1：str.relative_to 崩溃）
+    repo_resolved = repo.resolve()
+    expected: set[str] = set()
+    for raw in _glob.iglob(str(repo / scenario.memory_entry_path),
+                           recursive=True):
+        try:
+            resolved = Path(raw).resolve(strict=True)
+            expected.add(str(resolved.relative_to(repo_resolved)).replace(os.sep, "/"))
+        except (OSError, ValueError):
+            continue          # 断链/越出仓库的条目不算期望集合
 
     receipt_files = list((repo / "docs" / "delivery-receipts").glob("*.md")) if \
         (repo / "docs" / "delivery-receipts").is_dir() else []

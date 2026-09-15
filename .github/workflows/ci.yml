@@ -34,6 +34,16 @@ jobs:
         run: sh tests/doc-gate.test.sh
       - name: Windows 可导入性守卫（AST：fcntl/msvcrt/O_NOFOLLOW 隔离在 platform/）
         run: sh tests/import-guard.test.sh
+      - name: archify 真实执行（安装产物 doctor + validate + deliver）
+        run: |
+          T=$(mktemp -d)
+          python3 -m installer "$T" >/dev/null
+          A="$T/.claude/skills/archify"
+          test -f "$A/bin/archify.mjs"
+          node "$A/bin/archify.mjs" doctor
+          node "$A/bin/archify.mjs" validate workflow vendor/archify/examples/agent-tool-call.workflow.json --json | python3 -c "
+          import json,sys; d=json.load(sys.stdin); assert d.get('ok'), d.get('error')"
+          node "$A/bin/archify.mjs" deliver workflow vendor/archify/examples/agent-tool-call.workflow.json "$T/out.html" | grep -q "delivered"
 
   windows-smoke:
     runs-on: windows-latest
@@ -46,9 +56,9 @@ jobs:
         run: |
           python -m py_compile installer/*.py installer/platform/*.py doc-gate governance-eval domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
           python -c "import sys; sys.path.insert(0, '.'); import installer.install, installer.transaction, installer.uninstall, installer.zvec, installer.manifest, installer.registry, installer.doctor, installer.legacy, installer.preflight; print('installer modules import OK on Windows')"
-      - name: 平台无关工具测试（doc-gate + governance-eval + import 守卫）
+      - name: 平台无关工具测试（doc-gate + governance-eval CLI）
         shell: bash
         run: |
-          python doc-gate check --help >/dev/null
-          echo "governance-eval smoke" | python governance-eval . >/dev/null 2>&1 || true
-          echo "doc-gate CLI OK on Windows"
+          python doc-gate --help >/dev/null
+          printf 'strict\n' > /tmp/gov-marker
+          echo "diff --git a/x b/x" | python governance-eval . && echo "governance-eval OK on Windows"

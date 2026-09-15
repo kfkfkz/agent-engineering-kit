@@ -337,6 +337,18 @@ STATE_REGISTRY: dict[str, ResourceSpec] = {
         resource_type="owned_file", locator=None,
         merge_policy="replace", expected_mode=0o600,
     ),
+    "state.governance-profile": ResourceSpec(
+        id="state.governance-profile", source_path=None,
+        destination_path=".repo-memory-kit/governance",
+        resource_type="owned_file", locator=None,
+        merge_policy="replace", expected_mode=0o644),
+    # governance.json 是团队自持文件：仅在缺失时由安装事务**创建**（首次），
+    # 创建本身是事务步骤（回滚即删）；既有文件永不覆盖、不入 plan
+    "state.governance-rules": ResourceSpec(
+        id="state.governance-rules", source_path=None,
+        destination_path=".repo-memory-kit/governance.json",
+        resource_type="owned_file", locator=None,
+        merge_policy="replace", expected_mode=0o644),
     "state.codex-workspace-marker": ResourceSpec(
         id="state.codex-workspace-marker", source_path=None,
         destination_path=".repo-memory-kit/codex-workspace-root",

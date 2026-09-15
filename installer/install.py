@@ -28,10 +28,12 @@ from typing import Any
 
 from . import platform as _plat
 from .manifest import (
+    MANIFEST_SPEC_ID,
     Manifest,
     ManifestCorruptError,
     ManifestEntry,
     build_manifest,
+    manifest_payload_bytes,
     read_manifest,
     write_manifest_atomic,
 )
@@ -48,6 +50,7 @@ from .registry import (
     compute_fragment_hashes,
     current_kit_version,
     determine_status,
+    file_sha256,
     fragment_from_bytes,
     generate_fragment,
     generate_hook,
@@ -506,6 +509,70 @@ def run_install(target: Path, *, repair: bool = False,
             tx.write(target)
             return 1
 
+        # 步骤 5.5：状态文件入事务（第八轮审计 P1：此前 manifest/治理在外部
+        # 步骤前直接写盘，外部冲突回滚后形成"清单在、资源无"的分裂状态——
+        # 现在与受管资源同一套 plan/stage/backup/commit/CAS-rollback 机制，
+        # 提交顺序：受管资源 → 治理标记 → 治理规则 → Manifest 最后）
+        from .manifest import MANIFEST_SPEC_ID, manifest_payload_bytes
+        profile = "lightweight" if lightweight else "strict"
+        gov_path = target / ".repo-memory-kit" / "governance"
+        gov_content = (profile + "\n").encode()
+        gov_pre = file_sha256(gov_path) if gov_path.is_file() else None
+        state_plans = [GroupPlan(
+            step=CommitStep(
+                spec_id="state.governance-profile",
+                spec_ids=("state.governance-profile",), kind="replace",
+                pre_container_hash=gov_pre,
+                post_container_hash=hashlib.sha256(gov_content).hexdigest(),
+                pre_mode=0o644 if gov_pre else None),
+            content=gov_content, mode=0o644, specs=[])]
+        # governance.json：**仅在缺失时创建**（团队定制文件永不覆盖、不入 plan）
+        gov_json_path = target / ".repo-memory-kit" / "governance.json"
+        if not gov_json_path.is_file():
+            rules = {
+                "version": 1,
+                "rules": [
+                    {"id": "SEC-001",
+                     "require": ["receipt", "independent_review"],
+                     "match": {"paths": ["**/security/**", "**/auth/**"]}},
+                    {"id": "DB-001",
+                     "require": ["receipt", "independent_review"],
+                     "match": {"files": ["*migration*", "*schema*",
+                                         "*ddl*", "*.sql"]}},
+                ],
+            }
+            rules_bytes = (json.dumps(rules, ensure_ascii=False, indent=2)
+                           + "\n").encode()
+            state_plans.append(GroupPlan(
+                step=CommitStep(
+                    spec_id="state.governance-rules",
+                    spec_ids=("state.governance-rules",), kind="replace",
+                    pre_container_hash=None,
+                    post_container_hash=hashlib.sha256(rules_bytes).hexdigest(),
+                    pre_mode=None),
+                content=rules_bytes, mode=0o644, specs=[]))
+        # Manifest：内容在 plan 期一次成型（不变量 1——residual 合并在
+        # assemble_manifest 内完成），作为**最后**一个提交步骤（完成标记）
+        new_manifest = assemble_manifest(target, preflight, plans, manifest,
+                                         codex_root)
+        manifest_bytes = manifest_payload_bytes(new_manifest)
+        m_dst = target / ".repo-memory-kit" / "manifest.json"
+        m_pre = file_sha256(m_dst) if m_dst.is_file() else None
+        m_mode = None
+        if m_dst.is_file():
+            try:
+                m_mode = stat_module.S_IMODE(os.stat(m_dst).st_mode)
+            except OSError:
+                m_mode = None
+        state_plans.append(GroupPlan(
+            step=CommitStep(
+                spec_id=MANIFEST_SPEC_ID, spec_ids=(MANIFEST_SPEC_ID,),
+                kind="replace", pre_container_hash=m_pre,
+                post_container_hash=hashlib.sha256(manifest_bytes).hexdigest(),
+                pre_mode=m_mode),
+            content=manifest_bytes, mode=0o600, specs=[]))
+        plans = plans + state_plans
+
         # 步骤 6：Staging
         tx.plan = [gp.step for gp in plans]
         tx.write(target)          # ★ 完整 plan 一次性原子写入（不变量 1）
@@ -580,50 +647,9 @@ def run_install(target: Path, *, repair: bool = False,
                 return 1
             tx.write(target)              # committed 标记进度落盘
 
-        # 步骤 11：写 Manifest（原子写；残留记录保留）
-        new_manifest = assemble_manifest(target, preflight, plans, manifest,
-                                        codex_root)
-        write_manifest_atomic(target, new_manifest)
-        legacy_reports = cleanup_legacy_state(target)     # v1 清单/marker 退役清理
-
-        # 步骤 11.5：治理 profile 标记 + 默认策略（lightweight 模式下
-        # repo-delivery/delivery-gate 可跳过非高风险变更的正式回执要求——
-        # 见 delivery-gate 技能「治理等级」节）
-        from .registry import secure_open as _so, write_all as _wa
-        profile = "lightweight" if lightweight else "strict"
-        gov_fd = _so(target, ".repo-memory-kit/governance",
-                     os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-        try:
-            _wa(gov_fd, (profile + "\n").encode())
-            os.fsync(gov_fd)
-        finally:
-            os.close(gov_fd)
-        # governance.json：**只存团队规则**（第七轮审计 P1：profile 双事实源——
-        # marker 每次 install 更新而 json 仅首建，切换 lightweight 后 json 仍是
-        # strict 导致切换无效。现在 profile 唯一权威在 marker，默认动作由引擎按
-        # profile 派生）。**规则不存在才写**——团队定制在升级重装时保留。
-        gov_json = target / ".repo-memory-kit" / "governance.json"
-        if not gov_json.is_file():
-            policy = {
-                "version": 1,
-                "rules": [
-                    {"id": "SEC-001",
-                     "require": ["receipt", "independent_review"],
-                     "match": {"paths": ["**/security/**", "**/auth/**"]}},
-                    {"id": "DB-001",
-                     "require": ["receipt", "independent_review"],
-                     "match": {"files": ["*migration*", "*schema*",
-                                         "*ddl*", "*.sql"]}},
-                ],
-            }
-            gov2_fd = _so(target, ".repo-memory-kit/governance.json",
-                          os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-            try:
-                _wa(gov2_fd,
-                    (json.dumps(policy, ensure_ascii=False, indent=2) + "\n").encode())
-                os.fsync(gov2_fd)
-            finally:
-                os.close(gov2_fd)
+        # 步骤 11-11.5：（第八轮审计 P1）Manifest 与治理文件已入事务
+        # （步骤 5.5 的 state_plans，随提交循环落盘）——此处仅做 v1 退役清理
+        legacy_reports = cleanup_legacy_state(target)
 
         # 步骤 12：workspace 链接（在 done 之前——P2 回归：done 先写则崩溃
         # 窗口内 recover 无从补偿；链接在 done 前失败 → committing → 可恢复）

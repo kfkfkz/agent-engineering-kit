@@ -1187,6 +1187,111 @@ python3 -m installer --uninstall "$P19" >/dev/null 2>&1
 [ ! -e "$P19/.claude/skills/archify" ] && [ ! -e "$P19/.agents/skills/archify" ] \
     && ok "17.7 archify 树卸载干净（含嵌套空目录）" || bad "17.7 残留"
 
+
+# ══════════ 十八、状态文件入事务（第八轮审计 P1：回滚不得残留分裂状态）══════════
+
+# 18.1 首次安装外部冲突 → rollback → manifest/治理全部回滚（不留分裂态）
+P20="$T/state-rollback-fresh"
+WS20="$T/state-ws20"
+mkdir -p "$P20"
+python3 - "$P20" "$WS20" <<'PY' > "$T/sr1.log" 2>&1
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+import installer.install as inst
+
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+real_pf = inst.run_preflight
+def race_pf(*a, **k):
+    pf = real_pf(*a, **k)
+    tdd = ws / ".agents" / "skills" / "tdd"
+    tdd.mkdir(parents=True, exist_ok=True)
+    (tdd / "SKILL.md").write_text("user content", encoding="utf-8")
+    return pf
+inst.run_preflight = race_pf
+rc = inst.run_install(target, codex_root=ws, link_strategy="copy")
+print(f"RACE_RC={rc}")
+PY
+RC20=$(grep -o "RACE_RC=[0-9]*" "$T/sr1.log" | cut -d= -f2)
+check "18.1a 外部冲突退出码 1" 1 "${RC20:-none}"
+rm -rf "$WS20/.agents/skills/tdd"
+python3 - "$P20" <<'PY' >/dev/null 2>&1
+import os, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+t = Path(sys.argv[1]).resolve()
+lock = txm.acquire_install_lock(t)
+rr = txm.recover_manual(t, "rollback")
+os.close(lock)
+assert rr.status == "rolled_back", f"{rr.status}: {rr.detail}"
+PY
+[ $? = 0 ] && ok "18.1b rollback 完成" || bad "18.1b rollback 异常"
+[ ! -f "$P20/.repo-memory-kit/manifest.json" ] \
+    && ok "18.1c manifest 已回滚删除（此前残留）" || bad "18.1c manifest 残留"
+[ ! -f "$P20/.repo-memory-kit/governance" ] \
+    && ok "18.1d 治理标记已回滚删除" || bad "18.1d 治理标记残留"
+[ ! -f "$P20/.repo-memory-kit/governance.json" ] \
+    && ok "18.1e 治理规则已回滚删除" || bad "18.1e 治理规则残留"
+[ ! -f "$P20/docs/memory/RULES.md" ] \
+    && ok "18.1f 受管资源确认已回滚" || bad "18.1f 资源未回滚"
+
+# 18.2 升级场景：先装（strict），再装 --lightweight 遇外部冲突 → rollback
+#      → manifest 逐字节还原 + 治理标记还原为 strict
+P21="$T/state-rollback-upgrade"
+WS21="$T/state-ws21"
+mkdir -p "$P21"
+python3 -m installer --codex-root "$WS21" "$P21" >/dev/null 2>&1
+M_BEFORE=$(sha256sum "$P21/.repo-memory-kit/manifest.json" | cut -d' ' -f1)
+G_BEFORE=$(cat "$P21/.repo-memory-kit/governance")
+rm -f "$P21/.repo-memory-kit/governance.json"   # 制造升级中会重建 rules 的场景
+python3 - "$P21" "$WS21" <<'PY' > "$T/sr2.log" 2>&1
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+import installer.install as inst
+
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+real_pf = inst.run_preflight
+def race_pf(*a, **k):
+    pf = real_pf(*a, **k)
+    # 升级场景：把符号链接替换为真实目录（不能写穿——写穿等于改 target 受管文件）
+    hook = ws / ".agents" / "skills" / "tdd"
+    if hook.is_symlink():
+        hook.unlink()
+    hook.mkdir(parents=True, exist_ok=True)
+    (hook / "SKILL.md").write_text("user content", encoding="utf-8")
+    return pf
+inst.run_preflight = race_pf
+rc = inst.run_install(target, codex_root=ws, lightweight=True)
+print(f"RACE_RC={rc}")
+PY
+RC21=$(grep -o "RACE_RC=[0-9]*" "$T/sr2.log" | cut -d= -f2)
+check "18.2a 升级外部冲突退出码 1" 1 "${RC21:-none}"
+rm -rf "$WS21/.agents/skills/tdd"
+python3 - "$P21" <<'PY' >/dev/null 2>&1
+import os, sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+t = Path(sys.argv[1]).resolve()
+lock = txm.acquire_install_lock(t)
+rr = txm.recover_manual(t, "rollback")
+os.close(lock)
+assert rr.status == "rolled_back", f"{rr.status}: {rr.detail}"
+PY
+[ $? = 0 ] && ok "18.2b 升级 rollback 完成" || bad "18.2b 升级 rollback 异常"
+M_AFTER=$(sha256sum "$P21/.repo-memory-kit/manifest.json" | cut -d' ' -f1)
+[ "$M_BEFORE" = "$M_AFTER" ] \
+    && ok "18.2c manifest 逐字节还原" || bad "18.2c manifest 还原失真"
+[ "$(cat "$P21/.repo-memory-kit/governance")" = "$G_BEFORE" ] \
+    && ok "18.2d 治理标记还原（strict，未被 lightweight 覆盖残留）" \
+    || bad "18.2d 治理标记未还原: $(cat "$P21/.repo-memory-kit/governance")"
+[ ! -f "$P21/.repo-memory-kit/governance.json" ] \
+    && ok "18.2e 重建的治理规则已回滚删除" || bad "18.2e 治理规则残留"
+[ -f "$P21/docs/memory/RULES.md" ] \
+    && ok "18.2f 既有资源未被动（升级回滚不动存量）" || bad "18.2f 存量资源丢失"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]
