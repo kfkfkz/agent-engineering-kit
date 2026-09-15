@@ -76,7 +76,7 @@ docs/03-SDD/NNN-名称/     需求分析/概要/UI/详细/API/数据库/任务/�
 用**未参与生成的独立子 Agent**（可用时）做评审；不可用时清空假设做第二遍，
 并在 issues.json 中写 `"reviewer": "same-context"`（披露）。
 
-评审输入：阶段文档全文 + `reviews/hard-checks.json` + 上游冻结文档。
+评审输入：阶段文档全文 + `reviews/hard-checks.json` + 上游冻结文档 + **代码取证**——用 `codebase-memory` 查证设计所声称的现状（既有能力/接口/表结构/调用链），对照业务域地图口径与相关记忆。**评审不是文档对文档，是文档对事实**：内部自洽但现状失实的设计必须被打回。
 评审输出**仅** `reviews/<阶段>.issues.json`（无总分、无 PASS/FAIL、不改文档正文）：
 
 ```json
@@ -86,7 +86,7 @@ docs/03-SDD/NNN-名称/     需求分析/概要/UI/详细/API/数据库/任务/�
   "doc_hashes": {"详细设计.md": "<sha256——评审时计算；门禁核对，文档改过即评审作废>"},
   "issues": [
     {"id": "REV-001", "severity": "blocker|major|minor",
-     "category": "requirement_gap|consistency|verifiability|risk|upstream",
+     "category": "grounding|requirement_gap|consistency|verifiability|risk|upstream",
      "location": "§数据与存储/D2", "problem": "…", "evidence": "…",
      "required_change": "…", "upstream": false}
   ]
@@ -98,9 +98,16 @@ docs/03-SDD/NNN-名称/     需求分析/概要/UI/详细/API/数据库/任务/�
 评审即过期，必须重评；每条 issue 必含 id/severity/location/problem/
 required_change，severity 只允许 blocker/major/minor。
 
-rubric 四维：**一致性**（不推翻上游冻结结论、与业务域地图口径一致）、**可验证性**
-（验收可测、测试接缝完整、失败/边界/回退已覆盖）、**缺失维度**（该阶段应成型而未成型的
-兼容/安全/迁移内容）、**风险盲区**（对公共契约/数据模型/兼容/安全做一次"证明它错"）。
+rubric 五维：
+1. **事实接地**（首要）——设计文档中的每条现状声明（既有能力、接口签名、表结构、
+   调用链、配置项、业务规则）逐一对照代码查证：用 `codebase-memory` 定位实际符号与
+   调用链，读业务域地图核对模块口径，`memory-recall` 查相关坑与决定。失实/编造/
+   过时（代码已变而文档引用旧口径）→ issue（category=grounding），evidence 必须
+   给代码位置（文件/符号/调用链），不给"我理解"式判断；
+2. **一致性**——不推翻上游冻结结论、与业务域地图口径一致；
+3. **可验证性**——验收可测、测试接缝完整、失败/边界/回退已覆盖；
+4. **缺失维度**——该阶段应成型而未成型的兼容/安全/迁移内容；
+5. **风险盲区**——对公共契约/数据模型/兼容/安全做一次"证明它错"。
 每条 issue 必须含 location/problem/evidence/required_change——禁止"建议完善"式空话。
 
 ### 5. 门禁判定
