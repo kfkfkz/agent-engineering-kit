@@ -31,8 +31,6 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-
 
 # ══════════════════════════ 数据模型 ══════════════════════════
 
@@ -188,27 +186,43 @@ def _glob_match(path: str, pattern: str) -> bool:
     return fnmatch.fnmatch(path, pattern)
 
 
+def _git_name_only(repo: Path, ref: str) -> set[str]:
+    """Machine-safe changed paths for one diff range (NUL-delimited)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--name-only", "-z", ref],
+            capture_output=True, timeout=10, check=False)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw}
+
+
+def _git_untracked(repo: Path) -> set[str]:
+    """Machine-safe untracked paths (new regression tests are often not staged yet)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "ls-files", "--others",
+             "--exclude-standard", "-z"],
+            capture_output=True, timeout=10, check=False)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {os.fsdecode(raw) for raw in result.stdout.split(b"\0") if raw}
+
+
 def _get_changed_files(repo: Path, base: str | None = None) -> list[str]:
     """获取 git 变更的文件列表。
 
     base 给定时：diff base..HEAD + 工作区（多提交任务不漏改动）。
     缺省：工作区 + 最近一次提交（旧行为）。
     """
-    files = set()
-    cmds = [["git", "-c", "core.quotePath=false", "-C", str(repo), "diff", "--name-only", "HEAD"]]
-    if base:
-        cmds.append(["git", "-c", "core.quotePath=false", "-C", str(repo), "diff", "--name-only", f"{base}..HEAD"])
-    else:
-        cmds.append(["git", "-c", "core.quotePath=false", "-C", str(repo), "diff", "--name-only", "HEAD~1..HEAD"])
-    for cmd in cmds:
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                for l in result.stdout.split("\n"):
-                    if l.strip():
-                        files.add(l.strip())
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+    files = _git_name_only(repo, "HEAD")
+    files.update(_git_name_only(
+        repo, f"{base}..HEAD" if base else "HEAD~1..HEAD"))
+    files.update(_git_untracked(repo))
     return sorted(files)
 
 
@@ -216,33 +230,64 @@ def _regression_test_files(repo: Path, base: str | None = None) -> list[str]:
     """回归测试 = 变更（新增**或修改**）且非空的测试文件——第八轮审计 P2：
     此前只认全新文件（给既有测试加用例判 false），且空的新文件也判 true。"""
     import re
-    changed: set[str] = set()
-    for ref in ([f"{base}..HEAD"] if base else ["HEAD~1..HEAD"]):
-        try:
-            r = subprocess.run(
-                ["git", "-c", "core.quotePath=false", "-C", str(repo),
-                 "diff", "--name-only", ref],
-                capture_output=True, text=True, timeout=10)
-            if r.returncode == 0:
-                changed.update(l.strip() for l in r.stdout.split("\n") if l.strip())
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
-    try:
-        r = subprocess.run(
-            ["git", "-c", "core.quotePath=false", "-C", str(repo),
-             "diff", "--name-only", "HEAD"],
-            capture_output=True, text=True, timeout=10)
-        if r.returncode == 0:
-            changed.update(l.strip() for l in r.stdout.split("\n") if l.strip())
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
+    changed = set(_get_changed_files(repo, base))
     pattern = re.compile(r"(^|/)(tests?)(/|_)|[_-]test\.[a-z]+$|^test_|Test\.[a-z]+$")
+    test_signal = re.compile(
+        r"(^\s*(?:async\s+)?def\s+test_)|"
+        r"(^\s*func\s+Test\w+\s*\()|"
+        r"(\b(?:it|test|describe|TEST|TEST_F)\s*\()|"
+        r"(^\s*@test\s+)|"
+        r"(@Test\b)|(\#\[test\])|"
+        r"(^\s*(?:assert(?:_[A-Za-z0-9]+)?|check)\b)|"
+        r"(\b(?:assert[A-Z]\w*|expect)\s*\()|"
+        r"(&&\s*ok\b)|(\|\|\s*bad\b)|(\bshould\b)")
+
+    def is_test_signal(line: str) -> bool:
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith(
+                ("#", "//", "/*", "*", "<!--", "--")):
+            return False
+        return test_signal.search(line) is not None
+
+    def has_added_test_signal(path: str) -> bool:
+        candidate = repo / path
+        try:
+            tracked = subprocess.run(
+                ["git", "-C", str(repo), "ls-files", "--error-unmatch",
+                 "--", path], capture_output=True, timeout=10,
+                check=False).returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            tracked = False
+        if not tracked:
+            try:
+                return any(is_test_signal(line)
+                           for line in candidate.read_text(
+                               encoding="utf-8", errors="replace").splitlines())
+            except OSError:
+                return False
+        refs = [f"{base}..HEAD" if base else "HEAD~1..HEAD", "HEAD"]
+        for ref in refs:
+            try:
+                result = subprocess.run(
+                    ["git", "-C", str(repo), "diff", "--unified=0", ref,
+                     "--", path],
+                    capture_output=True, text=True, timeout=10, check=False)
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                continue
+            if result.returncode != 0:
+                continue
+            for line in result.stdout.splitlines():
+                if (line.startswith("+") and not line.startswith("+++")
+                        and is_test_signal(line[1:])):
+                    return True
+        return False
+
     out = []
     for f in changed:
         if not pattern.search(f):
             continue
         p = repo / f
-        if p.is_file() and p.stat().st_size > 0:   # 空文件不算
+        if p.is_file() and p.stat().st_size > 0 and has_added_test_signal(f):
             out.append(f)
     return out
 

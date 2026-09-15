@@ -22,15 +22,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from . import platform as _plat
-from .manifest import Manifest, build_manifest_from_tx
+from .manifest import MANIFEST_SPEC_ID, Manifest, build_manifest_from_tx
 from .registry import (
+    _SPEC_ORDER,
     CodexLinkSpec,
     SecurityError,
-    _SPEC_ORDER,
     derive_destination,
     derive_transaction_paths,
     file_sha256,
-    fsync_dir,
     resolve_spec,
     secure_mkdir,
     secure_open,
@@ -1032,8 +1031,13 @@ def recover(target: Path) -> RecoveryResult:
         if not classified["OLD"]:
             # 全部已提交 → roll-forward：补收尾
             if tx.kind == "install":
-                _write_manifest(target, _rollforward_manifest(
-                    target, classified["NEW"]))
+                manifest_error = _finalize_install_manifest(
+                    target, classified["NEW"])
+                if manifest_error:
+                    tx.status = "needs_human"
+                    tx.detail = manifest_error
+                    write_transaction_atomic(target, tx)
+                    return RecoveryResult("needs_human", detail=tx.detail)
                 # 外部 create 步骤按记录补建（意图先行——第七轮审计：统一外部
                 # 事务模型；记录含 strategy/expected_hash，copy 血统可验）
                 failures = complete_external_creations(target, tx)
@@ -1043,7 +1047,7 @@ def recover(target: Path) -> RecoveryResult:
                     from .registry import read_codex_workspace_marker
                     marker = read_codex_workspace_marker(target)
                     if marker is not None:
-                        from .registry import CodexLinkSpec, KIT_SKILLS
+                        from .registry import KIT_SKILLS, CodexLinkSpec
                         for skill in KIT_SKILLS:
                             ls = CodexLinkSpec(skill_name=skill)
                             ls.validate(marker, target)
@@ -1105,6 +1109,33 @@ def _rollforward_manifest(target: Path, steps) -> Manifest:
     return rebuilt
 
 
+def _finalize_install_manifest(target: Path, steps) -> str | None:
+    """Finish recovery without rewriting a transactionally committed manifest.
+
+    New transactions contain ``state.manifest`` as their final CommitStep. Its
+    staged bytes are authoritative. Older records have no such step and retain
+    the reconstruction path for backward compatibility.
+    """
+    manifest_steps = [s for s in steps if s.spec_id == MANIFEST_SPEC_ID]
+    if not manifest_steps:
+        managed_steps = [
+            s for s in steps
+            if all(not sid.startswith("state.") for sid in s.spec_ids)
+        ]
+        _write_manifest(target, _rollforward_manifest(target, managed_steps))
+        return None
+    if len(manifest_steps) != 1:
+        return f"manifest step 数量非法: {len(manifest_steps)}"
+    step = manifest_steps[0]
+    if step.kind != "replace" or step.post_container_hash is None:
+        return "install manifest step 必须是带 post hash 的 replace"
+    actual = file_sha256(derive_destination(target, MANIFEST_SPEC_ID))
+    if actual != step.post_container_hash:
+        return ("已提交 Manifest 与事务 post hash 不一致: "
+                f"expected={step.post_container_hash} actual={actual}")
+    return None
+
+
 def recover_manual(target: Path, strategy: str) -> RecoveryResult:
     """§11.9 人工恢复入口（--recover=rollback | --recover=roll-forward）。
     约束：只对 MAC 验证通过的事务选择恢复策略；无论哪种策略，都不绕过
@@ -1154,8 +1185,13 @@ def recover_manual(target: Path, strategy: str) -> RecoveryResult:
                 write_transaction_atomic(target, tx)
                 return RecoveryResult("needs_human", detail=tx.detail)
         if tx.kind == "install":
-            _write_manifest(target, _rollforward_manifest(
-                target, classified["NEW"] + classified["OLD"]))
+            manifest_error = _finalize_install_manifest(
+                target, classified["NEW"] + classified["OLD"])
+            if manifest_error:
+                tx.status = "needs_human"
+                tx.detail = manifest_error
+                write_transaction_atomic(target, tx)
+                return RecoveryResult("needs_human", detail=tx.detail)
         # 同 recover()：install 方向补建 create（记录含 strategy/血统）；
         # 卸载方向补删不重建
         if tx.kind == "install":

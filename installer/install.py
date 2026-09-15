@@ -12,7 +12,7 @@
 8. Backup（仅对实际存在的文件）
 9. ★ committing 落盘（不变量 2：先于首个 os.replace/unlink）
 10. Commit（逐组 CAS + 进度落盘）
-11. 写 Manifest（原子写；残留记录保留——v9 管理记录不丢失原则）
+11. workspace 外部步骤（意图先行，可恢复）
 12. done
 13. 清理 + 释放锁
 """
@@ -35,25 +35,23 @@ from .manifest import (
     build_manifest,
     manifest_payload_bytes,
     read_manifest,
-    write_manifest_atomic,
 )
 from .preflight import PreflightResult, run_preflight
 from .registry import (
+    _SPEC_ORDER,
     FRAGMENT_ABSENT,
     HOOK_MATCHER,
     KIT_DIR,
-    REGISTRY,
-    ResourceSpec,
+    STATE_REGISTRY,
     CodexLinkSpec,
-    _SPEC_ORDER,
-    cleanup_legacy_state,
+    ResourceSpec,
     compute_fragment_hashes,
     current_kit_version,
-    determine_status,
     file_sha256,
     fragment_from_bytes,
     generate_fragment,
     generate_hook,
+    legacy_state_owned,
     resolve_spec,
     secure_mkdir,
     staged_rel,
@@ -64,12 +62,11 @@ from .transaction import (
     TransactionRecord,
     acquire_install_lock,
     backup_container,
-    commit_one,
     cleanup_staging,
+    commit_one,
     recover,
     stage_resource,
 )
-
 
 # ══════════════════════════ §11.5 内容生成（内存） ══════════════════════════
 
@@ -288,6 +285,8 @@ def _staging_mode(spec: ResourceSpec, pre_mode: int | None) -> int:
 def validate_staged(target: Path, plans: list[GroupPlan], tx_id: str) -> list[str]:
     errors: list[str] = []
     for gp in plans:
+        if gp.step.kind == "delete":
+            continue
         staged = target / staged_rel(resolve_spec(gp.step.spec_id), tx_id)
         try:
             if not stat_module.S_ISREG(staged.lstat().st_mode):
@@ -513,7 +512,6 @@ def run_install(target: Path, *, repair: bool = False,
         # 步骤前直接写盘，外部冲突回滚后形成"清单在、资源无"的分裂状态——
         # 现在与受管资源同一套 plan/stage/backup/commit/CAS-rollback 机制，
         # 提交顺序：受管资源 → 治理标记 → 治理规则 → Manifest 最后）
-        from .manifest import MANIFEST_SPEC_ID, manifest_payload_bytes
         profile = "lightweight" if lightweight else "strict"
         gov_path = target / ".repo-memory-kit" / "governance"
         gov_content = (profile + "\n").encode()
@@ -551,6 +549,39 @@ def run_install(target: Path, *, repair: bool = False,
                     post_container_hash=hashlib.sha256(rules_bytes).hexdigest(),
                     pre_mode=None),
                 content=rules_bytes, mode=0o644, specs=[]))
+        # Retire a valid v1 manifest through the transaction. A later rollback
+        # can then restore it from the normal backup instead of leaving the
+        # repository with neither the v1 nor v2 ownership record.
+        legacy_reports: list[str] = []
+        legacy_spec = STATE_REGISTRY["state.legacy-manifest-v1"]
+        legacy_path = target / legacy_spec.destination_path
+        if legacy_path.is_file():
+            if legacy_state_owned(target, legacy_spec.destination_path):
+                try:
+                    legacy_bytes, legacy_mode = _read_container(legacy_path)
+                except (OSError, ValueError) as e:
+                    print(f"✗ 无法读取退役状态文件 {legacy_spec.destination_path}: {e}")
+                    tx.status = "failed"
+                    tx.detail = f"{legacy_spec.id}: {e}"
+                    tx.write(target)
+                    return 1
+                if legacy_bytes is not None:
+                    state_plans.append(GroupPlan(
+                        step=CommitStep(
+                            spec_id=legacy_spec.id,
+                            spec_ids=(legacy_spec.id,), kind="delete",
+                            pre_container_hash=hashlib.sha256(
+                                legacy_bytes).hexdigest(),
+                            post_container_hash=None,
+                            pre_mode=legacy_mode),
+                        content=b"", mode=legacy_mode or 0o600, specs=[]))
+                    legacy_reports.append(
+                        f"• 已清理退役状态文件 {legacy_spec.destination_path}"
+                        "（旧 install.sh 产物，v2 清单在 manifest.json）")
+            else:
+                legacy_reports.append(
+                    f"• 退役状态文件 {legacy_spec.destination_path} 内容异常，"
+                    "未自动清理（请人工确认）")
         # Manifest：内容在 plan 期一次成型（不变量 1——residual 合并在
         # assemble_manifest 内完成），作为**最后**一个提交步骤（完成标记）
         new_manifest = assemble_manifest(target, preflight, plans, manifest,
@@ -579,8 +610,9 @@ def run_install(target: Path, *, repair: bool = False,
         tx.status = "staging"
         tx.write(target)
         for gp in plans:
-            stage_resource(target, gp.step.spec_id, tx.tx_id,
-                           gp.content, mode=gp.mode)
+            if gp.step.kind == "replace":
+                stage_resource(target, gp.step.spec_id, tx.tx_id,
+                               gp.content, mode=gp.mode)
 
         # 步骤 7：Validate（只读 staged）
         errors = validate_staged(target, plans, tx.tx_id)
@@ -608,7 +640,7 @@ def run_install(target: Path, *, repair: bool = False,
         # 旧值存入事务记录 codex_root_old（HMAC 保护——P1 第六轮：旁路备份
         # 文件 O_TRUNC 崩溃窗口不可信，必须进事务记录）
         if codex_root is not None:
-            from .registry import (STATE_REGISTRY, secure_open, write_all)
+            from .registry import secure_open, write_all
             marker_rel = STATE_REGISTRY["state.codex-workspace-marker"].destination_path
             old_marker_path = target / marker_rel
             old_value = old_marker_path.read_text().strip() if old_marker_path.is_file() else ""
@@ -647,9 +679,8 @@ def run_install(target: Path, *, repair: bool = False,
                 return 1
             tx.write(target)              # committed 标记进度落盘
 
-        # 步骤 11-11.5：（第八轮审计 P1）Manifest 与治理文件已入事务
-        # （步骤 5.5 的 state_plans，随提交循环落盘）——此处仅做 v1 退役清理
-        legacy_reports = cleanup_legacy_state(target)
+        # 步骤 11-11.5：Manifest、治理文件与合法 v1 清单退役均已作为
+        # state_plans 随提交循环落盘；这里不再执行事务外状态副作用。
 
         # 步骤 12：workspace 链接（在 done 之前——P2 回归：done 先写则崩溃
         # 窗口内 recover 无从补偿；链接在 done 前失败 → committing → 可恢复）

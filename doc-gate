@@ -26,11 +26,16 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
 
 DEFAULT_POLICY = {"max_blocker": 0, "max_major": 0, "max_minor": 5, "max_iterations": 3}
+
+
+class PolicyError(ValueError):
+    """doc-policy.json 存在但不符合受支持的策略 schema。"""
 
 # ══════════════════════════ 阶段定义 ══════════════════════════
 
@@ -133,18 +138,29 @@ def _repo_root(start: Path) -> Path | None:
 
 def _load_policy(root: Path | None) -> dict:
     policy = dict(DEFAULT_POLICY)
-    if root:
-        f = root / ".repo-memory-kit" / "doc-policy.json"
-        text = _read(f)
-        if text:
-            try:
-                user = json.loads(text)
-                if isinstance(user, dict):
-                    for k in DEFAULT_POLICY:
-                        if k in user:
-                            policy[k] = user[k]
-            except json.JSONDecodeError:
-                pass  # 策略文件损坏 → 用默认（不静默崩溃）
+    if not root:
+        return policy
+    f = root / ".repo-memory-kit" / "doc-policy.json"
+    if not f.exists():
+        return policy
+    text = _read(f)
+    if text is None:
+        raise PolicyError(f"无法读取 {f}")
+    try:
+        user = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise PolicyError(f"JSON 语法错误（第 {e.lineno} 行第 {e.colno} 列）") from e
+    if not isinstance(user, dict):
+        raise PolicyError("顶层必须是 JSON object")
+    unknown = sorted(set(user) - set(DEFAULT_POLICY))
+    if unknown:
+        raise PolicyError(f"未知字段: {', '.join(unknown)}")
+    for key, value in user.items():
+        if type(value) is not int or value < 0:
+            raise PolicyError(f"{key} 必须是非负整数")
+        policy[key] = value
+    if policy["max_iterations"] < 1:
+        raise PolicyError("max_iterations 必须大于等于 1")
     return policy
 
 
@@ -244,6 +260,11 @@ def _stage_fingerprint(req_dir: Path, stage: str) -> str | None:
     """上游阶段的指纹 = digest(status + doc_hashes + 其上游指纹)——
     任何上游重冻结（内容或其上游变化）都会改变指纹，驱动下游递归失效
     （第八轮审计 P1：此前只校验本阶段哈希，上游 v2 重冻结后旧下游仍 FROZEN）。"""
+    # A gate record is not a current credential by itself. Validate the stage
+    # first so an edited-but-not-refrozen upstream invalidates descendants too.
+    state, _detail = stage_frozen(req_dir, stage)
+    if state != "FROZEN":
+        return None
     gate = _read(req_dir / "reviews" / f"{stage}.gate.json")
     if gate is None:
         return None
@@ -565,6 +586,12 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
         return 3
     spec = STAGES[stage]
 
+    try:
+        policy = _load_policy(_repo_root(req_dir))
+    except PolicyError as e:
+        print(f"✗ 文档策略非法: {e}")
+        return 3
+
     checks = run_checks(req_dir, stage)
     reviews_dir = req_dir / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
@@ -576,7 +603,6 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
         print(f"✗ 阶段 {stage} 是必审阶段（review=True），不允许 --no-review")
         return 3
 
-    policy = _load_policy(_repo_root(req_dir))
     issues: list[dict] = []
     if not no_review:
         text = _read(reviews_dir / f"{stage}.issues.json")
@@ -740,47 +766,401 @@ def _path_is_link(p: Path) -> bool:
     return False
 
 
-def _preflight_dest(repo: Path, rel: str) -> None:
-    """预检目标路径链：任何已存在的组件是符号链接/junction → 拒绝（第八轮
-    审计 P1：init 曾可用预置 symlink 把模板写出仓库）。"""
+def _safe_parts(rel: str) -> tuple[str, ...]:
+    """把仓库内 POSIX 相对路径约束为不可逃逸的组件序列。"""
+    if not rel or os.path.isabs(rel) or "\\" in rel:
+        raise ValueError(f"非法仓库相对路径: {rel!r}")
+    parts = tuple(rel.split("/"))
+    if any(part in ("", ".", "..") for part in parts):
+        raise ValueError(f"非法仓库相对路径: {rel!r}")
+    return parts
+
+
+def _has_dir_fd_support() -> bool:
+    return (os.name == "posix" and os.open in os.supports_dir_fd
+            and os.stat in os.supports_dir_fd
+            and os.mkdir in os.supports_dir_fd
+            and os.link in os.supports_dir_fd
+            and os.unlink in os.supports_dir_fd)
+
+
+def _open_parent_fd(repo: Path, rel: str, *, create: bool = False,
+                    created_dirs: list[str] | None = None) -> tuple[int, str]:
+    """固定最终文件的父目录；每层以 O_NOFOLLOW 打开，阻断路径替换逃逸。"""
+    parts = _safe_parts(rel)
+    flags = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(repo, flags)
+    walked: list[str] = []
+    try:
+        for part in parts[:-1]:
+            walked.append(part)
+            try:
+                child = os.open(part, flags, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, 0o755, dir_fd=fd)
+                if created_dirs is not None:
+                    created = "/".join(walked)
+                    if created not in created_dirs:
+                        created_dirs.append(created)
+                child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd, parts[-1]
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _secure_read(repo: Path, rel: str) -> bytes:
+    """不跟随最终组件或任一父组件的仓库内读取。"""
+    if not _has_dir_fd_support():
+        _preflight_dest_fallback(repo, rel)
+        path = repo.joinpath(*_safe_parts(rel))
+        if not path.is_file():
+            raise OSError(f"不是普通文件: {path}")
+        return path.read_bytes()
+    parent_fd, name = _open_parent_fd(repo, rel)
+    fd = -1
+    try:
+        fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"不是普通文件: {rel}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        os.close(parent_fd)
+
+
+def _secure_exists_regular(repo: Path, rel: str) -> bool:
+    """返回普通文件是否存在；路径链异常或非普通最终组件一律拒绝。"""
+    if not _has_dir_fd_support():
+        _preflight_dest_fallback(repo, rel)
+        path = repo.joinpath(*_safe_parts(rel))
+        if not path.exists():
+            return False
+        if not path.is_file():
+            raise ValueError(f"目标不是普通文件，拒绝写入: {path}")
+        return True
+    try:
+        parent_fd, name = _open_parent_fd(repo, rel)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"目标不是普通文件，拒绝写入: {rel}")
+        return True
+    finally:
+        os.close(parent_fd)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write")
+        view = view[written:]
+
+
+def _ensure_parent_fallback(repo: Path, rel: str,
+                            created_dirs: list[str]) -> Path:
+    """Best-effort fallback directory creation with rollback bookkeeping."""
+    parts = _safe_parts(rel)
+    current = repo
+    walked: list[str] = []
+    for part in parts[:-1]:
+        walked.append(part)
+        current = current / part
+        if _path_is_link(current):
+            raise ValueError(f"路径组件是符号链接/junction，拒绝写入: {current}")
+        try:
+            current.mkdir()
+        except FileExistsError:
+            if not current.is_dir() or _path_is_link(current):
+                raise ValueError(f"路径组件不是安全目录: {current}")
+        else:
+            created = "/".join(walked)
+            if created not in created_dirs:
+                created_dirs.append(created)
+    return repo.joinpath(*parts)
+
+
+def _secure_create(repo: Path, rel: str, data: bytes,
+                   created_dirs: list[str]) -> None:
+    """完整写入同目录临时文件后，以 no-replace 语义原子发布。"""
+    if not _has_dir_fd_support():
+        _preflight_dest_fallback(repo, rel)
+        path = _ensure_parent_fallback(repo, rel, created_dirs)
+        tmp = path.with_name(
+            f".{path.name}.kit-init-{os.getpid()}-{os.urandom(6).hex()}.tmp")
+        fd = -1
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            _write_all(fd, data)
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            if os.name == "nt":
+                # Windows os.rename 不覆盖已存在目标。
+                os.rename(tmp, path)
+            else:
+                # 无 dir_fd 的 POSIX 实现仍用 link(2) 保持 no-replace。
+                os.link(tmp, path, follow_symlinks=False)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+        return
+    parent_fd, name = _open_parent_fd(
+        repo, rel, create=True, created_dirs=created_dirs)
+    tmp_name = f".{name}.kit-init-{os.getpid()}-{os.urandom(6).hex()}.tmp"
+    fd = -1
+    try:
+        fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_NOFOLLOW", 0), 0o644, dir_fd=parent_fd)
+        _write_all(fd, data)
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        # link(2) 对目标是原子 no-replace：目标已存在则 EEXIST，绝不覆盖。
+        os.link(tmp_name, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd,
+                follow_symlinks=False)
+        os.fsync(parent_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp_name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        os.close(parent_fd)
+
+
+def _secure_replace(repo: Path, rel: str, data: bytes,
+                    expected_hash: str) -> None:
+    """CAS 检查后在同一固定父目录原子替换文件。"""
+    if not _has_dir_fd_support():
+        path = repo.joinpath(*_safe_parts(rel))
+        current = _secure_read(repo, rel)
+        if hashlib.sha256(current).hexdigest() != expected_hash:
+            raise RuntimeError(f"并发修改冲突: {rel}")
+        original_mode = stat.S_IMODE(path.stat().st_mode)
+        tmp = path.with_name(
+            f".{path.name}.kit-init-{os.getpid()}-{os.urandom(6).hex()}.tmp")
+        fd = -1
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                         original_mode)
+            _write_all(fd, data)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, original_mode)
+            os.fsync(fd)
+            os.close(fd)
+            fd = -1
+            if hashlib.sha256(_secure_read(repo, rel)).hexdigest() != expected_hash:
+                raise RuntimeError(f"并发修改冲突: {rel}")
+            os.replace(tmp, path)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+        return
+    parent_fd, name = _open_parent_fd(repo, rel)
+    tmp_name = f".{name}.kit-init-{os.getpid()}-{os.urandom(6).hex()}.tmp"
+    fd = -1
+    try:
+        current_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                             dir_fd=parent_fd)
+        try:
+            current_stat = os.fstat(current_fd)
+            if not stat.S_ISREG(current_stat.st_mode):
+                raise OSError(f"不是普通文件: {rel}")
+            current_hash = hashlib.sha256()
+            while True:
+                chunk = os.read(current_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                current_hash.update(chunk)
+        finally:
+            os.close(current_fd)
+        if current_hash.hexdigest() != expected_hash:
+            raise RuntimeError(f"并发修改冲突: {rel}")
+        original_mode = stat.S_IMODE(current_stat.st_mode)
+        fd = os.open(tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_NOFOLLOW", 0), original_mode,
+                     dir_fd=parent_fd)
+        _write_all(fd, data)
+        os.fchmod(fd, original_mode)  # POSIX branch
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        # 第一次 CAS 后至 replace 前仍可能有竞争；在相同目录句柄上再校验一次。
+        check_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                           dir_fd=parent_fd)
+        try:
+            h = hashlib.sha256()
+            while True:
+                chunk = os.read(check_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        finally:
+            os.close(check_fd)
+        if h.hexdigest() != expected_hash:
+            raise RuntimeError(f"并发修改冲突: {rel}")
+        os.replace(tmp_name, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp_name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        os.close(parent_fd)
+
+
+def _secure_unlink(repo: Path, rel: str) -> None:
+    if not _has_dir_fd_support():
+        repo.joinpath(*_safe_parts(rel)).unlink(missing_ok=True)
+        return
+    try:
+        parent_fd, name = _open_parent_fd(repo, rel)
+    except FileNotFoundError:
+        return
+    try:
+        os.unlink(name, dir_fd=parent_fd)
+    except FileNotFoundError:
+        pass
+    finally:
+        os.close(parent_fd)
+
+
+def _secure_rmdir(repo: Path, rel: str) -> None:
+    parts = _safe_parts(rel)
+    if not _has_dir_fd_support():
+        try:
+            repo.joinpath(*parts).rmdir()
+        except (FileNotFoundError, OSError):
+            pass
+        return
+    try:
+        parent_fd, name = _open_parent_fd(repo, rel)
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        return
+    try:
+        try:
+            os.rmdir(name, dir_fd=parent_fd)
+        except (FileNotFoundError, OSError):
+            pass
+    finally:
+        os.close(parent_fd)
+
+
+def _preflight_dest_fallback(repo: Path, rel: str) -> None:
+    """Windows fallback：拒绝 symlink/junction；POSIX 正常路径不使用它。"""
     cur = repo
-    for part in Path(rel).parts:
+    for part in _safe_parts(rel):
         cur = cur / part
         if _path_is_link(cur):
             raise ValueError(f"路径组件是符号链接/junction，拒绝写入: {cur}")
 
 
-def _copy_exclusive(src: Path, dst: Path) -> None:
-    """O_CREAT|O_EXCL 复制（不覆盖既有文件；最终组件为 symlink 时 EEXIST 拒绝）。"""
-    data = src.read_bytes()
-    fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+def _acquire_init_lock(repo: Path) -> int:
+    """与 kit 生命周期共用锁，避免模板更新与并发 init 产生混合快照。"""
+    rel = ".repo-memory-kit/install.lock"
+    if _has_dir_fd_support():
+        parent_fd, lock_name = _open_parent_fd(repo, rel)
+        try:
+            fd = os.open(lock_name, os.O_RDWR | os.O_CREAT
+                         | getattr(os, "O_NOFOLLOW", 0), 0o600,
+                         dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+    else:
+        _preflight_dest_fallback(repo, rel)
+        lock_path = repo.joinpath(*_safe_parts(rel))
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        os.write(fd, data)
-        os.fsync(fd)
+        if os.fstat(fd).st_size == 0:
+            _write_all(fd, b"\0")
+            os.fsync(fd)
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _release_init_lock(fd: int) -> None:
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
     finally:
         os.close(fd)
 
 
 def cmd_init(repo: Path, name: str, as_json: bool) -> int:
-    """需求登记脚手架（维护者单一入口，幂等）——**全预检后一次性写入**
-    （第八轮审计 P1：此前 mkdir/copy2 可沿预置 symlink 写出仓库；README
-    缺失检查在写入之后造成半初始化）。任何预检失败 → 不写任何文件。"""
-    import re as _re
-    if not _re.fullmatch(r"\d+-[^/\\\s]+", name) or ".." in name:
+    if not re.fullmatch(r"\d+-[^/\\\s]+", name) or ".." in name:
         print(f"✗ 需求名格式应为 NNN-名称（如 014-识别驱动脱敏）：{name!r}")
         return 3
-    tpl_dir = repo / "docs" / "01-需求" / "_模板"
-    # ── 预检（顺序即依赖；任何失败都不触碰磁盘）──
-    missing = [t for t in ["原始需求.md"] + REQ_TPL_SDD
-               if not (tpl_dir / t).is_file()]
-    if missing:
-        print(f"✗ 模板缺失（{len(missing)} 件）——先运行 kit 安装/修复，_模板/ 是 kit 受管资源")
+    try:
+        lock_fd = _acquire_init_lock(repo)
+    except OSError as e:
+        print(f"✗ 无法取得 doc-gate init 锁: {e}")
         return 3
-    index_path = repo / "docs" / "01-需求" / "README.md"
-    if not index_path.is_file():
-        print(f"✗ 索引不存在（{index_path}）——kit 安装会创建索引种子，请先安装/修复")
+    try:
+        return _cmd_init_locked(repo, name, as_json)
+    finally:
+        _release_init_lock(lock_fd)
+
+
+def _cmd_init_locked(repo: Path, name: str, as_json: bool) -> int:
+    """需求登记脚手架：安全创建全部模板，最后以 CAS 原子更新索引。"""
+    template_rels = [f"docs/01-需求/_模板/{t}"
+                     for t in ["原始需求.md"] + REQ_TPL_SDD]
+    try:
+        templates = {rel: _secure_read(repo, rel) for rel in template_rels}
+        index_rel = "docs/01-需求/README.md"
+        index_bytes = _secure_read(repo, index_rel)
+        index_text = index_bytes.decode("utf-8")
+    except (OSError, UnicodeDecodeError, ValueError) as e:
+        print(f"✗ 模板或索引不可安全读取: {e}——请先运行 kit 安装/修复")
         return 3
-    lines = index_path.read_text(encoding="utf-8").split("\n")
+    lines = index_text.split("\n")
     nnn = name.split("-", 1)[0]
     row_exists = any(_l.strip().startswith(f"| {nnn}-") and "---" not in _l
                      for _l in lines)
@@ -791,39 +1171,56 @@ def cmd_init(repo: Path, name: str, as_json: bool) -> int:
         return 3
     req_rel = f"docs/01-需求/{name}"
     sdd_rel = f"docs/03-SDD/{name}"
-    try:
-        _preflight_dest(repo, req_rel)
-        _preflight_dest(repo, sdd_rel)
-    except ValueError as e:
-        print(f"✗ {e}")
-        return 3
-    # ── 写入（O_EXCL——已存在文件报错由幂等语义吸收）──
-    req_dir = repo / req_rel
-    sdd_dir = repo / sdd_rel
+    destinations = [(f"{req_rel}/原始需求.md", templates[template_rels[0]])]
+    destinations.extend(
+        (f"{sdd_rel}/{name_}", templates[f"docs/01-需求/_模板/{name_}"])
+        for name_ in REQ_TPL_SDD)
     created: list[str] = []
     skipped: list[str] = []
-    req_dir.mkdir(parents=True, exist_ok=True)
-    dst = req_dir / "原始需求.md"
-    if dst.exists():
-        skipped.append(f"{req_rel}/原始需求.md")
-    else:
-        _copy_exclusive(tpl_dir / "原始需求.md", dst)
-        created.append(f"{req_rel}/原始需求.md")
-    sdd_dir.mkdir(parents=True, exist_ok=True)
-    for t in REQ_TPL_SDD:
-        dst = sdd_dir / t
-        if dst.exists():
-            skipped.append(f"{sdd_rel}/{t}")
-        else:
-            _copy_exclusive(tpl_dir / t, dst)
-            created.append(f"{sdd_rel}/{t}")
+    created_dirs: list[str] = []
+    try:
+        for rel, _data in destinations:
+            if _secure_exists_regular(repo, rel):
+                skipped.append(rel)
+    except (OSError, ValueError) as e:
+        print(f"✗ 目标路径不安全: {e}")
+        return 3
     row_added = False
+    index_replaced = False
+    old_index_hash = hashlib.sha256(index_bytes).hexdigest()
+    new_index_bytes = index_bytes
     if not row_exists:
         row = (f"| {name} | （填写需求名） | 草拟 | 需求分析 | {name} | "
                f"（实现人） | （版本） | 未定 |")
         lines.insert(last_row + 1, row)
-        index_path.write_text("\n".join(lines), encoding="utf-8")
-        row_added = True
+        new_index_bytes = "\n".join(lines).encode("utf-8")
+    try:
+        for rel, data in destinations:
+            if rel not in skipped:
+                _secure_create(repo, rel, data, created_dirs)
+                created.append(rel)
+        if not row_exists:
+            _secure_replace(repo, index_rel, new_index_bytes, old_index_hash)
+            index_replaced = True
+            row_added = True
+    except (OSError, RuntimeError, ValueError) as e:
+        rollback_errors: list[str] = []
+        if index_replaced:
+            try:
+                _secure_replace(repo, index_rel, index_bytes,
+                                hashlib.sha256(new_index_bytes).hexdigest())
+            except (OSError, RuntimeError, ValueError) as restore_error:
+                rollback_errors.append(f"索引恢复失败: {restore_error}")
+        for rel in reversed(created):
+            try:
+                _secure_unlink(repo, rel)
+            except OSError as cleanup_error:
+                rollback_errors.append(f"清理 {rel} 失败: {cleanup_error}")
+        for rel in reversed(created_dirs):
+            _secure_rmdir(repo, rel)
+        suffix = f"；{'；'.join(rollback_errors)}" if rollback_errors else ""
+        print(f"✗ init 写入失败，已回滚本次创建: {e}{suffix}")
+        return 3
     if as_json:
         print(json.dumps({"name": name, "created": created, "skipped": skipped,
                           "index_row_added": row_added}, ensure_ascii=False, indent=2))
@@ -833,7 +1230,8 @@ def cmd_init(repo: Path, name: str, as_json: bool) -> int:
         for s in skipped:
             print(f"• 已存在跳过 {s}")
         print(f"{'✓' if row_added else '•'} 索引行{'已登记' if row_added else '（同号已存在，跳过）'}")
-        print(f"下一步：维护者填写 原始需求.md → Agent 衍生需求分析 → 维护者签核后 doc-gate freeze")
+        print("下一步：维护者填写 原始需求.md → Agent 衍生需求分析 → "
+              "维护者签核后 doc-gate freeze")
     return 0
 
 

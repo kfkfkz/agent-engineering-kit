@@ -99,7 +99,8 @@ def run_cli(script_name, args, cwd):
         return 1, "", f"CLI tool not found: {script}"
     cmd = [sys.executable, script] + args
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=60)
+        r = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd,
+                           timeout=60, check=False)
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired:
         return 124, "", f"Tool timeout after 60s: {script_name}"
@@ -177,7 +178,9 @@ def tool_kit_status(args):
     if gen_dir is not None and os.path.isdir(gen_dir):
         count_file = os.path.join(gen_dir, ".doc-count")
         if os.path.isfile(count_file):
-            status["semantic_index"] = {"exists": True, "docs": int(open(count_file).read().strip())}
+            with open(count_file) as count_stream:
+                count = int(count_stream.read().strip())
+            status["semantic_index"] = {"exists": True, "docs": count}
         else:
             status["semantic_index"] = {"exists": True, "docs": "unknown"}
     else:
@@ -217,6 +220,14 @@ def handle_request(req):
         return {"jsonrpc": "2.0", "id": None, "error": {
             "code": -32600, "message": "Invalid Request: not an object"}}
     req_id = req.get("id")
+    if req.get("jsonrpc") != "2.0":
+        return {"jsonrpc": "2.0", "id": None, "error": {
+            "code": -32600, "message": "Invalid Request: jsonrpc must be '2.0'"}}
+    if ("id" in req and req_id is not None
+            and (isinstance(req_id, bool)
+                 or not isinstance(req_id, (str, int, float)))):
+        return {"jsonrpc": "2.0", "id": None, "error": {
+            "code": -32600, "message": "Invalid Request: invalid id"}}
     method = req.get("method")
     if not isinstance(method, str):
         return {"jsonrpc": "2.0", "id": req_id, "error": {
@@ -230,7 +241,9 @@ def handle_request(req):
         if (not isinstance(params, dict)
                 or not isinstance(params.get("protocolVersion"), str)
                 or not isinstance(params.get("capabilities"), dict)
-                or not isinstance(params.get("clientInfo"), dict)):
+                or not isinstance(params.get("clientInfo"), dict)
+                or not isinstance(params.get("clientInfo", {}).get("name"), str)
+                or not isinstance(params.get("clientInfo", {}).get("version"), str)):
             return {
                 "jsonrpc": "2.0", "id": req_id,
                 "error": {"code": -32602,
@@ -254,6 +267,9 @@ def handle_request(req):
         }
 
     if method == "notifications/initialized":
+        if "params" in req and not isinstance(req["params"], dict):
+            return {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32602, "message": "Invalid params: expected object"}}
         return None  # notification, no response
 
     # 初始化前调用（ping 除外——无状态健康检查）→ -32002 ServerNotInitialized
@@ -265,12 +281,25 @@ def handle_request(req):
         }
 
     if method == "tools/list":
+        if "params" in req and not isinstance(req["params"], dict):
+            return {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32602, "message": "Invalid params: expected object"}}
         return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": TOOLS}}
 
     if method == "tools/call":
-        params = req.get("params", {})
+        params = req.get("params")
+        if not isinstance(params, dict):
+            return {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32602, "message": "Invalid params: expected object"}}
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
+
+        if not isinstance(tool_name, str) or not tool_name:
+            return {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32602, "message": "Invalid params: name must be a non-empty string"}}
+        if not isinstance(arguments, dict):
+            return {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": -32602, "message": "Invalid params: arguments must be an object"}}
 
         if tool_name not in TOOL_HANDLERS:
             return {
@@ -288,7 +317,7 @@ def handle_request(req):
                     "isError": is_error,
                 },
             }
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - tool boundary returns structured failure
             return {
                 "jsonrpc": "2.0", "id": req_id,
                 "result": {
@@ -317,8 +346,12 @@ def main():
         if not line:
             continue
         try:
-            req = json.loads(line)
-        except json.JSONDecodeError:
+            req = json.loads(
+                line,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"invalid JSON constant: {value}")),
+            )
+        except (json.JSONDecodeError, ValueError):
             sys.stdout.write(json.dumps({
                 "jsonrpc": "2.0", "id": None,
                 "error": {"code": -32700, "message": "Parse error"}
@@ -328,10 +361,22 @@ def main():
 
         try:
             resp = handle_request(req)
-        except Exception as e:  # 协议边界：任何意外异常 → -32603，不终止服务
+        except Exception as e:  # noqa: BLE001 - JSON-RPC boundary must survive tools
             sys.stderr.write(f"[mcp] internal error: {type(e).__name__}: {e}\n")
-            resp = {"jsonrpc": "2.0", "id": None, "error": {
+            safe_id = None
+            if isinstance(req, dict):
+                candidate = req.get("id")
+                if (candidate is None or
+                        (not isinstance(candidate, bool)
+                         and isinstance(candidate, (str, int, float)))):
+                    safe_id = candidate
+            resp = {"jsonrpc": "2.0", "id": safe_id, "error": {
                 "code": -32603, "message": "Internal error"}}
+        # A structurally valid request without an id is a notification. Execute
+        # it, but never emit a response (including method/params errors).
+        if (isinstance(req, dict) and req.get("jsonrpc") == "2.0"
+                and isinstance(req.get("method"), str) and "id" not in req):
+            resp = None
         if resp is not None:
             sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
             sys.stdout.flush()

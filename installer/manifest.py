@@ -17,7 +17,6 @@ from typing import Any, Literal
 from . import platform as _plat
 from .registry import (
     STATE_REGISTRY,
-    SecurityError,
     secure_open,
     secure_replace,
     write_all,
@@ -141,10 +140,11 @@ def read_manifest(target: Path) -> Manifest | None:
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise ManifestCorruptError(f"manifest JSON 解析失败: {e}")
     manifest = Manifest.from_dict(data)
-    # §4 安全规则：spec_id 必须存在于 REGISTRY 中，否则忽略该条目
-    from .registry import REGISTRY_BY_ID, STATE_REGISTRY, resolve_spec  # noqa: F401
-    known = set(REGISTRY_BY_ID) | set(STATE_REGISTRY)
-    manifest.entries = [e for e in manifest.entries if e.spec_id in known]
+    # §4 安全规则：清单只记录受管资源。state.* 是事务实现细节，既不能
+    # 授予删除权，也不能作为 residual 在后续安装中永久传播。
+    from .registry import REGISTRY_BY_ID
+    manifest.entries = [
+        e for e in manifest.entries if e.spec_id in REGISTRY_BY_ID]
     return manifest
 
 
@@ -205,12 +205,20 @@ def build_manifest_from_tx(target: Path, kit_version: str, steps) -> Manifest:
     而该字段是纯审计字段，永不参与决策（§4）。
     steps 为 transaction.CommitStep 的鸭子类型列表（避免模块循环依赖）。"""
     from .registry import (
-        FRAGMENT_ABSENT, compute_fragment_hashes, generate_fragment,
-        read_fragment, resolve_spec,
+        FRAGMENT_ABSENT,
+        REGISTRY_BY_ID,
+        compute_fragment_hashes,
+        generate_fragment,
+        read_fragment,
+        resolve_spec,
     )
     entries: list[ManifestEntry] = []
     for step in steps:
         for sid in step.spec_ids:
+            # State files are transaction machinery, not managed-resource
+            # entries. Older recovery code may pass a mixed plan here.
+            if sid not in REGISTRY_BY_ID:
+                continue
             spec = resolve_spec(sid)
             dst = target / spec.destination_path
             if spec.resource_type == "seed_file":

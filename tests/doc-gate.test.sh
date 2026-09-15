@@ -5,6 +5,7 @@
 set -e
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
+XDG_CONFIG_HOME="$T/xdg"; export XDG_CONFIG_HOME
 trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 
@@ -393,6 +394,8 @@ write_issues() { python3 "$T/mkissues.py" "$@"; }
 # ════════════════ S-1 需求登记脚手架（init：两处目录+模板+索引行，幂等）════════════════
 run_rc python3 -m installer "$REPO" >/dev/null 2>&1   # 安装 _模板 与索引种子
 "$KIT/install.sh" "$REPO" >/dev/null 2>&1
+chmod 0600 "$REPO/docs/01-需求/README.md"
+INDEX_MODE_BEFORE=$(python3 -c "import os,stat; print(oct(stat.S_IMODE(os.stat('$REPO/docs/01-需求/README.md').st_mode)))")
 run_rc python3 "$DG" init 020-登记测试 --repo "$REPO"
 assert_eq "init 退出码 0" "$rc" "0"
 [ -f "$REPO/docs/01-需求/020-登记测试/原始需求.md" ] \
@@ -401,6 +404,8 @@ N20=$(find "$REPO/docs/03-SDD/020-登记测试" -maxdepth 1 -type f 2>/dev/null 
 [ "$N20" = "11" ] && ok "init 建 03-SDD 侧 11 件设计模板" || bad "init 设计模板 $N20 件"
 grep -q "^| 020-登记测试" "$REPO/docs/01-需求/README.md" \
     && ok "init 登记索引行" || bad "索引行未登记"
+INDEX_MODE_AFTER=$(python3 -c "import os,stat; print(oct(stat.S_IMODE(os.stat('$REPO/docs/01-需求/README.md').st_mode)))")
+assert_eq "init 原子更新保留索引权限" "$INDEX_MODE_AFTER" "$INDEX_MODE_BEFORE"
 run_rc python3 "$DG" init 020-登记测试 --repo "$REPO"
 assert_eq "init 幂等（退出码 0）" "$rc" "0"
 N20B=$(grep -c "^| 020-登记测试" "$REPO/docs/01-需求/README.md")
@@ -692,6 +697,19 @@ assert_eq "policy 覆盖（max_blocker=1）→ 1 个 blocker 不再阻断 → PA
 assert_grep "gate.json 记录实际 policy" '"max_blocker": 1' "$D5/reviews/详细设计.gate.json"
 rm "$REPO/.repo-memory-kit/doc-policy.json"
 
+# 非法策略必须 fail-closed，且在 hard-check/gate 文件写入前失败。
+POLICY_GATE_HASH=$(sha256sum "$D5/reviews/详细设计.gate.json" | cut -d' ' -f1)
+for INVALID_POLICY in '{broken' '{"max_iterations":"three"}' \
+                      '{"max_blocker":-1}' '{"max_iterations":0}' \
+                      '{"unknown_limit":1}'; do
+    printf '%s\n' "$INVALID_POLICY" > "$REPO/.repo-memory-kit/doc-policy.json"
+    run_rc python3 "$DG" gate "$D5" --stage 详细设计
+    assert_eq "非法 doc-policy 被拒: $INVALID_POLICY" "$rc" "3"
+    [ "$(sha256sum "$D5/reviews/详细设计.gate.json" | cut -d' ' -f1)" = "$POLICY_GATE_HASH" ] \
+        && ok "非法 policy 不改写既有 gate" || bad "非法 policy 污染 gate"
+done
+rm "$REPO/.repo-memory-kit/doc-policy.json"
+
 # ════════════════ S7 governance-eval 布线 ════════════════
 printf '{"version": 1, "profile": "strict", "default": {"require": ["inline_review"]}, "rules": [{"id": "SEC-001", "require": ["receipt", "independent_review"], "match": {"paths": ["src/**/security/**"]}}]}' \
     > "$REPO/.repo-memory-kit/governance.json"
@@ -767,6 +785,33 @@ printf '{"version":1,"profile":"strict","rules":[{"id":"BAD-1","require":["recei
 run_rc python3 "$KIT/governance-eval" "$REPO" --diff "$T/sec.diff"
 assert_eq "非法正则 fail-closed（阻断非静默跳过）" "$rc" "3"
 
+# Git 默认 core.quotePath 会把中文文件名写成 C 风格八进制；用真实 git diff
+# 锁定解析，不再用手工构造的 ASCII header 假绿。
+GIT_CN="$T/git-cn"
+mkdir -p "$GIT_CN/安全" "$GIT_CN/.repo-memory-kit"
+git -C "$GIT_CN" init -q
+git -C "$GIT_CN" config user.email test@example.invalid
+git -C "$GIT_CN" config user.name test
+printf 'old\n' > "$GIT_CN/安全/认证.py"
+git -C "$GIT_CN" add .
+git -C "$GIT_CN" commit -qm base
+printf 'new\n' >> "$GIT_CN/安全/认证.py"
+printf 'strict\n' > "$GIT_CN/.repo-memory-kit/governance"
+printf '{"version":1,"rules":[{"id":"CN-001","require":["receipt"],"match":{"paths":["安全/**"]}}]}\n' \
+    > "$GIT_CN/.repo-memory-kit/governance.json"
+git -C "$GIT_CN" diff > "$T/cn-real.diff"
+grep -q '\\345' "$T/cn-real.diff" \
+    && ok "真实 git diff 使用 quotePath 八进制路径" || bad "中文 diff 夹具未被转义"
+python3 "$KIT/governance-eval" "$GIT_CN" --diff "$T/cn-real.diff" --json > "$T/cn-gov.json"
+python3 - "$T/cn-gov.json" <<'PY' \
+    && ok "中文 quotePath 修改正确命中治理规则" \
+    || bad "中文 quotePath 规则漏判"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["matched_rules"] == [
+    {"rule_id": "CN-001", "files": ["安全/认证.py"], "required": ["receipt"]}]
+PY
+
 # ════════════════ S8 上游指纹（第八轮审计 P1：上游重冻结 → 下游递归失效）════════════════
 D_FP="$REPO/docs/03-SDD/019-上游指纹"
 cp -r "$D" "$D_FP"; rm -rf "$D_FP/reviews"
@@ -781,18 +826,29 @@ echo "v2 口径变更" >> "$D_FP/需求分析.md"
 run_rc python3 "$DG" freeze "$D_FP" --by 维护者甲
 assert_eq "FP 需求分析重冻结（v2）" "$rc" "0"
 OUT="$(python3 "$DG" status "$D_FP")"
-echo "$OUT" | grep -q "概要设计.*DRAFT.*上游 需求分析 已重新冻结" \
-    && ok "FP 上游重冻结 → 概要设计递归失效（DRAFT）" \
-    || bad "FP 概要设计未失效: $OUT"
+case "$OUT" in
+    *"概要设计"*"DRAFT"*"上游 需求分析 已重新冻结"*)
+        ok "FP 上游重冻结 → 概要设计递归失效（DRAFT）" ;;
+    *) bad "FP 概要设计未失效: $OUT" ;;
+esac
 # 概要设计重过门禁后恢复 FROZEN（此时绑定 v2 指纹）
 run_rc python3 "$DG" gate "$D_FP" --stage 概要设计
 assert_eq "FP 概要设计重过门禁（绑定 v2）" "$rc" "0"
 OUT="$(python3 "$DG" status "$D_FP")"
 echo "$OUT" | grep -q "概要设计.*FROZEN" && ok "FP 重门禁后恢复 FROZEN" || bad "FP 恢复失败: $OUT"
+# 仅编辑上游但尚未重新 freeze，也必须立即让下游失效。此前指纹只看旧 gate，
+# 会把“内容已变、凭证已过期”的上游误当作未变化。
+echo "v3 尚未签核" >> "$D_FP/需求分析.md"
+OUT="$(python3 "$DG" status "$D_FP")"
+case "$OUT" in
+    *"概要设计"*"DRAFT"*"上游 需求分析 的 gate 凭证缺失"*)
+        ok "FP 上游已编辑但未重冻结 → 下游立即失效" ;;
+    *) bad "FP 未冻结编辑未级联失效: $OUT" ;;
+esac
 # 级联：业务流程设计与详细设计在 v2 下同样失效（链式传导）
 OUT="$(python3 "$DG" status "$D_FP")"
-echo "$OUT" | grep -q "需求分析.*FROZEN" \
-    && ok "FP v2 需求分析自身 FROZEN" || bad "FP v2 需求分析异常"
+echo "$OUT" | grep -q "需求分析.*DRAFT.*哈希失配" \
+    && ok "FP v3 需求分析自身 DRAFT" || bad "FP v3 需求分析异常"
 
 # ════════════════ S9 init 安全矩阵（第八轮审计 P1：symlink 逃逸/半初始化）════════════════
 D_INIT="$REPO"
@@ -843,7 +899,123 @@ PY
 run_rc python3 "$DG" init 045-正常登记 --repo "$D_INIT"
 assert_eq "S9j 正常路径不受影响" "$rc" "0"
 
+# 窗口注入：首个文件创建后把后续 SDD 父目录替换为 symlink。安全实现应以
+# O_NOFOLLOW 目录句柄拒绝，回滚本次文件，且不向仓库外写入。
+RACE_OUT="$T/init-race-out"
+mkdir -p "$RACE_OUT"
+INDEX_BEFORE=$(sha256sum "$D_INIT/docs/01-需求/README.md" | cut -d' ' -f1)
+run_rc python3 - "$DG" "$D_INIT" "$RACE_OUT" <<'PY'
+import importlib.machinery
+import os
+import pathlib
+import sys
+
+gate_path, repo_arg, outside_arg = sys.argv[1:]
+mod = importlib.machinery.SourceFileLoader("doc_gate_race", gate_path).load_module()
+repo = pathlib.Path(repo_arg)
+outside = pathlib.Path(outside_arg)
+real_create = mod._secure_create
+injected = False
+
+def racing_create(root, rel, data, created_dirs):
+    global injected
+    real_create(root, rel, data, created_dirs)
+    if not injected:
+        injected = True
+        victim = repo / "docs" / "03-SDD" / "046-窗口竞争"
+        victim.mkdir(parents=True)
+        parked = victim.with_name(victim.name + ".parked")
+        victim.rename(parked)
+        os.symlink(outside, victim, target_is_directory=True)
+
+mod._secure_create = racing_create
+raise SystemExit(mod.cmd_init(repo, "046-窗口竞争", False))
+PY
+assert_eq "S9k init 路径替换窗口受控拒绝" "$rc" "3"
+[ "$(find "$RACE_OUT" -mindepth 1 2>/dev/null | wc -l)" = "0" ] \
+    && ok "S9l 窗口竞争仓库外零写入" || bad "S9l 窗口竞争写出仓库"
+[ ! -e "$D_INIT/docs/01-需求/046-窗口竞争/原始需求.md" ] \
+    && ok "S9m 窗口失败回滚已创建文件" || bad "S9m 窗口失败残留半初始化"
+[ "$(sha256sum "$D_INIT/docs/01-需求/README.md" | cut -d' ' -f1)" = "$INDEX_BEFORE" ] \
+    && ok "S9n 窗口失败不改索引" || bad "S9n 窗口失败污染索引"
+
+# 当前文件写到一半即 I/O 失败：最终路径尚未发布，临时文件与新目录均清理。
+WRITE_INDEX_BEFORE=$(sha256sum "$D_INIT/docs/01-需求/README.md" | cut -d' ' -f1)
+run_rc python3 - "$DG" "$D_INIT" <<'PY'
+import importlib.machinery
+import os
+import pathlib
+import sys
+
+gate_path, repo_arg = sys.argv[1:]
+mod = importlib.machinery.SourceFileLoader("doc_gate_write_fail", gate_path).load_module()
+repo = pathlib.Path(repo_arg)
+
+def fail_mid_write(fd, data):
+    os.write(fd, data[:1])
+    raise OSError("injected short write")
+
+mod._write_all = fail_mid_write
+raise SystemExit(mod.cmd_init(repo, "047-写入失败", False))
+PY
+assert_eq "S9o 当前文件写入失败受控返回" "$rc" "3"
+[ ! -e "$D_INIT/docs/01-需求/047-写入失败/原始需求.md" ] \
+    && ok "S9p 半写文件未发布到最终路径" || bad "S9p 最终路径残留半文件"
+[ ! -d "$D_INIT/docs/01-需求/047-写入失败" ] \
+    && ok "S9q 写入失败清理本次目录" || bad "S9q 写入失败残留目录"
+[ "$(find "$D_INIT/docs/01-需求" -name '.原始需求.md.kit-init-*.tmp' | wc -l)" = "0" ] \
+    && ok "S9r 写入失败清理临时文件" || bad "S9r 临时文件残留"
+[ "$(sha256sum "$D_INIT/docs/01-需求/README.md" | cut -d' ' -f1)" = "$WRITE_INDEX_BEFORE" ] \
+    && ok "S9s 写入失败不改索引" || bad "S9s 写入失败污染索引"
+
+# 两个同名 init 真并发：仓库级锁应串行化，第二个走幂等路径；不能出现
+# “A 创建 req、B 创建 SDD、A 回滚 req、B 登记索引”的拆分提交。
+python3 "$DG" init 048-并发登记 --repo "$D_INIT" > "$T/init-a.log" 2>&1 &
+PID_A=$!
+python3 "$DG" init 048-并发登记 --repo "$D_INIT" > "$T/init-b.log" 2>&1 &
+PID_B=$!
+RC_A=0; wait "$PID_A" || RC_A=$?
+RC_B=0; wait "$PID_B" || RC_B=$?
+assert_eq "S9t 并发 init A 成功" "$RC_A" "0"
+assert_eq "S9u 并发 init B 幂等成功" "$RC_B" "0"
+[ -f "$D_INIT/docs/01-需求/048-并发登记/原始需求.md" ] \
+    && [ "$(find "$D_INIT/docs/03-SDD/048-并发登记" -maxdepth 1 -type f | wc -l)" = "11" ] \
+    && ok "S9v 并发 init 最终模板完整" || bad "S9v 并发 init 产生半套模板"
+[ "$(grep -c '^| 048-并发登记' "$D_INIT/docs/01-需求/README.md")" = "1" ] \
+    && ok "S9w 并发 init 索引恰一行" || bad "S9w 并发 init 索引重复或缺失"
+
 # ════════════════ 汇总 ════════════════
+# 强制走 Windows/无 dir_fd fallback：中途写失败同样不得留下
+# 半文件、随机临时文件或本次新建目录。
+FALLBACK_INDEX_BEFORE=$(sha256sum "$D_INIT/docs/01-需求/README.md" | cut -d' ' -f1)
+run_rc python3 - "$DG" "$D_INIT" <<'PY'
+import importlib.machinery
+import os
+import pathlib
+import sys
+
+gate_path, repo_arg = sys.argv[1:]
+mod = importlib.machinery.SourceFileLoader("doc_gate_fallback_fail", gate_path).load_module()
+repo = pathlib.Path(repo_arg)
+mod._has_dir_fd_support = lambda: False
+
+def fail_mid_write(fd, data):
+    os.write(fd, data[:1])
+    raise OSError("injected fallback short write")
+
+mod._write_all = fail_mid_write
+raise SystemExit(mod.cmd_init(repo, "049-fallback失败", False))
+PY
+assert_eq "S9x fallback 写入失败受控返回" "$rc" "3"
+[ ! -e "$D_INIT/docs/01-需求/049-fallback失败/原始需求.md" ] \
+    && ok "S9y fallback 半写文件未发布" || bad "S9y fallback 残留半文件"
+[ ! -d "$D_INIT/docs/01-需求/049-fallback失败" ] \
+    && ok "S9z fallback 清理本次目录" || bad "S9z fallback 残留目录"
+[ "$(find "$D_INIT/docs/01-需求" -name '.原始需求.md.kit-init-*.tmp' | wc -l)" = "0" ] \
+    && ok "S9aa fallback 清理临时文件" || bad "S9aa fallback 残留临时文件"
+[ "$(sha256sum "$D_INIT/docs/01-需求/README.md" | cut -d' ' -f1)" = "$FALLBACK_INDEX_BEFORE" ] \
+    && ok "S9ab fallback 失败不改索引" || bad "S9ab fallback 污染索引"
+
 echo
 echo "doc-gate 测试: $pass 通过, $fail 失败"
 [ "$fail" -eq 0 ] || exit 1

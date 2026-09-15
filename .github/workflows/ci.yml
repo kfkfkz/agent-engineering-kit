@@ -9,13 +9,13 @@ jobs:
           fetch-depth: 0
       - name: 语法检查（sh -n / py_compile）
         run: |
-          sh -n install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh
+          sh -n install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/benchmark.test.sh
           python3 -m py_compile memory-build spec-migrate memory-recall domain-check doc-gate governance-eval
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck >/dev/null
-          shellcheck install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh
+          shellcheck install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/benchmark.test.sh
       - name: 安装器测试
         run: sh tests/install.test.sh
       - name: 安装 zvec（语义检索层/安装器测试依赖）
@@ -32,6 +32,8 @@ jobs:
         run: sh tests/mcp.test.sh
       - name: 文档门禁测试（doc-gate 硬校验/判定/冻结 + governance-eval）
         run: sh tests/doc-gate.test.sh
+      - name: Benchmark 评测器回归测试
+        run: sh tests/benchmark.test.sh
       - name: Windows 可导入性守卫（AST：fcntl/msvcrt/O_NOFOLLOW 隔离在 platform/）
         run: sh tests/import-guard.test.sh
       - name: archify 真实执行（安装产物 doctor + validate + deliver）
@@ -56,6 +58,31 @@ jobs:
         run: |
           python -m py_compile installer/*.py installer/platform/*.py doc-gate governance-eval domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
           python -c "import sys; sys.path.insert(0, '.'); import installer.install, installer.transaction, installer.uninstall, installer.zvec, installer.manifest, installer.registry, installer.doctor, installer.legacy, installer.preflight; print('installer modules import OK on Windows')"
+      - name: 原生 Windows copy 生命周期（install / update / doctor / uninstall）
+        shell: pwsh
+        run: |
+          $repo = Join-Path $env:RUNNER_TEMP "aek-windows-repo"
+          $codex = Join-Path $env:RUNNER_TEMP "aek-windows-workspace"
+          New-Item -ItemType Directory -Force -Path $repo, $codex | Out-Null
+          python -m installer --codex-root $codex --link-strategy copy $repo
+          if ($LASTEXITCODE -ne 0) { throw "install failed: $LASTEXITCODE" }
+          $copy = Join-Path $codex ".agents/skills/tdd/SKILL.md"
+          if (-not (Test-Path -LiteralPath $copy -PathType Leaf)) {
+            throw "copy strategy did not expose tdd skill"
+          }
+          $item = Get-Item -LiteralPath $copy
+          if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "copy strategy unexpectedly created a reparse point"
+          }
+          python -m installer --update --codex-root $codex --link-strategy copy $repo
+          if ($LASTEXITCODE -ne 0) { throw "update failed: $LASTEXITCODE" }
+          python -m installer --doctor --codex-root $codex $repo
+          if ($LASTEXITCODE -ne 0) { throw "doctor failed: $LASTEXITCODE" }
+          python -m installer --uninstall --codex-root $codex $repo
+          if ($LASTEXITCODE -ne 0) { throw "uninstall failed: $LASTEXITCODE" }
+          if (Test-Path -LiteralPath $copy) {
+            throw "uninstall left managed copy behind"
+          }
       - name: 平台无关工具测试（doc-gate + governance-eval CLI）
         shell: bash
         run: |

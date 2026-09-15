@@ -1292,6 +1292,102 @@ M_AFTER=$(sha256sum "$P21/.repo-memory-kit/manifest.json" | cut -d' ' -f1)
 [ -f "$P21/docs/memory/RULES.md" ] \
     && ok "18.2f 既有资源未被动（升级回滚不动存量）" || bad "18.2f 存量资源丢失"
 
+# 18.3 Manifest 本身已是最后一个事务步骤：全提交后崩溃，roll-forward 只能
+# 校验该文件，不得从 plan 重建并把 state.* 伪资源写进清单。
+P22="$T/manifest-final-step"
+WS22="$T/state-ws22"
+mkdir -p "$P22" "$WS22"
+python3 - "$P22" "$WS22" <<'PY' >/dev/null 2>&1
+import json
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+import installer.install as inst
+from installer import transaction as txm
+
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+real_links = inst.ensure_codex_links
+def crash_after_internal_commit(*args, **kwargs):
+    raise SystemExit(77)
+inst.ensure_codex_links = crash_after_internal_commit
+try:
+    inst.run_install(target, codex_root=ws)
+except SystemExit as e:
+    assert e.code == 77
+finally:
+    inst.ensure_codex_links = real_links
+manifest = target / ".repo-memory-kit" / "manifest.json"
+before = manifest.read_bytes()
+unresolved = txm.find_unresolved(target)
+assert len(unresolved) == 1 and unresolved[0].status == "committing"
+rr = txm.recover(target)
+assert rr.status == "roll_forward_completed", (rr.status, rr.detail)
+after = manifest.read_bytes()
+assert after == before, "roll-forward 重写了已提交的 Manifest"
+entries = json.loads(after)["entries"]
+assert not any(e["spec_id"].startswith("state.") for e in entries), entries
+# 已被旧版本污染的 state.* 条目在读取边界也必须被丢弃，避免作为 residual
+# 被下一次安装永久带回。
+polluted = json.loads(after)
+fake = dict(polluted["entries"][0])
+fake["spec_id"] = "state.governance-profile"
+polluted["entries"].append(fake)
+manifest.write_text(json.dumps(polluted), encoding="utf-8")
+loaded = inst.read_manifest(target)
+assert loaded is not None
+assert not any(e.spec_id.startswith("state.") for e in loaded.entries)
+PY
+[ $? = 0 ] && ok "18.3 Manifest final-step 不重写，读取边界过滤 state.*" \
+    || bad "18.3 roll-forward 污染 Manifest"
+
+# 18.4 合法 v1 清单退役属于同一事务；外部步骤失败后 rollback 必须逐字节恢复，
+# 不能出现 v1/v2 清单同时消失的所有权真空。
+P23="$T/legacy-manifest-rollback"
+WS23="$T/state-ws23"
+mkdir -p "$P23/.repo-memory-kit" "$WS23"
+printf 'kit_version=legacy\nanchors_schema=1\n' > "$P23/.repo-memory-kit/manifest"
+LEGACY_BEFORE=$(sha256sum "$P23/.repo-memory-kit/manifest" | cut -d' ' -f1)
+python3 - "$P23" "$WS23" <<'PY' >/dev/null 2>&1
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+import installer.install as inst
+
+target, ws = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+real_pf = inst.run_preflight
+def inject_external_conflict(*args, **kwargs):
+    pf = real_pf(*args, **kwargs)
+    occupied = ws / ".agents" / "skills" / "tdd"
+    occupied.mkdir(parents=True, exist_ok=True)
+    (occupied / "SKILL.md").write_text("user content", encoding="utf-8")
+    return pf
+inst.run_preflight = inject_external_conflict
+assert inst.run_install(target, codex_root=ws, link_strategy="copy") == 1
+PY
+[ ! -f "$P23/.repo-memory-kit/manifest" ] && [ -f "$P23/.repo-memory-kit/manifest.json" ] \
+    && ok "18.4a 提交阶段 v1 已退役、v2 已落盘" || bad "18.4a 前置事务状态异常"
+rm -rf "$WS23/.agents/skills/tdd"
+python3 - "$P23" <<'PY' >/dev/null 2>&1
+import os
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+
+target = Path(sys.argv[1]).resolve()
+lock = txm.acquire_install_lock(target)
+try:
+    rr = txm.recover_manual(target, "rollback")
+finally:
+    os.close(lock)
+assert rr.status == "rolled_back", (rr.status, rr.detail)
+PY
+LEGACY_AFTER=$(sha256sum "$P23/.repo-memory-kit/manifest" | cut -d' ' -f1)
+[ "$LEGACY_BEFORE" = "$LEGACY_AFTER" ] \
+    && ok "18.4b rollback 逐字节恢复 v1 清单" || bad "18.4b v1 清单未恢复"
+[ ! -f "$P23/.repo-memory-kit/manifest.json" ] \
+    && ok "18.4c rollback 删除未完成安装的 v2 清单" || bad "18.4c v2 清单残留"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

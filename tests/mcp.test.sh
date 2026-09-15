@@ -168,6 +168,57 @@ bound = os.path.dirname(os.path.dirname(KIT_BIN))
 assert bound == '$P', f'绑定仓库错误: {bound} != $P'
 " && ok "MCP 绑定安装仓库（不接受任意路径）" || bad "仓库绑定异常"
 
+# ── T14 JSON-RPC envelope 与方法参数 schema（非法请求不应变成 -32603）──
+RESP=$(echo '{"id":14,"method":"ping"}' | python3 "$MCP" "$P" 2>/dev/null)
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['error']['code']==-32600 and r['id'] is None
+" && ok "缺 jsonrpc → -32600" || bad "缺 jsonrpc 被接受: $RESP"
+
+RESP=$(echo '{"jsonrpc":"1.0","id":15,"method":"ping"}' | python3 "$MCP" "$P" 2>/dev/null)
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['error']['code']==-32600 and r['id'] is None
+" && ok "错误 jsonrpc 版本 → -32600" || bad "错误版本被接受: $RESP"
+
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":16,"method":"tools/call","params":[]}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['error']['code']==-32602 and r['id']==16
+" && ok "tools/call params 数组 → -32602 且保留 id" || bad "params 数组错误边界异常: $RESP"
+
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"kit_status","arguments":[]}}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['error']['code']==-32602 and r['id']==17
+" && ok "tools/call arguments 数组 → -32602" || bad "arguments 数组被接受: $RESP"
+
+RESP=$(mcp_rpc_multi \
+    '{"jsonrpc":"2.0","id":18,"method":"tools/call","params":[]}' \
+    '{"jsonrpc":"2.0","id":19,"method":"ping"}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys
+rows=[json.loads(line) for line in sys.stdin if line.strip()]
+by_id={row.get('id'): row for row in rows}
+assert by_id[18]['error']['code']==-32602
+assert by_id[19]['result']=={}
+" && ok "非法 params 后服务继续处理下一请求" || bad "非法 params 终止服务: $RESP"
+
+# 任意合法 envelope 的无 id 请求都是 notification：即使方法或参数错误也不回包。
+N_RESP=$(printf '%s\n%s\n%s\n%s\n' "$INIT" \
+    '{"jsonrpc":"2.0","method":"ping"}' \
+    '{"jsonrpc":"2.0","method":"tools/list","params":[]}' \
+    '{"jsonrpc":"2.0","method":"missing/method"}' \
+    | python3 "$MCP" "$P" 2>/dev/null | grep -c '"jsonrpc"')
+[ "$N_RESP" = "1" ] && ok "通用 notification 无响应" || bad "notification 多产生了响应: $N_RESP 条"
+
+RESP=$(printf '%s\n' '{"jsonrpc":"2.0","id":20,"method":"ping","params":NaN}' \
+    | python3 "$MCP" "$P" 2>/dev/null)
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+assert r['error']['code']==-32700 and r['id'] is None
+" && ok "非标准 JSON NaN → -32700" || bad "NaN 被当作合法 JSON: $RESP"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

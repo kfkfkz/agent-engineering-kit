@@ -14,7 +14,7 @@ cd agent-engineering-kit
 ./install.sh /path/to/your-project
 ```
 
-安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+**。Linux/macOS 全功能可用（WSL 同）；**Windows 原生支持进行中**——`install.bat` 入口、平台抽象层（锁/路径校验按平台分派）、`--link-strategy copy`（不依赖符号链接权限）已就位并通过导入级 CI，事务层尚待真机验证，验证通过前 Windows 用户建议 WSL。
+安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+**。Linux/macOS 全功能可用（WSL 同）；Windows 原生提供 `compatible` 安全档：`install.bat` 入口、平台抽象层和默认 `--link-strategy copy`（不依赖符号链接权限），并在 Windows CI 覆盖 install / update / doctor / uninstall。Windows 后端仍是 path-based reparse-point 预检，不能提供 POSIX `dir_fd + O_NOFOLLOW` 的对抗性 TOCTOU 保证；有此威胁模型时建议 WSL。
 
 先预览、不写入：
 
@@ -533,10 +533,11 @@ git pull
 ./tests/doc-gate.test.sh       # 文档门禁（硬校验/追踪链/评审绑定/冻结哈希/治理引擎）
 ./tests/import-guard.test.sh   # Windows 可导入性守卫（AST）
 ./tests/mcp.test.sh            # MCP 协议（版本协商/生命周期/参数校验）
+./tests/benchmark.test.sh      # Benchmark 评测器（路径边界/回归测试证据）
 shellcheck install.sh tests/*.test.sh
 ```
 
-八套件 500+ 断言；CI 含 Ubuntu 全量 + Windows 导入冒烟。
+九套件 500+ 断言；CI 含 Ubuntu 全量 + Windows 导入冒烟。
 
 ## License
 
