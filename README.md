@@ -2,7 +2,7 @@
 
 给 Claude Code、Codex 和其他仓库级 AI Agent 使用的一体化工程工作流包。
 
-安装一次后，团队成员会使用同一套项目宪章、复用调研、代码取证、系统调试、TDD、安全审查、交付验证、Spec Kit 迁移和项目记忆规则，减少"不同 Agent 各写一套设计、各走一套流程"的偏差。代码审查与交付验证由内置工作流闭环完成，不要求额外的审查 CLI。
+安装一次后，团队成员会使用同一套需求与设计文档流水线（确定性门禁 + 人工评审关口）、项目宪章、复用调研、代码取证、系统调试、TDD、安全审查、交付验证和项目记忆规则，减少"不同 Agent 各写一套设计、各走一套流程"的偏差。设计文档的评审与门禁由 doc-gate 确定性裁决（AI 只做 sensor），业务流程图由 archify 生成（vendor 供应链锁定）；代码审查与交付验证由内置工作流闭环完成，不要求额外的审查 CLI。
 
 ## 三分钟接入
 
@@ -14,7 +14,7 @@ cd agent-engineering-kit
 ./install.sh /path/to/your-project
 ```
 
-安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+ 与 POSIX 环境（Linux/macOS）**——依赖 `fcntl` 文件锁与 Unix 文件语义（`dir_fd`/`O_NOFOLLOW`），不支持 Windows 原生环境（WSL 可用）。
+安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+**。Linux/macOS 全功能可用（WSL 同）；**Windows 原生支持进行中**——`install.bat` 入口、平台抽象层（锁/路径校验按平台分派）、`--link-strategy copy`（不依赖符号链接权限）已就位并通过导入级 CI，事务层尚待真机验证，验证通过前 Windows 用户建议 WSL。
 
 先预览、不写入：
 
@@ -63,7 +63,7 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 | 场景 | Claude Code | Codex | 作用 |
 | --- | --- | --- | --- |
 | 完整功能、修复、重构、迁移 | `/repo-delivery 任务` | `$repo-delivery 任务` | 从宪章门禁推进到实现、验证和文档收口 |
-| 需求文档流水线（概要/详细/任务/测试方案） | `/design-pipeline 需求目录` | `$design-pipeline 需求目录` | Author 生成 → doc-gate 硬校验 → AI 评审 → 确定性门禁 → 冻结 |
+| 设计文档流水线（03-SDD 目录全链） | `/design-pipeline SDD目录` | `$design-pipeline SDD目录` | 概要→(UI)→业务流程(人审)→详细→计划：doc-gate 门禁 + archify 流程图 |
 | 理解结构、调用链、影响面 | `/codebase-memory 问题` | `$codebase-memory 问题` | 用代码图谱取证并核验源码与索引覆盖 |
 | Bug、测试失败、异常行为 | `/systematic-debugging 问题` | `$systematic-debugging 问题` | 先复现和定位根因，再决定修复 |
 | 测试先行实现 | `/tdd 行为` | `$tdd 行为` | 按纵向切片执行 RED → GREEN → REFACTOR |
@@ -98,9 +98,9 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 
 1. 读取项目指令、constitution 和相关记忆，提取安全、依赖、测试、文档及人工确认门禁。
 2. **需求拆分**：用 `codebase-memory` 找到订单查询入口、权限过滤、导出能力、调用链和受影响测试；`memory-recall` 检索相关的坑与域知识；把需求拆成功能点并列出待澄清问题。
-3. **需求确认**：把"加个导出"衍生为具体场景（如"运营在订单列表页筛选后导出当日对账单"），每个场景定义可观察产出（谁在哪个页面拿到什么）；场景与产出确认后作为验收依据；导出方式、异步任务、文件存储等会改公共契约的细节一并交用户裁决。
-4. **概要设计**：先对齐项目内同类已认可文档的骨架；功能设计按能力逐节写界面（菜单落位+原型）、前端展示清单（④接口的验收依据）与业务逻辑；需要新 CSV 组件时用 `reuse-research` 比较现有依赖、扩展点和新库。
-5. **概要设计 → 详细设计 → 任务清单 + 测试方案**：经 `design-pipeline` 产出——每个阶段过 `doc-gate` 硬校验（结构/追踪链/薄输入）+ AI 评审（独立上下文出 issues.json）+ 确定性门禁（severity 阈值判定），PASS 即冻结（哈希落盘）；发现缺漏定向修改后重新过门，连续 3 轮不达标升级人工。
+3. **需求确认**：把"加个导出"衍生为具体场景（如"运营在订单列表页筛选后导出当日对账单"），每个场景定义可观察产出（谁在哪个页面拿到什么）；场景与产出确认后写入需求分析，维护者签核 + `doc-gate freeze` 落哈希凭证；导出方式、异步任务、文件存储等会改公共契约的细节一并交用户裁决。
+4. **概要设计**：先对齐项目内同类已认可文档的骨架；功能点（F-ID）覆盖全部验收项；需要新 CSV 组件时用 `reuse-research` 比较现有依赖、扩展点和新库。过 `doc-gate` 门禁后冻结。
+5. **业务流程设计 → 详细设计（API/数据库）→ 任务清单 + 测试方案**：经 `design-pipeline` 产出——业务流程设计是**给人读的**（通俗、无代码细节、archify 流程图 + UI 原型截图），交维护者人工评审；通过后进入详细设计三文档。机器门禁阶段每个都过 `doc-gate` 硬校验（结构/追踪链/薄输入）+ AI 评审（独立上下文出 issues.json，绑定文档哈希）+ 确定性判定（severity 阈值），PASS 即冻结；发现缺漏定向修改后重新过门，连续 3 次失败升级人工；每阶段过门后回填索引行的阶段列。
 6. **任务拆分 + 编码**：`tdd` 按纵向切片推进——
    - RED：有权限的筛选结果应导出指定字段；
    - GREEN：完成最小导出链路；
@@ -213,6 +213,43 @@ repo-delivery
 - 项目专属技术栈、覆盖率、数据禁区等以当前项目为准；
 - 高风险决策仍需人工确认，AI 草稿不能自行标记为已确认。
 
+## 设计文档工程（01-需求 / 03-SDD）
+
+需求与设计文档按**产物归属**分两处，同号同名（`NNN-名称`）：
+
+```text
+docs/01-需求/
+  README.md                      需求指派索引（8 列：序号/需求/需求状态/当前功能开发
+                                 阶段/全局目录名称/开发人员/需求所属版本/需求上线时间）
+  NNN-名称/原始需求.md             维护者产物——需求原文与附件（不进门禁，Agent 只引用）
+
+docs/03-SDD/
+  NNN-名称/
+    需求分析.md        场景（前置/操作/结果）+ 验收项 A-ID    ← 维护者签核 + freeze
+    概要设计.md        功能点 F-ID（覆盖验收项）              ← 机器门禁
+    UI设计.md          可选：原型 + 设计系统落地               ← 机器门禁 + AI 视觉评审
+    业务流程设计.md     人读文档：通俗、无代码细节、嵌流程图    ← 人工评审关口
+    详细设计.md        业务逻辑/异常/安全（D-ID 三文档共用）    ← 机器门禁 + AI 评审
+    API设计.md         接口契约
+    数据库设计.md       表结构与迁移
+    任务清单.md        T-ID + 预计修改范围（喂 Change Precision）
+    测试方案.md        TC-ID 挂验收项
+    线上联调功能验证清单.md  事实文档（"通过"只接受真实证据）
+    终稿.md            As-Built（最终状态/设计差异/决策沉淀）
+    reviews/           doc-gate 唯一写者（gate 凭证/评审 issues/校验记录）
+    diagrams/          archify 产物（JSON 源/HTML/证据截图）
+```
+
+**门禁模型（sensor / judge 分离）**：AI 评审只产出 issues.json（无总分、无 PASS/FAIL，
+绑定被评审文档哈希——评审后改文档即过期）；`doc-gate` 做全部确定性裁决——
+结构/追踪链（场景→A→F→D→TC→T 全程机械校验）/薄输入拒绝/上游冻结检查，
+severity 阈值判定，连续 3 次失败 BLOCKED 升级人工。PASS 即冻结（哈希凭证），
+冻结后改动即失配。需求分析与业务流程设计是**人工签核阶段**（评审权在人）。
+
+**业务流程图由 archify 生成**：写类型化 JSON → validate（9/9 校验）→ deliver
+（自包含交互 HTML）→ visual-check（校验 + 自动产出双主题证据截图）。
+查看器内置 PNG/SVG/WebM 导出。无 Node.js 时回退 mermaid 并披露。
+
 ## 统一产出
 
 无论项目使用哪种模板，最终交付信息都应能映射到以下字段（括号为产出阶段）：
@@ -271,7 +308,27 @@ repo-delivery
 
 ### design-pipeline
 
-需求文档工程流水线：从已冻结的需求.md 出发，编排 概要设计 → (UI设计) → 详细设计 → 任务清单+测试方案 的迭代式生成与评审。核心分工是 **sensor / judge 分离**——AI Reviewer（独立上下文）只产出 issues.json（无总分、无 PASS/FAIL），`doc-gate` 做全部确定性裁决（硬校验 + severity 阈值门禁）。每个阶段 PASS 即冻结（哈希落 reviews/），冻结后改动即哈希失配回 DRAFT；最多 3 轮修订，不达标升级人工。下游发现上游不可实现走打回流程（出待维护者裁决清单，不改需求.md——人工产物）。任务清单的预计修改范围直接喂 Change Precision 评测。
+设计文档工程流水线：从原始需求衍生需求分析（维护者签核冻结）后，编排
+概要设计 → (UI设计) → 业务流程设计（**人工评审关口**）→ 详细设计（详细/API/数据库
+三文档共用 D-ID）→ 任务清单+测试方案 的迭代式生成与评审。核心分工是
+**sensor / judge 分离**——AI 评审（独立上下文）只产出 issues.json（无总分、无
+PASS/FAIL，绑定文档哈希），`doc-gate` 做全部确定性裁决。每个阶段 PASS 即冻结，
+冻结后改动即哈希失配；连续 3 次失败 BLOCKED 升级人工；每阶段通过后回填
+`docs/01-需求/README.md` 索引行的"当前功能开发阶段"列（只动自己的行）。
+业务流程设计是人读文档（通俗、无代码细节），评审权在维护者——评审通过后
+`doc-gate freeze` 落哈希凭证才能进详细设计。下游发现上游不可实现走打回流程
+（出待维护者裁决清单，不代改维护者产物）。任务清单的预计修改范围直接喂
+Change Precision 评测。
+
+### archify（图表，vendor 供应链锁定）
+
+业务流程图/架构图/时序图/数据流/生命周期五类图的自包含交互 HTML 渲染器。
+以 vendor 快照随 kit 分发（上游 commit 锁定 + 聚合哈希 manifest——安装器生成
+规格前校验，篡改拒绝安装），逐文件部署到两棵技能树。运行时需要 **Node.js ≥18**；
+缺失时 doctor 报 DEGRADED（图表回退 mermaid，基础功能不受影响）。
+产物链：JSON 源（权威可编辑）→ validate/deliver（校验回执）→ visual-check
+（有界行为校验 + 双主题证据截图）。查看器内置 PNG/SVG/WebM 导出。
+校验边界：validate 只证明图能正确渲染，不证明架构事实正确。
 
 ### delivery-gate
 
@@ -343,16 +400,23 @@ PROFILE 在有效 `confirmed` 条目达到 10 条时创建；后续积累达到�
 安装器会创建或更新：
 
 ```text
-.claude/skills/                 Claude Code 项目技能
-.agents/skills/                 Codex 项目技能
+.claude/skills/                 Claude Code 项目技能（含 archify/——bin/schemas/renderers 全量）
+.agents/skills/                 Codex 项目技能（同上，两棵树内容一致）
 .repo-memory-kit/bin/           校验器、生成器、Spec 迁移器、doc-gate 与 governance-eval
+.repo-memory-kit/governance     治理 profile 标记（strict / lightweight——唯一权威）
+.repo-memory-kit/governance.json  团队治理规则（首次安装写入，此后团队自持）
 docs/memory/RULES.md            记忆规则
-docs/memory/_*_TEMPLATE.md      条目模板（pitfall/decision/playbook/PROFILE）
+docs/memory/_*_TEMPLATE.md     条目模板（pitfall/decision/playbook/PROFILE）
 docs/memory/README.md           用户笔记种子（首次创建，此后归用户）
 CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 .cbmignore / .gitignore         图谱索引区块 / 每机文件忽略区块（多人协作）
 .mcp.json / .codex/config.toml  MCP 注册（kit 片段，含本机路径）
 ```
+
+治理双轨：**profile（strict/lightweight）唯一权威在文本标记**，每次安装重写——切换即时生效；
+**团队规则在 governance.json**（路径/文件名/新增行正则 → required_actions），存在才读、
+非法即阻断（fail-closed）。`delivery-gate` 收口时把 diff 喂给 `governance-eval` 拿到
+命中规则与动作要求——命中独立审查的变更强制对抗复核。
 
 `.repo-memory-kit/` 下的 `manifest.json`（Manifest v2：版本与受管资源记录）、`install.lock`、事务目录与 zvec 索引都是**每机状态/派生物**，不提交进版本库。
 
@@ -393,7 +457,7 @@ cd /path/to/your-project && .repo-memory-kit/bin/spec-migrate --check .
 - **每机文件不提交**：`.repo-memory-kit/`（安装清单/事务/语义索引等每机状态与派生物）、`.mcp.json`、`.codex/`（含本机绝对路径）——每台机器必然不同，入库即成永久冲突源。`settings.json` 不在此列：hook 命令是 `$CLAUDE_PROJECT_DIR` 字面量（运行时展开），可跨机器共享。
 - **同事开箱即用**：checkout/clone 即得技能与文档；各自跑一次 `install.sh`（幂等、零本地差异）获得工具/MCP/hook。
 - **升级单点执行**：kit 版本升级由维护者统一执行——同版本重跑 install 不产生任何本地差异；版本统一后任何人的 install 都是无冲突的空操作。
-- **需求目录治理**：`docs/01-需求/` 结构（含指派索引表）由需求维护者唯一维护；实现人只在自己被指派的需求目录内补充与撰写（一个需求一个目录，验证通过后整理终稿）；交付回执集中于 `docs/delivery-receipts/` 按功能命名。文档骨架从 kit 仓库 `templates/requirements/` 复制（维护者操作）。
+- **需求与设计目录治理**：`docs/01-需求/`（索引 + 原始需求）由需求维护者唯一维护，与 `docs/03-SDD/`（设计文档集）同号同名（`NNN-名称`）；实现人只在自己被指派的 03-SDD 目录内工作。索引行分权：行与表头归维护者（含开发人员/需求上线时间，在需求分析冻结时确认）；"当前功能开发阶段"列由实现人的 Agent 在每阶段过门后回填——**只动自己的行**，多人公共索引冲突面最小。交付回执集中于 `docs/delivery-receipts/` 按功能命名。骨架从 kit 仓库 `templates/requirements/` 复制（或用已入库的本地副本，维护者操作）。
 
 各版本控制的具体机制：
 
@@ -451,19 +515,26 @@ git pull
 
 - 安装器：Python 3.10+（`install.sh` 首步检测）；无其他外部依赖。
 - 语义检索层：可选，`pip install zvec`（预编译轮子，无模型下载、零 API key）；未安装时其余功能不受影响。
+- archify 图表：可选，**Node.js ≥18**；缺失时 doctor 报 DEGRADED，业务流程图回退 mermaid。
+- 无头浏览器（visual-check 证据截图）：可选，Chrome/Chromium；缺失时文档嵌 HTML 引用不嵌图。
 - 代码图谱增强：仅在使用 `--with-codebase-memory` 时需要网络。
 - git 不是目标项目的硬要求；SVN 或纯本地项目也可以使用记忆系统和显式文件清单检查。
 
 ## 开发与验证
 
 ```bash
-./tests/installer.test.sh      # 安装器生命周期（事务/崩溃恢复/存量迁移/--svn 治理）
-./tests/install.test.sh       # wrapper 全链路（安装/更新/卸载/安全清理）
-./tests/build.test.sh         # 记忆构建与语义检索层（模块目录/迁移/锚点）
-./tests/skill-sync.test.sh    # 技能副本一致性
-./tests/spec-migrate.test.sh  # Spec Kit 迁移
+./tests/installer.test.sh     # 安装器生命周期（事务/崩溃恢复/外部事务模型/archify 集成/--svn 治理）
+./tests/install.test.sh        # wrapper 全链路（安装/更新/卸载/安全清理）
+./tests/build.test.sh          # 记忆构建与语义检索层（模块目录/迁移/锚点）
+./tests/skill-sync.test.sh     # 技能副本一致性
+./tests/spec-migrate.test.sh   # Spec Kit 迁移
+./tests/doc-gate.test.sh       # 文档门禁（硬校验/追踪链/评审绑定/冻结哈希/治理引擎）
+./tests/import-guard.test.sh   # Windows 可导入性守卫（AST）
+./tests/mcp.test.sh            # MCP 协议（版本协商/生命周期/参数校验）
 shellcheck install.sh tests/*.test.sh
 ```
+
+八套件 500+ 断言；CI 含 Ubuntu 全量 + Windows 导入冒烟。
 
 ## License
 
