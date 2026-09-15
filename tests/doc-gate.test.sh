@@ -390,6 +390,24 @@ json.dump({"reviewer": "independent-subagent", "stage": stage,
 PYEOF
 write_issues() { python3 "$T/mkissues.py" "$@"; }
 
+# ════════════════ S-1 需求登记脚手架（init：两处目录+模板+索引行，幂等）════════════════
+run_rc python3 -m installer "$REPO" >/dev/null 2>&1   # 安装 _模板 与索引种子
+"$KIT/install.sh" "$REPO" >/dev/null 2>&1
+run_rc python3 "$DG" init 020-登记测试 --repo "$REPO"
+assert_eq "init 退出码 0" "$rc" "0"
+[ -f "$REPO/docs/01-需求/020-登记测试/原始需求.md" ] \
+    && ok "init 建 01-需求 侧原始需求" || bad "init 缺原始需求"
+N20=$(ls "$REPO/docs/03-SDD/020-登记测试" 2>/dev/null | wc -l)
+[ "$N20" = "11" ] && ok "init 建 03-SDD 侧 11 件设计模板" || bad "init 设计模板 $N20 件"
+grep -q "^| 020-登记测试" "$REPO/docs/01-需求/README.md" \
+    && ok "init 登记索引行" || bad "索引行未登记"
+run_rc python3 "$DG" init 020-登记测试 --repo "$REPO"
+assert_eq "init 幂等（退出码 0）" "$rc" "0"
+N20B=$(grep -c "^| 020-登记测试" "$REPO/docs/01-需求/README.md")
+[ "$N20B" = "1" ] && ok "init 幂等（索引行不重复）" || bad "索引行重复 $N20B 行"
+run_rc python3 "$DG" init "bad/name" --repo "$REPO"
+assert_eq "非法需求名被拒" "$rc" "3"
+
 # ════════════════ S0 需求冻结凭证（P1：文本"已冻结"不构成凭证）════════════════
 run_rc python3 "$DG" check "$D" --stage 需求分析
 assert_eq "check 需求分析 通过" "$rc" "0"

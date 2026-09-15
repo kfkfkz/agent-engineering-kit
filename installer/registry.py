@@ -246,6 +246,38 @@ def _codex_link_specs() -> list[ResourceSpec]:
 
 
 # 面向用户仓库的全部资源（有序——组锚/顺序校验的依据）
+def _requirement_specs() -> list[ResourceSpec]:
+    """需求工程资源（2026-09-15 用户裁决：索引与模板随 kit 常备，不再只有 --svn 才有）：
+    - docs/01-需求/README.md——指派索引（**seed**：首次创建后归用户，永不覆盖）
+    - docs/01-需求/_模板/——12 件文档模板（**owned**：doc-gate init 的复制源，
+      随 kit 升级更新——定制模板会破坏 doc-gate 结构校验，不开放用户改）"""
+    tpl_map = [
+        ("req-tpl-raw", "原始需求.md"),
+        ("req-tpl-analysis", "需求分析.md"),
+        ("req-tpl-outline", "概要设计.md"),
+        ("req-tpl-ui", "UI设计.md"),
+        ("req-tpl-flow", "业务流程设计.md"),
+        ("req-tpl-detail", "详细设计.md"),
+        ("req-tpl-api", "API设计.md"),
+        ("req-tpl-db", "数据库设计.md"),
+        ("req-tpl-tasks", "任务清单.md"),
+        ("req-tpl-test", "测试方案.md"),
+        ("req-tpl-verify", "线上联调功能验证清单.md"),
+        ("req-tpl-final", "终稿.md"),
+    ]
+    specs = [ResourceSpec(
+        id="requirements-index", source_path="templates/requirements-index.md",
+        destination_path="docs/01-需求/README.md", resource_type="seed_file",
+        locator=None, merge_policy="seed_if_absent", expected_mode=0o644)]
+    for tid, fname in tpl_map:
+        specs.append(ResourceSpec(
+            id=tid, source_path=f"templates/requirements/{fname}",
+            destination_path=f"docs/01-需求/_模板/{fname}",
+            resource_type="owned_file", locator=None,
+            merge_policy="replace", expected_mode=0o644))
+    return specs
+
+
 def _archify_specs() -> list[ResourceSpec]:
     """vendor/archify/ 快照逐文件展开为 owned_file spec（两棵技能树）。
     - 供应链锁定：快照聚合哈希与 vendor/archify.manifest.json 不符 → SecurityError
@@ -285,7 +317,7 @@ def _archify_specs() -> list[ResourceSpec]:
 
 
 REGISTRY: list[ResourceSpec] = (
-    _root_specs() + _memory_specs() + _skill_specs()
+    _root_specs() + _memory_specs() + _requirement_specs() + _skill_specs()
     + _bin_specs() + _codex_link_specs() + _archify_specs()
 )
 

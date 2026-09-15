@@ -641,7 +641,8 @@ import json, sys
 from pathlib import Path
 d = json.loads((Path(sys.argv[1]) / ".repo-memory-kit" / "manifest.json").read_text())
 ids = [e["spec_id"] for e in d["entries"]]
-assert ids == ["memory-readme-seed"], f"期望仅 seed 残留，实际 {ids}"
+assert ids == ["memory-readme-seed", "requirements-index"], \
+       f"期望仅 seed 残留（记忆 README + 需求索引），实际 {ids}"
 PY
 # 再次完整安装后用 --codex-root 卸载：外部链接三段式真实执行
 U2="$T/uninstall3"

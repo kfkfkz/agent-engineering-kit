@@ -7,6 +7,7 @@
           且 sha256(当前文档) == gate.json 记录的哈希。
 
 用法:
+  doc-gate init <NNN-名称> [--repo 仓库根]       需求登记：两处目录+模板骨架+索引行（幂等）
   doc-gate freeze <SDD目录> [--by 维护者]        维护者签写冻结记录后落哈希凭证
   doc-gate check <需求目录> --stage <阶段> [--json]
   doc-gate gate  <需求目录> --stage <阶段> [--no-review] [--json]
@@ -679,6 +680,85 @@ def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool) -> in
     return 0
 
 
+REQ_TPL_SDD = ["需求分析.md", "概要设计.md", "UI设计.md", "业务流程设计.md",
+              "详细设计.md", "API设计.md", "数据库设计.md", "任务清单.md",
+              "测试方案.md", "线上联调功能验证清单.md", "终稿.md"]
+
+
+def cmd_init(repo: Path, name: str, as_json: bool) -> int:
+    """需求登记脚手架（维护者单一入口，幂等）：原始需求确认与指派后一次运行——
+    1. docs/01-需求/NNN-名称/原始需求.md（模板，维护者填内容）
+    2. docs/03-SDD/NNN-名称/ 全部设计文档模板骨架
+    3. docs/01-需求/README.md 索引表追加该需求行（已存在同号行则跳过）
+    已存在的文件一律不覆盖。"""
+    import re as _re
+    import shutil as _shutil
+    if not _re.fullmatch(r"\d+-[^/\\\s]+", name) or ".." in name:
+        print(f"✗ 需求名格式应为 NNN-名称（如 014-识别驱动脱敏）：{name!r}")
+        return 3
+    tpl_dir = repo / "docs" / "01-需求" / "_模板"
+    missing = [t for t in ["原始需求.md"] + REQ_TPL_SDD
+               if not (tpl_dir / t).is_file()]
+    if missing:
+        print(f"✗ 模板缺失（{len(missing)} 件）——先运行 kit 安装/修复，_模板/ 是 kit 受管资源")
+        return 3
+    req_dir = repo / "docs" / "01-需求" / name
+    sdd_dir = repo / "docs" / "03-SDD" / name
+    created: list[str] = []
+    skipped: list[str] = []
+    # 1. 原始需求（01-需求 侧）
+    req_dir.mkdir(parents=True, exist_ok=True)
+    dst = req_dir / "原始需求.md"
+    if dst.exists():
+        skipped.append(str(dst.relative_to(repo)))
+    else:
+        _shutil.copy2(tpl_dir / "原始需求.md", dst)
+        created.append(str(dst.relative_to(repo)))
+    # 2. 设计文档骨架（03-SDD 侧）
+    sdd_dir.mkdir(parents=True, exist_ok=True)
+    for t in REQ_TPL_SDD:
+        dst = sdd_dir / t
+        if dst.exists():
+            skipped.append(str(dst.relative_to(repo)))
+        else:
+            _shutil.copy2(tpl_dir / t, dst)
+            created.append(str(dst.relative_to(repo)))
+    # 3. 索引行登记（README 种子由 kit 安装创建；此处只追加行）
+    index_path = repo / "docs" / "01-需求" / "README.md"
+    row_added = False
+    if not index_path.is_file():
+        print(f"✗ 索引不存在（{index_path}）——kit 安装会创建索引种子，请先安装/修复")
+        return 3
+    lines = index_path.read_text(encoding="utf-8").split("\n")
+    nnn = name.split("-", 1)[0]
+    if any(_l.strip().startswith(f"| {nnn}-") and "---" not in _l for _l in lines):
+        skipped.append("索引行（同号已存在）")
+    else:
+        # 找最后一个表格行（| 开头），追加其后
+        last_row = max((i for i, _l in enumerate(lines)
+                        if _l.strip().startswith("|")), default=None)
+        if last_row is None:
+            print("✗ 索引格式异常（未找到表格）——请人工登记")
+            return 3
+        row = (f"| {name} | （填写需求名） | 草拟 | 需求分析 | {name} | "
+               f"（实现人） | （版本） | 未定 |")
+        lines.insert(last_row + 1, row)
+        index_path.write_text("\n".join(lines), encoding="utf-8")
+        row_added = True
+    if as_json:
+        print(json.dumps({"name": name, "created": created,
+                          "skipped": skipped, "index_row_added": row_added},
+                         ensure_ascii=False, indent=2))
+    else:
+        for c in created:
+            print(f"✓ 已创建 {c}")
+        for s in skipped:
+            print(f"• 已存在跳过 {s}")
+        print(f"{'✓' if row_added else '•'} 索引行{'已登记' if row_added else '（同号已存在，跳过）'}")
+        print(f"下一步：维护者填写 原始需求.md → Agent 衍生需求分析 → 维护者签核后 doc-gate freeze")
+    return 0
+
+
 # ══════════════════════════ 子命令 ══════════════════════════
 
 def cmd_check(req_dir: Path, stage: str, as_json: bool) -> int:
@@ -731,6 +811,10 @@ def main() -> int:
         if name == "gate":
             p.add_argument("--no-review", action="store_true",
                            help="跳过 AI 评审（仅硬校验判定——限 review=optional 阶段）")
+    ip = sub.add_parser("init", help="需求登记脚手架（两处目录+模板+索引行，幂等）")
+    ip.add_argument("name", help="需求名 NNN-名称（如 014-识别驱动脱敏）")
+    ip.add_argument("--repo", default=".", help="目标仓库根目录（默认当前目录）")
+    ip.add_argument("--json", action="store_true")
     fp = sub.add_parser("freeze", help="人工签核阶段冻结凭证（需求分析/业务流程设计）")
     fp.add_argument("dir")
     fp.add_argument("--stage", default="需求分析",
@@ -741,6 +825,9 @@ def main() -> int:
     sp.add_argument("dir")
     sp.add_argument("--json", action="store_true")
     args = ap.parse_args()
+
+    if args.cmd == "init":
+        return cmd_init(Path(args.repo).resolve(), args.name, args.json)
 
     req_dir = Path(args.dir).resolve()
     if not req_dir.is_dir():
