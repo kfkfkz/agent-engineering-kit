@@ -17,6 +17,7 @@ docs/memory/README.md 回归纯 seed：仅首次创建、此后归用户所有�
   影响模式可加: --report <路径|- >（Markdown 影响报告）、--strict（有波及条目时退出码 2，供 CI 阻断）
 """
 import json, os, re, subprocess, sys, tempfile
+from pathlib import Path
 
 STATUS_MAP = {"confirmed": "已确认", "unverified": "待验证", "deprecated": "已废弃", "superseded": "已替代"}
 VALID_STATUS = set(STATUS_MAP)
@@ -97,8 +98,7 @@ def load_entries(mem):
     """条目 = docs/memory/<模块>/ 下的 .md（v4 按模块分目录，类型在 frontmatter）；
     存量类型目录（pitfalls/decisions/playbooks/）继续读取（迁移前兼容）。
     符号链接条目/目录跳过（防越界读取）。"""
-    from pathlib import Path as _P
-    mem_lex = _P(mem)
+    mem_lex = Path(mem)
     entries = []
     subdirs = sorted(d for d in os.listdir(mem)
                      if os.path.isdir(os.path.join(mem, d))
@@ -109,7 +109,7 @@ def load_entries(mem):
         for name in sorted(os.listdir(d)):
             if not name.endswith(".md") or name.startswith("_"):
                 continue
-            if not _under_root_no_symlinks(_P(d) / name, mem_lex):
+            if not _under_root_no_symlinks(Path(d) / name, mem_lex):
                 continue                     # 符号链接条目，跳过
             text = open(os.path.join(d, name), encoding="utf-8").read()
             fm, body = parse_frontmatter(text)

@@ -114,6 +114,22 @@ else
     bad "archify 快照路径哈希仍依赖宿主路径分隔符"
 fi
 
+if grep -q '^from pathlib import Path$' memory-build; then
+    ok "memory-build 的 Path 注解兼容 Python 3.10–3.13"
+else
+    bad "memory-build 使用 Path 注解但未在模块级导入"
+fi
+
+ENCODING_TMP="$(mktemp -d)"
+mkdir "$ENCODING_TMP/repo"
+if XDG_CONFIG_HOME="$ENCODING_TMP/config" PYTHONIOENCODING=cp1252 \
+   python3 -m installer --link-strategy copy "$ENCODING_TMP/repo" >/dev/null 2>&1; then
+    ok "安装器在窄编码重定向下不会因 Unicode 输出崩溃"
+else
+    bad "安装器输出依赖系统编码，窄编码重定向会崩溃"
+fi
+rm -rf "$ENCODING_TMP"
+
 echo
 echo "import-guard 测试: $pass 通过, $fail 失败"
 [ "$fail" -eq 0 ] || exit 1
