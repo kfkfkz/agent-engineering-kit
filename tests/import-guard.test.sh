@@ -145,6 +145,35 @@ else
     bad "事务密钥未强制二进制模式"
 fi
 
+if python3 - <<'EOF'
+import ast
+from pathlib import Path
+
+bad = []
+for filename in (
+    "installer/install.py", "installer/manifest.py",
+    "installer/transaction.py", "installer/zvec.py",
+):
+    tree = ast.parse(Path(filename).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "os" and func.attr == "open"):
+            continue
+        flags = ast.unparse(node.args[1])
+        if "O_RDONLY" in flags and "O_BINARY" not in flags and "O_DIRECTORY" not in flags:
+            bad.append(f"{filename}:{node.lineno}: {flags}")
+assert not bad, "直接字节读取缺 O_BINARY:\n" + "\n".join(bad)
+EOF
+then
+    ok "安装器直接字节读取统一使用 O_BINARY"
+else
+    bad "仍有 Windows 文本模式读取会改变 CAS/HMAC 字节"
+fi
+
 echo
 echo "import-guard 测试: $pass 通过, $fail 失败"
 [ "$fail" -eq 0 ] || exit 1

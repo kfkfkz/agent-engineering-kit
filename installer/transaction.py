@@ -230,7 +230,8 @@ def try_open_install_lock_shared(target: Path) -> int | None:
     - -1   → 锁被排他持有，或打开异常（如 ELOOP 符号链接）→ INCOMPLETE"""
     lock_path = target / ".repo-memory-kit" / "install.lock"
     try:
-        fd = os.open(lock_path, os.O_RDONLY | _plat.O_NOFOLLOW)
+        fd = os.open(lock_path,
+                     os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY)
     except FileNotFoundError:
         return None
     except OSError:
@@ -352,7 +353,7 @@ def load_transaction(target: Path, tx_id: str) -> TransactionRecord | None:
     validate_tx_id(tx_id)
     path = target / ".repo-memory-kit" / "tx" / tx_id / "record.json"
     try:
-        fd = os.open(path, os.O_RDONLY | _plat.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY)
     except FileNotFoundError:
         return None
     try:
@@ -507,7 +508,8 @@ def backup_container(target: Path, step: CommitStep, tx_id: str) -> bool:
         return True
     paths = derive_transaction_paths(target, step.spec_id, tx_id)
     try:
-        src_fd = os.open(paths.dst, os.O_RDONLY | _plat.O_NOFOLLOW)
+        src_fd = os.open(paths.dst,
+                         os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY)
     except OSError:
         return False
     try:
@@ -544,7 +546,8 @@ def _delete_isolation(step: CommitStep, tx_id: str) -> tuple[str, str, str]:
 
 def _hash_regular_at(parent_fd: int, name: str) -> str:
     """在固定父目录内不跟随最终组件读取 hash。"""
-    fd = os.open(name, os.O_RDONLY | _plat.O_NOFOLLOW, dir_fd=parent_fd)
+    fd = os.open(name, os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY,
+                 dir_fd=parent_fd)
     try:
         if not stat_module.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(f"隔离对象不是普通文件: {name}")
@@ -789,7 +792,8 @@ def restore_from_backup(target: Path, dst_rel: str, backup: Path, tx_id: str,
     # backup 读取允许路径形式（O_NOFOLLOW 防最终组件）：读到的内容必须匹配
     # HMAC 保护的 pre_hash——被换内容只会导致校验失败（fail-safe，无写入）
     try:
-        backup_fd = os.open(backup, os.O_RDONLY | _plat.O_NOFOLLOW)
+        backup_fd = os.open(backup,
+                            os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY)
     except OSError:
         return False
 

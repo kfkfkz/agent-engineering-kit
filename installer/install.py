@@ -198,7 +198,7 @@ def group_specs(specs: list[ResourceSpec]) -> list[list[ResourceSpec]]:
 def _read_container(dst: Path) -> tuple[bytes | None, int | None]:
     """只读一次容器（O_NOFOLLOW）；返回 (bytes | None, mode | None)。"""
     try:
-        fd = os.open(dst, os.O_RDONLY | _plat.O_NOFOLLOW)
+        fd = os.open(dst, os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY)
     except FileNotFoundError:
         return None, None
     try:

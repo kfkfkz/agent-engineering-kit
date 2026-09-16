@@ -289,7 +289,8 @@ def open_current_generation(repo: Path, retries: int = 3):
         gen_dir = read_current(repo)                 # pointer 校验（UUID + 逃逸检查）
         lock_file = gen_dir / ".lock"
         try:
-            fd = os.open(lock_file, os.O_RDONLY | _plat.O_NOFOLLOW)
+            fd = os.open(lock_file,
+                         os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY)
         except FileNotFoundError:
             continue                                 # 正被回收 → 重读 pointer
         try:
@@ -330,7 +331,8 @@ def cleanup_old_generations(zvec_dir: Path, keep: int, min_age_seconds: int) -> 
             continue
         lock_file = g / ".lock"
         try:
-            fd = os.open(lock_file, os.O_RDONLY | _plat.O_NOFOLLOW)
+            fd = os.open(lock_file,
+                         os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY)
         except OSError:
             continue
         try:
