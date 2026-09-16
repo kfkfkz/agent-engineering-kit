@@ -613,6 +613,9 @@
       "agents-md-block": "canonical_sha256:df149d69db7de7a1f51dcb50465dc323ecfa38ae4249e55f95883eba1a2f153d",
       "claude-md-block": "canonical_sha256:2105a526a3607fa1a414206722fc39eadebf51c78b42a2d13ed298ae99521ce1"
     },
+    "f2c22d6": {
+      "bin-memory-build": "canonical_sha256:eb0fbb2e8b9f02d58f23990aef8c8a9d2548efd0ca400625fa40615e844c23ae"
+    },
     "f49aa31": {
       "req-tpl-flow": "canonical_sha256:71236c0da8c02b1025630d65a3173fb2454a9158885ff83eaffb78369634dd03",
       "skill-agents-design-pipeline": "canonical_sha256:b7a8e5ef6fef0bbf6c23b022ce3af92a4ac909bd919d0e499a89518256c885ff",
