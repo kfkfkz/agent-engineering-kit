@@ -58,7 +58,8 @@ jobs:
           python-version: "3.12"
       - name: 全模块可导入（fcntl 已隔离在 platform/posix_fs）
         run: |
-          python -m py_compile installer/*.py installer/platform/*.py doc-gate governance-eval route-eval domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
+          python -m compileall -q installer
+          python -m py_compile doc-gate governance-eval route-eval domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
           python -c "import sys; sys.path.insert(0, '.'); import installer.install, installer.transaction, installer.uninstall, installer.zvec, installer.manifest, installer.registry, installer.doctor, installer.legacy, installer.preflight; print('installer modules import OK on Windows')"
       - name: 原生 Windows copy 生命周期（install / update / doctor / uninstall）
         shell: pwsh

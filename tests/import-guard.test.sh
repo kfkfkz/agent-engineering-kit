@@ -78,6 +78,14 @@ else
     bad "事务记录缺 link_strategy"
 fi
 
+# PowerShell 不会为原生命令可靠展开 *.py；CI 必须使用 Python 自己递归编译。
+if grep -q 'python -m compileall -q installer' .github/workflows/ci.yml \
+   && ! grep -q 'python -m py_compile installer/\*\.py' .github/workflows/ci.yml; then
+    ok "Windows CI 由 compileall 展开 installer 源文件"
+else
+    bad "Windows CI 仍把 installer/*.py 字面量交给 py_compile"
+fi
+
 echo
 echo "import-guard 测试: $pass 通过, $fail 失败"
 [ "$fail" -eq 0 ] || exit 1
