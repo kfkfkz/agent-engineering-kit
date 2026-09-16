@@ -145,8 +145,11 @@ jobs:
       - name: Windows smoke — memory-recall
         shell: bash
         run: |
+          T="$(mktemp -d)"
+          mkdir -p "$T/docs/memory/pitfalls"
+          printf '# Windows 中文语料\n' > "$T/docs/memory/pitfalls/中文条目.md"
           set +e
-          output="$(PYTHONIOENCODING=cp1252 python memory-recall --list . 2>&1)"
+          output="$(PYTHONIOENCODING=cp1252 python memory-recall --list "$T" 2>&1)"
           rc=$?
           set -e
           if [ "$rc" -ne 0 ]; then
@@ -156,7 +159,11 @@ jobs:
           fi
       - name: Windows smoke — memory-build
         shell: bash
-        run: printf '' | PYTHONIOENCODING=cp1252 python memory-build --files . >/dev/null
+        run: |
+          T="$(mktemp -d)"
+          mkdir -p "$T/docs/memory/pitfalls"
+          printf '# Windows 中文语料\n' > "$T/docs/memory/pitfalls/中文条目.md"
+          printf '' | PYTHONIOENCODING=cp1252 python memory-build --files "$T" >/dev/null
       - name: Windows smoke — domain-check expected error
         shell: bash
         run: |

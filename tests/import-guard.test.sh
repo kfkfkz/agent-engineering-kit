@@ -132,34 +132,41 @@ rm -rf "$ENCODING_TMP"
 
 if PYTHONIOENCODING=cp1252 python3 - <<'EOF'
 import os
+from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
-commands = [
-    ([sys.executable, "doc-gate", "--help"], None, {0}),
-    ([sys.executable, "governance-eval", "."], b"", {0}),
-    ([sys.executable, "route-eval", "--help"], None, {0}),
-    ([sys.executable, "spec-migrate", "--help"], None, {0}),
-    ([sys.executable, "memory-recall", "--list", "."], None, {0}),
-    ([sys.executable, "memory-build", "--check", "."], None, {0, 1}),
-    ([sys.executable, "domain-check", "."], None, {0, 1}),
-    (
-        [sys.executable, "agent-engineering-mcp"],
-        b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n',
-        {0},
-    ),
-]
-for argv, stdin, expected in commands:
-    proc = subprocess.run(argv, input=stdin, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, env=env, check=False)
-    if proc.returncode not in expected:
-        raise AssertionError(
-            f"{argv[1]} exit={proc.returncode}: "
-            + proc.stderr.decode("ascii", errors="backslashreplace")
-        )
-    if b"UnicodeEncodeError" in proc.stderr:
-        raise AssertionError(f"{argv[1]} depends on the host output encoding")
+with tempfile.TemporaryDirectory() as tmp:
+    repo = Path(tmp)
+    entry = repo / "docs" / "memory" / "pitfalls" / "中文条目.md"
+    entry.parent.mkdir(parents=True)
+    entry.write_text("# Windows 中文语料\n", encoding="utf-8")
+    commands = [
+        ([sys.executable, "doc-gate", "--help"], None, {0}),
+        ([sys.executable, "governance-eval", "."], b"", {0}),
+        ([sys.executable, "route-eval", "--help"], None, {0}),
+        ([sys.executable, "spec-migrate", "--help"], None, {0}),
+        ([sys.executable, "memory-recall", "--list", str(repo)], None, {0}),
+        ([sys.executable, "memory-build", "--files", str(repo)], b"", {0}),
+        ([sys.executable, "domain-check", str(repo)], None, {1}),
+        (
+            [sys.executable, "agent-engineering-mcp"],
+            b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n',
+            {0},
+        ),
+    ]
+    for argv, stdin, expected in commands:
+        proc = subprocess.run(argv, input=stdin, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, env=env, check=False)
+        if proc.returncode not in expected:
+            raise AssertionError(
+                f"{argv[1]} exit={proc.returncode}: "
+                + proc.stderr.decode("ascii", errors="backslashreplace")
+            )
+        if b"UnicodeEncodeError" in proc.stderr:
+            raise AssertionError(f"{argv[1]} depends on the host output encoding")
 EOF
 then
     ok "全部公开 Python CLI 在窄系统编码下可输出 Unicode"
