@@ -22,6 +22,7 @@ from pathlib import Path
 
 BACKEND_NAME = "windows_compatible"
 SECURITY_LEVEL = "compatible"
+_O_BINARY = os.O_BINARY
 
 
 def _is_junction(path: Path) -> bool:
@@ -64,7 +65,7 @@ def create_exclusive(root: Path, rel: str, data: bytes, *, mode: int = 0o600) ->
     """O_CREAT|O_EXCL 创建。返回 fd。"""
     full = _check_no_reparse(root, str(Path(rel).parent))
     fd = os.open(full / Path(rel).name,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, mode)
     try:
         _write_all(fd, data)
         os.fsync(fd)
@@ -78,7 +79,7 @@ def write_exclusive(root: Path, rel: str, data: bytes, *, mode: int = 0o600,
                     truncate: bool = False) -> int:
     """打开写入。返回 fd。"""
     full = _check_no_reparse(root, str(Path(rel).parent))
-    flags = os.O_WRONLY | os.O_CREAT
+    flags = os.O_WRONLY | os.O_CREAT | _O_BINARY
     if truncate:
         flags |= os.O_TRUNC
     fd = os.open(full / Path(rel).name, flags, mode)
@@ -148,7 +149,7 @@ def exclusive_lock(root: Path, rel: str):
     import msvcrt
     lock_path = root / rel
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | _O_BINARY, 0o600)
     try:
         try:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
@@ -169,7 +170,7 @@ def try_shared_lock(root: Path, rel: str):
     import msvcrt
     lock_path = root / rel
     try:
-        fd = os.open(lock_path, os.O_RDONLY)
+        fd = os.open(lock_path, os.O_RDONLY | _O_BINARY)
     except FileNotFoundError:
         return None
     except OSError:
@@ -252,7 +253,7 @@ def secure_open(target: Path, rel: str, flags: int, mode: int = 0o600) -> int:
     filepath = full / p.name
     if path_is_symlink(filepath):
         raise PermissionError(f"文件是符号链接/junction: {filepath}")
-    return os.open(filepath, flags, mode)
+    return os.open(filepath, flags | _O_BINARY, mode)
 
 
 def secure_replace(target: Path, src_rel: str, dst_rel: str) -> None:

@@ -130,6 +130,21 @@ else
 fi
 rm -rf "$ENCODING_TMP"
 
+if python3 - <<'EOF'
+import inspect
+from installer import platform
+from installer import transaction
+
+assert hasattr(platform, "O_BINARY")
+source = inspect.getsource(transaction)
+assert source.count("_plat.O_BINARY") >= 2
+EOF
+then
+    ok "事务密钥按二进制模式读写（Windows 不做 Ctrl-Z/CRLF 转换）"
+else
+    bad "事务密钥未强制二进制模式"
+fi
+
 echo
 echo "import-guard 测试: $pass 通过, $fail 失败"
 [ "$fail" -eq 0 ] || exit 1

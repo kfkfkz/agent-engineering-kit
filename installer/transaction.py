@@ -261,7 +261,8 @@ def load_tx_key(target: Path) -> bytes | None:
     读 33 字节且要求恰好 32（v11）：os.read(fd, 32) 对超长损坏文件（如 40 字节）
     会返回前 32 字节被误接受——读 33 才能确认无多余内容。"""
     try:
-        fd = os.open(tx_key_path(target), os.O_RDONLY | _plat.O_NOFOLLOW)
+        fd = os.open(tx_key_path(target),
+                     os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY)
     except OSError:
         return None
     try:
@@ -287,7 +288,8 @@ def ensure_tx_key(target: Path) -> bytes:
     path.parent.mkdir(parents=True, exist_ok=True)
     fresh = os.urandom(32)
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _plat.O_NOFOLLOW, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | _plat.O_NOFOLLOW | _plat.O_BINARY, 0o600)
     except FileExistsError:
         existing = load_tx_key(target)          # 并发：他方刚建好
         if existing is None:

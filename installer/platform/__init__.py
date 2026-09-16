@@ -27,6 +27,7 @@ IS_WINDOWS = sys.platform == "win32"
 #    windows_fs 的 islink 预检承担——compatible 档语义）──
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+O_BINARY = getattr(os, "O_BINARY", 0)
 
 # ── 延迟导入：避免在非目标平台上加载不必要的模块 ──
 
