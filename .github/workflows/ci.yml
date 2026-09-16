@@ -69,10 +69,12 @@ jobs:
             "installer.doctor", "installer.legacy", "installer.preflight"
           )
           foreach ($module in $modules) {
-            python -c "import importlib; importlib.import_module('$module')"
+            $output = python -c "import importlib; importlib.import_module('$module')" 2>&1
             if ($LASTEXITCODE -ne 0) {
               $rc = $LASTEXITCODE
-              Write-Output "::error title=Windows module import failed::$module"
+              $detail = ($output | Select-Object -Last 1).ToString().Replace("::", ":")
+              Write-Output "::error title=Windows module import failed::$module — $detail"
+              $output | ForEach-Object { Write-Output $_ }
               exit $rc
             }
           }
