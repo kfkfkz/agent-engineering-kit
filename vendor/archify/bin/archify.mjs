@@ -64,12 +64,22 @@ function rendererPath(type) {
 }
 
 function runNode(args, options = {}) {
-  return spawnSync(process.execPath, args, {
+  const result = spawnSync(process.execPath, args, {
     cwd: options.cwd || process.cwd(),
     encoding: 'utf8',
     stdio: options.stdio || 'inherit',
     env: options.env ? { ...process.env, ...options.env } : process.env,
   });
+  // Some managed sandboxes report a process-creation error while leaving a
+  // misleading zero status.  Every caller branches on status before reading
+  // stdout, so normalize this impossible combination into an explicit
+  // failure.  The preserved error is then rendered as the structured
+  // internal/* diagnostic instead of JSON.parse("") throwing a fake syntax
+  // error.
+  if (result.error && (result.status === null || result.status === 0)) {
+    return { ...result, status: 1 };
+  }
+  return result;
 }
 
 function extractQualityArgs(args) {

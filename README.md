@@ -293,8 +293,11 @@ severity 阈值判定，连续 3 次失败 BLOCKED 升级人工。PASS 即冻结
 编辑且尚未重新冻结，其所有下游凭证立即失效。
 
 **业务流程图由 archify 生成**：写类型化 JSON → validate（9/9 校验）→ deliver
-（自包含交互 HTML）→ visual-check（校验 + 自动产出双主题证据截图）。
-查看器内置 PNG/SVG/WebM 导出。无 Node.js 时回退 mermaid 并披露。
+（自包含交互 HTML + 内容哈希回执）→ visual-check（校验 + 自动产出双主题
+证据截图）。`doc-gate` 会核对 `.workflow.json` / HTML / `.delivery.json`
+的 bytes、SHA-256 与 showcase 9/9 结果，Mermaid-only 不再能通过门禁。
+查看器内置 PNG/SVG/WebM 导出。只有 Node.js 未安装或 <18，且 doctor 明确 DEGRADED
+时允许回退 Mermaid 并披露；路径、权限或渲染失败不得偷换为降级。
 
 ## 统一产出
 
@@ -371,10 +374,11 @@ Change Precision 评测。
 业务流程图/架构图/时序图/数据流/生命周期五类图的自包含交互 HTML 渲染器。
 以 vendor 快照随 kit 分发（上游 commit 锁定 + 聚合哈希 manifest——安装器生成
 规格前校验，篡改拒绝安装），逐文件部署到两棵技能树。运行时需要 **Node.js ≥18**；
-缺失时 doctor 报 DEGRADED（图表回退 mermaid，基础功能不受影响）。
-产物链：JSON 源（权威可编辑）→ validate/deliver（校验回执）→ visual-check
+缺失时 doctor 报 DEGRADED（图表可显式回退 Mermaid，基础功能不受影响）。
+产物链：JSON 源（权威可编辑）→ validate/deliver（持久化校验回执）→ visual-check
 （有界行为校验 + 双主题证据截图）。查看器内置 PNG/SVG/WebM 导出。
-校验边界：validate 只证明图能正确渲染，不证明架构事实正确。
+交付门禁会校验产物哈希、showcase 9/9 结果和文档链接。校验边界：
+validate 只证明图能正确渲染，不证明架构事实正确。
 
 ### delivery-gate
 
@@ -633,7 +637,7 @@ diff 中出现真实新增的可执行测试信号，空文件或注释不计分
 shellcheck install.sh tests/*.test.sh
 ```
 
-当前九套件共 **594 条断言**；CI 含 Ubuntu 全量验证、ShellCheck、archify 真实执行，
+当前九套件共 **604 条断言**；CI 含 Ubuntu 全量验证、ShellCheck、archify 真实执行，
 以及 Windows 原生导入和 copy 策略的 install / update / doctor / uninstall 生命周期。
 
 ## License

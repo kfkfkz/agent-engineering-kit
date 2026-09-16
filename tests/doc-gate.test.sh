@@ -450,6 +450,74 @@ assert_eq "gate 概要设计 PASS（review=optional 无 issues 可判）" "$rc" 
 assert_grep "gate.json 状态 PASS" '"status": "PASS"' "$D/reviews/概要设计.gate.json"
 assert_grep "gate.json 记录文档哈希" '"doc_hashes"' "$D/reviews/概要设计.gate.json"
 
+# 业务流程图交付契约：默认必须是可核验的 Archify source + HTML +
+# delivery receipt。仅有 Mermaid 不得通过，否则命令路径失败会被模板掩盖。
+run_rc python3 "$DG" check "$D" --stage 业务流程设计
+assert_eq "Mermaid-only 业务流程图被拒绝" "$rc" "1"
+
+mkdir -p "$D/diagrams"
+cat > "$D/diagrams/用户状态管理.workflow.json" <<'EOF'
+{"schema_version":2,"diagram_type":"workflow","meta":{"title":"用户状态管理","quality_profile":"showcase"}}
+EOF
+cat > "$D/diagrams/用户状态管理.html" <<'EOF'
+<!doctype html><html><head><meta name="generator" content="archify test"></head><body><svg></svg></body></html>
+EOF
+SPEC_SHA=$(sha256sum "$D/diagrams/用户状态管理.workflow.json" | cut -d' ' -f1)
+HTML_SHA=$(sha256sum "$D/diagrams/用户状态管理.html" | cut -d' ' -f1)
+SPEC_BYTES=$(wc -c < "$D/diagrams/用户状态管理.workflow.json" | tr -d ' ')
+HTML_BYTES=$(wc -c < "$D/diagrams/用户状态管理.html" | tr -d ' ')
+cat > "$D/diagrams/用户状态管理.delivery.json" <<EOF
+{"schemaVersion":1,"ok":true,"command":"deliver","type":"workflow",
+ "specification":{"sha256":"$SPEC_SHA","bytes":$SPEC_BYTES},
+ "artifact":{"sha256":"$HTML_SHA","bytes":$HTML_BYTES},
+ "validation":{"checksPassed":9,"checkCount":9,"compositionProfile":"showcase",
+ "compositionStatus":"pass","errors":0,"warnings":0}}
+EOF
+python3 - "$D/业务流程设计.md" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text(encoding="utf-8")
+start = text.index("```mermaid")
+end = text.index("```", start + 3) + 3
+replacement = (
+    "> 图表模式：Archify\n\n"
+    "[打开可交互业务流程图](diagrams/用户状态管理.html)"
+)
+p.write_text(text[:start] + replacement + text[end:], encoding="utf-8")
+PY
+run_rc python3 "$DG" check "$D" --stage 业务流程设计
+assert_eq "Archify 交付物与 receipt 一致时通过" "$rc" "0"
+
+cp "$D/diagrams/用户状态管理.html" "$T/archify-html.orig"
+printf '\nuser tamper\n' >> "$D/diagrams/用户状态管理.html"
+run_rc python3 "$DG" check "$D" --stage 业务流程设计
+assert_eq "Archify HTML 与 receipt 失配被拒绝" "$rc" "1"
+cp "$T/archify-html.orig" "$D/diagrams/用户状态管理.html"
+
+# 只有显式披露 doctor DEGRADED 的 Node<18 环境才允许 Mermaid 降级。
+D_FALLBACK="$REPO/docs/03-SDD/019-图表降级"
+cp -r "$D" "$D_FALLBACK"; rm -rf "$D_FALLBACK/diagrams"
+python3 - "$D_FALLBACK/业务流程设计.md" <<'PY'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+text = p.read_text(encoding="utf-8")
+old = "> 图表模式：Archify\n\n[打开可交互业务流程图](diagrams/用户状态管理.html)"
+new = (
+    "> 图表模式：Mermaid 降级\n"
+    "> 降级原因：Node.js < 18（archify doctor: DEGRADED）\n\n"
+    "```mermaid\nflowchart TD\nA[管理员停用] --> B[状态生效]\n```"
+)
+p.write_text(text.replace(old, new), encoding="utf-8")
+PY
+run_rc python3 "$DG" check "$D_FALLBACK" --stage 业务流程设计
+assert_eq "显式 Node<18 DEGRADED 时允许 Mermaid 降级" "$rc" "0"
+
+sed -i 's/Node\.js < 18/Node.js 未安装/' "$D_FALLBACK/业务流程设计.md"
+run_rc python3 "$DG" check "$D_FALLBACK" --stage 业务流程设计
+assert_eq "显式 Node 未安装 DEGRADED 时允许 Mermaid 降级" "$rc" "0"
+
 # 业务流程设计：人工签核阶段（评审记录 + freeze；未签核时详细设计上游检查失败）
 D_BP="$REPO/docs/03-SDD/018-业务流程未评审"
 cp -r "$D" "$D_BP"; rm -rf "$D_BP/reviews"

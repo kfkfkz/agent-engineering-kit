@@ -933,7 +933,9 @@ PY
 # 14.5 legacy 生成器可用性 + 产物一致性（纯函数调用，不写文件）
 python3 - <<'PYEOF' && ok "P2.5 生成器可用 + 产物与提交一致" || bad "P2.5 生成器异常或产物过期"
 import json
+from pathlib import Path
 from installer.legacy import generate_legacy_hashes
+from installer.registry import REGISTRY_BY_ID, compute_fragment_hashes, generate_fragment
 result = generate_legacy_hashes()
 assert "kit_versions" in result, "缺 kit_versions"
 n = len(result["kit_versions"])
@@ -956,6 +958,35 @@ for ver, entries in result["kit_versions"].items():
 # 已提交的 (version, spec) 对应全部在生成结果中（生成器可能多出新 commit）
 missing = committed_set - generated_set
 assert not missing, f"已提交 legacy_hashes 有 {len(missing)} 项不在生成结果中: {sorted(missing)[:3]}"
+# 反向校验“所有已成为历史的内容 hash”都已随包。当前工作树
+# 的 canonical 不需要进历史表；但一旦同一 spec 再次变更，上一版就必须
+# 入表。这会抓住“Manifest 和文件逐字节一致，却因历史表漏更被判
+# conflict”的真实升级故障。
+current_hash = {}
+hash_target = Path('/tmp/kit-target')
+for sid, spec in REGISTRY_BY_ID.items():
+    if spec.resource_type == "codex_link":
+        continue
+    try:
+        _installed, canonical = compute_fragment_hashes(
+            generate_fragment(spec, hash_target), hash_target)
+    except (FileNotFoundError, ValueError):
+        continue
+    current_hash[sid] = f"canonical_sha256:{canonical}"
+committed_hashes = {
+    (sid, value)
+    for entries in committed["kit_versions"].values()
+    for sid, value in entries.items()
+}
+historical_hashes = {
+    (sid, value)
+    for entries in result["kit_versions"].values()
+    for sid, value in entries.items()
+    if value != current_hash.get(sid)
+}
+missing_history = historical_hashes - committed_hashes
+assert not missing_history, (
+    f"已发布历史 hash 未入 legacy_hashes: {sorted(missing_history)[:3]}")
 print(f"generator OK: {n} versions, skills present, committed artifact consistent")
 PYEOF
 
@@ -1182,10 +1213,34 @@ grep -q "archify 图表能力降级" "$T/doc19b.log" \
     && ok "17.6 Node 缺失 → doctor 报 DEGRADED（能力降级不阻断）" \
     || bad "17.6 缺 Node 未报降级"
 
+# Node child_process 在受限执行环境可能返回 error 但 status=0。
+# CLI 必须输出结构化进程错误，不能继续 JSON.parse("") 报假语法错。
+if command -v node >/dev/null 2>&1; then
+    cp -R vendor/archify "$T/archify-spawn-fault"
+    sed -i "s|import { spawnSync } from 'node:child_process';|const spawnSync = () => ({ status: 0, stdout: '', stderr: '', error: Object.assign(new Error('spawn EPERM'), { code: 'EPERM' }) });|" \
+        "$T/archify-spawn-fault/bin/archify.mjs"
+    node "$T/archify-spawn-fault/bin/archify.mjs" validate workflow \
+        "$T/archify-spawn-fault/examples/agent-tool-call.workflow.json" \
+        --quality showcase --json > "$T/archify-spawn.json" 2> "$T/archify-spawn.err"
+    RC_SPAWN=$?
+    python3 - "$T/archify-spawn.json" "$RC_SPAWN" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+assert int(sys.argv[2]) != 0
+assert data["ok"] is False and data["stage"] == "render"
+assert data["diagnostics"][0]["code"] == "internal/renderer-process"
+PY
+    [ $? = 0 ] && ok "17.7 archify 子进程启动失败返回结构化错误" \
+        || bad "17.7 archify 子进程错误被误报为 JSON 语法错"
+else
+    ok "17.7 当前无 Node，子进程故障注入由 Node CI 覆盖"
+fi
+
 # 卸载 → archify 树全清
 python3 -m installer --uninstall "$P19" >/dev/null 2>&1
 [ ! -e "$P19/.claude/skills/archify" ] && [ ! -e "$P19/.agents/skills/archify" ] \
-    && ok "17.7 archify 树卸载干净（含嵌套空目录）" || bad "17.7 残留"
+    && ok "17.8 archify 树卸载干净（含嵌套空目录）" || bad "17.8 残留"
 
 
 # ══════════ 十八、状态文件入事务（第八轮审计 P1：回滚不得残留分裂状态）══════════

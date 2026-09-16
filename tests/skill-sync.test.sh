@@ -40,6 +40,22 @@ for tool in $KIT_SKILLS; do
     done
 done
 
+# design-pipeline 必须从仓库根/同级 skill 定位 archify；不能在
+# docs/03-SDD/<需求>/diagrams 下使用 ../.claude 这个错误相对路径。
+DP="$P/.agents/skills/design-pipeline/SKILL.md"
+grep -q 'ARCHIFY_ROOT=.*\.agents/skills/archify' "$DP" \
+    && ok "design-pipeline 从仓库根定位 archify" \
+    || bad "design-pipeline 缺少稳定 archify 定位"
+! grep -q 'node \.\./\.claude/skills/archify' "$DP" \
+    && ok "design-pipeline 不再使用错误 ../.claude 路径" \
+    || bad "design-pipeline 仍使用错误 ../.claude 路径"
+grep -q '\.delivery\.json' "$DP" \
+    && ok "design-pipeline 持久化 archify delivery receipt" \
+    || bad "design-pipeline 未持久化 delivery receipt"
+! grep -q '^```mermaid' "$P/docs/01-需求/_模板/业务流程设计.md" \
+    && ok "业务流程模板不再默认诱导 Mermaid" \
+    || bad "业务流程模板仍含默认 Mermaid 块"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

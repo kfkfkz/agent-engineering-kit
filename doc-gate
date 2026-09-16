@@ -13,7 +13,8 @@
   doc-gate gate  <需求目录> --stage <阶段> [--no-review] [--json]
   doc-gate status <需求目录> [--json]
 
-阶段: 需求分析 / 概要设计 / UI设计 / 详细设计(三文档) / 计划。
+阶段: 需求分析 / 概要设计 / 业务流程设计 / UI设计 /
+      详细设计(三文档) / 计划。
       <SDD目录> = docs/03-SDD/NNN-名称/；原始需求在 docs/01-需求/NNN-名称/（不进门禁）。
 
 退出码: 0 = PASS / 校验通过；1 = NEEDS_REVISION / 校验有 FAIL；
@@ -115,6 +116,104 @@ def _sha256(path: Path) -> str | None:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
         return None
+
+
+def _archify_delivery_error(receipt_path: Path) -> tuple[str | None, str | None]:
+    """校验一份业务流程 Archify delivery receipt 及其绑定产物。
+
+    文件命名契约：<name>.workflow.json / <name>.html /
+    <name>.delivery.json。receipt 是证据，不是单纯的“成功”标记；
+    必须与当前 source 和 HTML 的 bytes + sha256 一致。
+    """
+    suffix = ".delivery.json"
+    if not receipt_path.name.endswith(suffix):
+        return None, f"receipt 命名非法: {receipt_path.name}"
+    name = receipt_path.name[:-len(suffix)]
+    source = receipt_path.parent / f"{name}.workflow.json"
+    artifact = receipt_path.parent / f"{name}.html"
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        source_bytes = source.read_bytes()
+        artifact_bytes = artifact.read_bytes()
+        source_data = json.loads(source_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        return name, f"{name}: 产物或 receipt 不可读/不是合法 JSON: {e}"
+
+    if not isinstance(receipt, dict) or not isinstance(source_data, dict):
+        return name, f"{name}: source/receipt 顶层必须是 object"
+    if (source_data.get("schema_version") != 2
+            or source_data.get("diagram_type") != "workflow"
+            or not isinstance(source_data.get("meta"), dict)
+            or source_data["meta"].get("quality_profile") != "showcase"):
+        return name, f"{name}: 必须是 schema v2 showcase workflow source"
+    if (receipt.get("schemaVersion") != 1 or receipt.get("ok") is not True
+            or receipt.get("command") != "deliver"
+            or receipt.get("type") != "workflow"):
+        return name, f"{name}: delivery receipt envelope 非法"
+
+    specification = receipt.get("specification")
+    artifact_info = receipt.get("artifact")
+    validation = receipt.get("validation")
+    if not all(isinstance(v, dict)
+               for v in (specification, artifact_info, validation)):
+        return name, f"{name}: delivery receipt 缺少证据字段"
+    expected_source = hashlib.sha256(source_bytes).hexdigest()
+    expected_artifact = hashlib.sha256(artifact_bytes).hexdigest()
+    if (specification.get("sha256") != expected_source
+            or specification.get("bytes") != len(source_bytes)):
+        return name, f"{name}: workflow source 与 delivery receipt 失配"
+    if (artifact_info.get("sha256") != expected_artifact
+            or artifact_info.get("bytes") != len(artifact_bytes)):
+        return name, f"{name}: HTML 与 delivery receipt 失配"
+    if b'<meta name="generator" content="archify ' not in artifact_bytes:
+        return name, f"{name}: HTML 缺少 archify generator 标识"
+    if (validation.get("checksPassed") != validation.get("checkCount")
+            or not isinstance(validation.get("checkCount"), int)
+            or validation["checkCount"] < 9
+            or validation.get("compositionProfile") != "showcase"
+            or validation.get("compositionStatus") != "pass"
+            or validation.get("errors") != 0
+            or validation.get("warnings") != 0):
+        return name, f"{name}: delivery 未达到 showcase 9/9 无警告契约"
+    return name, None
+
+
+def _check_business_process_diagram(c, req_dir: Path, text: str) -> None:
+    """默认强制 Archify 证据链；只接受显式 Node<18 DEGRADED 降级。"""
+    fallback = bool(re.search(
+        r"(?m)^>\s*图表模式[:：]\s*Mermaid\s+降级\s*$", text))
+    mermaid = "```mermaid" in text.lower()
+    if fallback:
+        reason = bool(re.search(
+            r"(?mi)^>\s*降级原因[:：].*Node\.js\s*"
+            r"(?:<\s*18|未安装|不存在|不可用).*"
+            r"archify\s+doctor[:：]\s*DEGRADED", text))
+        c.add("diagram", "Mermaid 降级有 doctor DEGRADED 依据",
+              mermaid and reason,
+              "降级必须含 Mermaid 图，并披露 Node.js 未安装/<18 + "
+              "archify doctor: DEGRADED")
+        return
+
+    diagrams = req_dir / "diagrams"
+    receipts = sorted(diagrams.glob("*.delivery.json")) if diagrams.is_dir() else []
+    valid_names: list[str] = []
+    errors: list[str] = []
+    for receipt_path in receipts:
+        name, error = _archify_delivery_error(receipt_path)
+        if error:
+            errors.append(error)
+        elif name is not None:
+            valid_names.append(name)
+    c.add("diagram", "Archify workflow/HTML/delivery receipt 一致",
+          bool(valid_names),
+          "；".join(errors) if errors else "缺少可核验的 diagrams/*.delivery.json")
+    linked = any(
+        re.search(rf"\]\(\s*diagrams/{re.escape(name)}\.html(?:\s+[^)]*)?\)", text)
+        for name in valid_names)
+    c.add("diagram", "文档引用已验证的 Archify HTML", linked,
+          "需链接 diagrams/<name>.html，且同名 delivery receipt 通过")
+    c.add("diagram", "Archify 模式不混入 Mermaid 回退", not mermaid,
+          "检测到 Mermaid；只有显式 DEGRADED 模式才允许回退")
 
 
 def _block(text: str, pos: int) -> str:
@@ -416,6 +515,10 @@ def run_checks(req_dir: Path, stage: str) -> Checks:
             continue
         _check_structure(c, doc, text, spec["sections"][doc])
         _check_placeholders(c, doc, text)
+
+    if stage == "业务流程设计":
+        flow_text = _read(req_dir / "业务流程设计.md") or ""
+        _check_business_process_diagram(c, req_dir, flow_text)
 
     # ── 各阶段追踪链 ──
     req_a = parse_a_items(req_text) if req_text else {}
