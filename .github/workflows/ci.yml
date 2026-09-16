@@ -131,10 +131,24 @@ jobs:
             Write-Output "::error title=Windows copy lifecycle::uninstall left managed copy behind"
             exit 1
           }
-      - name: 平台无关工具测试（doc-gate + governance-eval + route-eval CLI）
+      - name: 全部公开 CLI 的原生 Windows smoke
         shell: bash
         run: |
+          export PYTHONIOENCODING=cp1252
           python doc-gate --help >/dev/null
           printf 'strict\n' > /tmp/gov-marker
           echo "diff --git a/x b/x" | python governance-eval . && echo "governance-eval OK on Windows"
           python route-eval --init | python -c "import json,sys; assert json.load(sys.stdin)['version'] == 1"
+          python spec-migrate --help >/dev/null
+          python memory-recall --list . >/dev/null
+          printf '' | python memory-build --files . >/dev/null
+          if output="$(python domain-check . 2>&1)"; then
+            echo "domain-check unexpectedly found a domain map" >&2
+            exit 1
+          fi
+          printf '%s\n' "$output" | grep -q '未找到'
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
+            '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+            | python agent-engineering-mcp \
+            | PYTHONIOENCODING=utf-8 python -c "import json,sys; rows=[json.loads(x) for x in sys.stdin]; assert len(rows) == 2 and len(rows[1]['result']['tools']) == 4"
