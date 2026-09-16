@@ -378,6 +378,16 @@
       "skill-claude-memory-capture": "canonical_sha256:cff924b316681e6de7669c63aedc20363b1a83210415778071a7ab87356935c5",
       "skill-claude-memory-check": "canonical_sha256:143f5fe5f13245ace3ed72e346452b70fb9884e436cff18527b504a8d6f60da2"
     },
+    "6c713cb": {
+      "bin-agent-engineering-mcp": "canonical_sha256:8e01299debc5c4a5cc8eba637cfd66b22c4aa8ac6cd70010b377d972e75743f8",
+      "bin-doc-gate": "canonical_sha256:deb5add7ffe102805ad2c60fdd15990f3a74e0f4d986d91d35ac980e309810f7",
+      "bin-domain-check": "canonical_sha256:159f8e5bc1973e0daefb7c69d385335e604fc7833404003c232aef79944eeb05",
+      "bin-governance-eval": "canonical_sha256:e0a23c7bb7ba722883c2c0523ac9b7b0e59d91b4c0799cab5ce2d4930f6bcec0",
+      "bin-memory-build": "canonical_sha256:5234f53bdec3abf51d8ef55d10c7021ded5ea53e3c7799331f831d47e0dc34e5",
+      "bin-memory-recall": "canonical_sha256:0b4748c1d9db224d4780c404e9502ac5f13651477e3f32a204f34772074de362",
+      "bin-route-eval": "canonical_sha256:38224784a983b2936bf31127fc095cd3a43dde2b8c5f62bb0ffab5f517d87805",
+      "bin-spec-migrate": "canonical_sha256:095bdbf374b87480f42ebdd482a24a41b935d1baacf7a66021908ea984db67bc"
+    },
     "6f06774": {
       "memory-readme-seed": "canonical_sha256:58c3584e656d6ab306c6aed05b705be8f0e181d05cfa80d7a059ab8119ab7bca"
     },
