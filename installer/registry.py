@@ -13,11 +13,11 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import stat as stat_module
+import subprocess
 import uuid
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal
 
 # ── kit 仓库根（installer/ 的父目录；安装器代码的一部分，目标仓库不可篡改）──
@@ -278,6 +278,11 @@ def _requirement_specs() -> list[ResourceSpec]:
     return specs
 
 
+def _snapshot_rel_bytes(relative_path: PurePath) -> bytes:
+    """供应链快照路径的跨平台规范字节；不得把宿主分隔符写入摘要。"""
+    return relative_path.as_posix().encode("utf-8")
+
+
 def _archify_specs() -> list[ResourceSpec]:
     """vendor/archify/ 快照逐文件展开为 owned_file spec（两棵技能树）。
     - 供应链锁定：快照聚合哈希与 vendor/archify.manifest.json 不符 → SecurityError
@@ -297,7 +302,7 @@ def _archify_specs() -> list[ResourceSpec]:
     files = sorted(p for p in vendor.rglob("*") if p.is_file())
     digest = _hashlib.sha256()
     for p in files:
-        digest.update(str(p.relative_to(vendor)).encode())
+        digest.update(_snapshot_rel_bytes(p.relative_to(vendor)))
         digest.update(b"\0")
         digest.update(_hashlib.sha256(p.read_bytes()).digest())
     if digest.hexdigest() != manifest.get("snapshot_sha256"):

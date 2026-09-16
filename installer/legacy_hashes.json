@@ -385,6 +385,22 @@
       "bin-validate-memory.sh": "canonical_sha256:1f349a1df49315144f1ccf13a9a0e40e8e30b91b1009fae4cbf6a423fd86251c",
       "memory-rules": "canonical_sha256:a79eb4f7f42e66a7aced3202a714736c5ce2dcf2d3e4435971fd4f395cb28d94"
     },
+    "73ac720": {
+      "agents-md-block": "canonical_sha256:1d0ed3da5e3d6b8513eed161e238e7446196ea88498981d8815b3308f9cad433",
+      "bin-governance-eval": "canonical_sha256:3edceceb4dd0a72db76f353e42959c81ad4566d1cf7afbea4a09329020ad8497",
+      "bin-route-eval": "canonical_sha256:f9cf6ddbfe4e8c7345c9214171a231ebc272e73ea0e77c1edf0e604390fe6f4e",
+      "claude-md-block": "canonical_sha256:bc0602db2949c44d87a449a326b68bae95fee796235d8aa26fffdbf0239f4de2",
+      "skill-agents-delivery-gate": "canonical_sha256:a387978bb9acfa691de07806803538bab9af7da9de85c4e0386644ececf5fde8",
+      "skill-agents-design-pipeline": "canonical_sha256:98a03aef31907671c7a21e9cb553c69bc78a9ba9572816af9f6b7e53208ce7e0",
+      "skill-agents-repo-delivery": "canonical_sha256:34b9379aa5d5582f1aa5fd1ce8d3fc43a33333bd9b53730b01ae4525dec22b0a",
+      "skill-claude-delivery-gate": "canonical_sha256:a387978bb9acfa691de07806803538bab9af7da9de85c4e0386644ececf5fde8",
+      "skill-claude-design-pipeline": "canonical_sha256:98a03aef31907671c7a21e9cb553c69bc78a9ba9572816af9f6b7e53208ce7e0",
+      "skill-claude-repo-delivery": "canonical_sha256:34b9379aa5d5582f1aa5fd1ce8d3fc43a33333bd9b53730b01ae4525dec22b0a"
+    },
+    "73ac720:legacy-section": {
+      "agents-md-block": "canonical_sha256:258ea4c170e9086708efeba5a23838583ffc517f395359657035bfba79ac322c",
+      "claude-md-block": "canonical_sha256:9cacd0e663b4b153c0fbe134d6c190720eb1937346f9dfdfc808602e2d314590"
+    },
     "73e5f7e": {
       "bin-agent-engineering-mcp": "canonical_sha256:859a14ad195d639fcda777f052f898ea53ddade5548430f6d9c0aae1e31c3708"
     },

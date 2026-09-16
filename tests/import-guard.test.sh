@@ -95,6 +95,20 @@ else
     bad "archify vendor 未固定 LF——Windows checkout 会破坏供应链哈希"
 fi
 
+if python3 - <<'EOF'
+from pathlib import PureWindowsPath
+from installer.registry import _snapshot_rel_bytes
+
+assert _snapshot_rel_bytes(PureWindowsPath(r"renderers\shared\utils.mjs")) == (
+    b"renderers/shared/utils.mjs"
+)
+EOF
+then
+    ok "archify 快照路径哈希跨平台统一为 POSIX 分隔符"
+else
+    bad "archify 快照路径哈希仍依赖宿主路径分隔符"
+fi
+
 echo
 echo "import-guard 测试: $pass 通过, $fail 失败"
 [ "$fail" -eq 0 ] || exit 1
