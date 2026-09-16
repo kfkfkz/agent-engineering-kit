@@ -144,7 +144,16 @@ jobs:
         run: PYTHONIOENCODING=cp1252 python spec-migrate --help >/dev/null
       - name: Windows smoke — memory-recall
         shell: bash
-        run: PYTHONIOENCODING=cp1252 python memory-recall --list . >/dev/null
+        run: |
+          set +e
+          output="$(PYTHONIOENCODING=cp1252 python memory-recall --list . 2>&1)"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            detail="$(printf '%s' "$output" | tr '\r\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g')"
+            echo "::error title=Windows memory-recall smoke::$detail"
+            exit "$rc"
+          fi
       - name: Windows smoke — memory-build
         shell: bash
         run: printf '' | PYTHONIOENCODING=cp1252 python memory-build --files . >/dev/null
