@@ -92,13 +92,13 @@ jobs:
       - name: 原生 Windows copy 生命周期（install / update / doctor / uninstall）
         shell: pwsh
         run: |
-          $repo = Join-Path $env:RUNNER_TEMP "aek-windows-repo"
-          $codex = Join-Path $env:RUNNER_TEMP "aek-windows-workspace"
-          New-Item -ItemType Directory -Force -Path $repo, $codex | Out-Null
-          $output = python -m installer --codex-root $codex --link-strategy copy $repo 2>&1
-          $rc = $LASTEXITCODE
-          $output | ForEach-Object { Write-Output $_ }
-          if ($rc -ne 0) {
+          function Invoke-InstallerPhase {
+            param([string]$Phase, [string[]]$InstallerArgs)
+            $output = & python -m installer @InstallerArgs 2>&1
+            $rc = $LASTEXITCODE
+            $output | ForEach-Object { Write-Output $_ }
+            if ($rc -eq 0) { return }
+
             $failures = @($output | Where-Object { $_.ToString().StartsWith("✗") })
             if ($failures.Count -gt 0) {
               $detail = ($failures | ForEach-Object { $_.ToString() }) -join " | "
@@ -106,9 +106,14 @@ jobs:
               $detail = ($output | Select-Object -Last 1).ToString()
             }
             $detail = $detail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A").Replace("::", ":")
-            Write-Output "::error title=Windows copy lifecycle::install failed ($rc) — $detail"
+            Write-Output "::error title=Windows copy lifecycle::$Phase failed ($rc) — $detail"
             exit $rc
           }
+
+          $repo = Join-Path $env:RUNNER_TEMP "aek-windows-repo"
+          $codex = Join-Path $env:RUNNER_TEMP "aek-windows-workspace"
+          New-Item -ItemType Directory -Force -Path $repo, $codex | Out-Null
+          Invoke-InstallerPhase "install" @("--codex-root", $codex, "--link-strategy", "copy", $repo)
           $copy = Join-Path $codex ".agents/skills/tdd/SKILL.md"
           if (-not (Test-Path -LiteralPath $copy -PathType Leaf)) {
             Write-Output "::error title=Windows copy lifecycle::copy strategy did not expose tdd skill"
@@ -119,21 +124,9 @@ jobs:
             Write-Output "::error title=Windows copy lifecycle::copy strategy unexpectedly created a reparse point"
             exit 1
           }
-          python -m installer --update --codex-root $codex --link-strategy copy $repo
-          if ($LASTEXITCODE -ne 0) {
-            Write-Output "::error title=Windows copy lifecycle::update failed: $LASTEXITCODE"
-            exit $LASTEXITCODE
-          }
-          python -m installer --doctor --codex-root $codex $repo
-          if ($LASTEXITCODE -ne 0) {
-            Write-Output "::error title=Windows copy lifecycle::doctor failed: $LASTEXITCODE"
-            exit $LASTEXITCODE
-          }
-          python -m installer --uninstall --codex-root $codex $repo
-          if ($LASTEXITCODE -ne 0) {
-            Write-Output "::error title=Windows copy lifecycle::uninstall failed: $LASTEXITCODE"
-            exit $LASTEXITCODE
-          }
+          Invoke-InstallerPhase "update" @("--update", "--codex-root", $codex, "--link-strategy", "copy", $repo)
+          Invoke-InstallerPhase "doctor" @("--doctor", "--codex-root", $codex, $repo)
+          Invoke-InstallerPhase "uninstall" @("--uninstall", "--codex-root", $codex, $repo)
           if (Test-Path -LiteralPath $copy) {
             Write-Output "::error title=Windows copy lifecycle::uninstall left managed copy behind"
             exit 1
