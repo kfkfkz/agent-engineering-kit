@@ -1,0 +1,454 @@
+#!/usr/bin/env python3
+"""route-eval — AEK 任务复杂度路由与最终范围漂移校验器。
+
+项目治理 profile 与任务路线是两个正交维度：
+- strict/lightweight 决定回执形态；
+- direct/bounded/standard/initiative 决定本任务的规划和审查深度。
+
+退出码：0=路线有效且无漂移；2=路线过轻或最终范围漂移；3=输入/策略非法。
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+from typing import Any
+
+ROUTES = ("direct", "bounded", "standard", "initiative")
+WORK_KINDS = ("docs", "bug", "feature", "refactor", "migration", "chore", "other")
+INTENT_GAPS = ("none", "minor", "material")
+BEHAVIOR_CHANGES = ("none", "local", "public")
+REVERSIBILITY = ("easy", "moderate", "hard")
+COORDINATION = ("single", "multi_contributor", "multi_team")
+UNCERTAINTY = ("low", "medium", "high")
+RISK_OVERLAYS = {
+    "public_contract", "schema_migration", "security_privacy", "irreversible",
+    "cross_service", "cross_repo", "concurrency_consistency", "core_data_flow",
+    "compliance",
+}
+
+ROUTE_CHECKS: dict[str, list[str]] = {
+    "direct": ["targeted-verification"],
+    "bounded": ["acceptance-criteria", "targeted-tests", "quick-review"],
+    "standard": ["impact-analysis", "applicable-design", "targeted-tests",
+                 "thorough-review", "route-drift-check"],
+    "initiative": ["full-sdd", "work-unit-decomposition", "integration-gate",
+                   "thorough-review", "route-drift-check"],
+}
+
+
+class RouteError(Exception):
+    """Route Card、治理输出或 CLI 输入非法。"""
+
+
+def _template() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "route": "bounded",
+        "work_kind": "feature",
+        "intent_gaps": "none",
+        "behavior_change": "local",
+        "footprint": {
+            "planned_paths": [],
+            "modules": 1,
+            "repos": 1,
+            "sessions": 1,
+        },
+        "reversibility": "easy",
+        "risk_overlays": [],
+        "coordination": "single",
+        "uncertainty": "low",
+        "required_checks": [],
+        "escalate_if": [],
+    }
+
+
+def _enum(data: dict[str, Any], key: str, allowed: tuple[str, ...]) -> str:
+    value = data.get(key)
+    if value not in allowed:
+        raise RouteError(f"{key} 必须是: {', '.join(allowed)}")
+    return str(value)
+
+
+def _string_list(data: dict[str, Any], key: str) -> list[str]:
+    value = data.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise RouteError(f"{key} 必须是字符串数组（元素不得为空）")
+    if len(value) != len(set(value)):
+        raise RouteError(f"{key} 不得包含重复项")
+    return list(value)
+
+
+def load_card(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RouteError(f"Route Card 无法读取: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RouteError("Route Card 顶层必须是对象")
+    if data.get("version") != 1:
+        raise RouteError("Route Card version 必须为 1")
+    _enum(data, "route", ROUTES)
+    _enum(data, "work_kind", WORK_KINDS)
+    _enum(data, "intent_gaps", INTENT_GAPS)
+    _enum(data, "behavior_change", BEHAVIOR_CHANGES)
+    _enum(data, "reversibility", REVERSIBILITY)
+    _enum(data, "coordination", COORDINATION)
+    _enum(data, "uncertainty", UNCERTAINTY)
+    risks = _string_list(data, "risk_overlays")
+    unknown_risks = sorted(set(risks) - RISK_OVERLAYS)
+    if unknown_risks:
+        raise RouteError(f"未知 risk_overlays: {', '.join(unknown_risks)}")
+    _string_list(data, "required_checks")
+    _string_list(data, "escalate_if")
+    footprint = data.get("footprint")
+    if not isinstance(footprint, dict):
+        raise RouteError("footprint 必须是对象")
+    planned_paths = _string_list(footprint, "planned_paths")
+    if not planned_paths:
+        raise RouteError("footprint.planned_paths 至少需要一个仓库相对路径或 glob")
+    for planned in planned_paths:
+        pure = PurePosixPath(planned)
+        if pure.is_absolute() or ".." in pure.parts or "\\" in planned:
+            raise RouteError(
+                f"footprint.planned_paths 必须使用仓库相对 POSIX 路径，禁止逃逸: {planned}")
+    for key in ("modules", "repos", "sessions"):
+        value = footprint.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise RouteError(f"footprint.{key} 必须是正整数")
+    return data
+
+
+def _promote(current: str, candidate: str) -> str:
+    return ROUTES[max(ROUTES.index(current), ROUTES.index(candidate))]
+
+
+def card_minimum(card: dict[str, Any]) -> tuple[str, list[dict[str, str]]]:
+    """由 Route Card 事实计算最低安全路线；work_kind 不参与复杂度升级。"""
+    footprint = card["footprint"]
+    minimum = "direct" if card["behavior_change"] == "none" else "bounded"
+    reasons: list[dict[str, str]] = []
+
+    def require(route: str, code: str, message: str) -> None:
+        nonlocal minimum
+        previous = minimum
+        minimum = _promote(minimum, route)
+        if minimum != previous or route == minimum:
+            reasons.append({"code": code, "message": message, "minimum": route})
+
+    if card["behavior_change"] == "local":
+        reasons.append({"code": "LOCAL_BEHAVIOR", "message": "存在局部可观察行为变化",
+                        "minimum": "bounded"})
+    if card["behavior_change"] == "public":
+        require("standard", "PUBLIC_BEHAVIOR", "改变公共可观察行为")
+    if card["intent_gaps"] == "minor":
+        require("bounded", "MINOR_INTENT_GAPS", "存在需在实施单元内闭合的意图缺口")
+    if card["intent_gaps"] == "material":
+        require("standard", "INTENT_GAPS", "存在影响结果的意图缺口")
+    if card["uncertainty"] == "medium":
+        require("bounded", "MEDIUM_UNCERTAINTY", "存在中等不确定性")
+    if card["uncertainty"] == "high":
+        require("standard", "HIGH_UNCERTAINTY", "实现或影响面存在高不确定性")
+    if card["reversibility"] == "moderate":
+        require("bounded", "MODERATE_REVERSIBILITY", "回退需要明确步骤")
+    if card["reversibility"] == "hard":
+        require("standard", "HARD_TO_REVERSE", "变更难以回滚")
+    if footprint["modules"] > 1:
+        require("standard", "CROSS_MODULE", "影响多个模块")
+    if footprint["sessions"] > 1:
+        require("standard", "MULTI_SESSION", "预计需要多个实施会话")
+    if card["coordination"] == "multi_contributor":
+        require("standard", "COORDINATION", "需要多人协调")
+
+    for risk in card["risk_overlays"]:
+        if risk == "cross_repo":
+            require("initiative", "RISK_CROSS_REPO", "跨仓库风险覆盖项")
+        else:
+            require("standard", f"RISK_{risk.upper()}", f"风险覆盖项: {risk}")
+
+    if (footprint["repos"] > 1 or footprint["sessions"] >= 3
+            or card["coordination"] == "multi_team"):
+        require("initiative", "INITIATIVE_SCALE", "多仓库、较长多会话或多团队协作")
+    return minimum, reasons
+
+
+def _governance(repo: Path, diff_path: Path | None,
+                diff_text: str | None = None) -> dict[str, Any]:
+    if diff_path is None and diff_text is None:
+        # 空 diff 仍交给治理引擎：计划阶段也必须校验 policy schema/regex，
+        # 不能等到交付才发现团队规则已经损坏。
+        diff_text = ""
+    evaluator = Path(__file__).resolve().with_name("governance-eval")
+    command = [sys.executable, str(evaluator), str(repo), "--json"]
+    if diff_path is not None:
+        command.extend(("--diff", str(diff_path)))
+    try:
+        proc = subprocess.run(
+            command, input=diff_text, capture_output=True, text=True,
+            encoding="utf-8", check=False)
+    except OSError as exc:
+        raise RouteError(f"无法执行 governance-eval: {exc}") from exc
+    if proc.returncode != 0:
+        detail = (proc.stdout or proc.stderr).strip()
+        raise RouteError(f"governance-eval 失败: {detail or proc.returncode}")
+    try:
+        result = json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RouteError("governance-eval 未返回合法 JSON") from exc
+    if not isinstance(result, dict):
+        raise RouteError("governance-eval 输出结构非法")
+    return result
+
+
+def _git(repo: Path, *args: str, text: bool = True) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args], capture_output=True,
+            text=text, encoding="utf-8" if text else None, check=False)
+    except OSError as exc:
+        raise RouteError(f"无法执行 git: {exc}") from exc
+
+
+def _quoted_diff_path(prefix: str, path: str) -> str:
+    """生成 governance-eval 可还原的 Git 风格双引号路径。"""
+    return json.dumps(f"{prefix}/{path}", ensure_ascii=False)
+
+
+def _untracked_diff(repo: Path, path: str) -> str:
+    """为 untracked 文件生成足够治理匹配的 unified diff，不跟随符号链接。"""
+    quoted_a = _quoted_diff_path("a", path)
+    quoted_b = _quoted_diff_path("b", path)
+    lines = [f"diff --git {quoted_a} {quoted_b}", "new file mode 100644",
+             "--- /dev/null", f"+++ {quoted_b}"]
+    candidate = repo.joinpath(*PurePosixPath(path).parts)
+    fd: int | None = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(candidate, flags)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024:
+            lines.append(f"Binary files /dev/null and {quoted_b} differ")
+            return "\n".join(lines) + "\n"
+        chunks: list[bytes] = []
+        remaining = info.st_size
+        while remaining > 0:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        content = payload.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        lines.append(f"Binary files /dev/null and {quoted_b} differ")
+        return "\n".join(lines) + "\n"
+    finally:
+        if fd is not None:
+            os.close(fd)
+    content_lines = content.splitlines()
+    if content_lines:
+        lines.append(f"@@ -0,0 +1,{len(content_lines)} @@")
+        lines.extend("+" + line for line in content_lines)
+        if payload and not payload.endswith((b"\n", b"\r")):
+            lines.append("\\ No newline at end of file")
+    return "\n".join(lines) + "\n"
+
+
+def git_final_diff(repo: Path, ref: str) -> str:
+    """读取 ref 到当前工作区的 tracked diff，并合并所有未忽略 untracked 文件。"""
+    tracked = _git(repo, "diff", "--binary", "--no-ext-diff", "--no-textconv",
+                   ref, "--")
+    if tracked.returncode != 0:
+        raise RouteError(f"git diff {ref} 失败: {tracked.stderr.strip()}")
+    untracked = _git(repo, "ls-files", "--others", "--exclude-standard", "-z",
+                     text=False)
+    if untracked.returncode != 0:
+        detail = untracked.stderr.decode("utf-8", errors="replace").strip()
+        raise RouteError(f"git ls-files 失败: {detail}")
+    try:
+        paths = [raw.decode("utf-8") for raw in untracked.stdout.split(b"\0") if raw]
+    except UnicodeDecodeError as exc:
+        raise RouteError("untracked 路径不是 UTF-8，无法安全生成治理 diff") from exc
+    additions = "".join(_untracked_diff(repo, path) for path in sorted(paths))
+    return tracked.stdout + additions
+
+
+def _policy_requirements(governance: dict[str, Any]) -> tuple[str | None, str, str, list[str]]:
+    min_route: str | None = None
+    review_depth = "quick"
+    profile = governance.get("profile", "strict")
+    receipt_mode = "formal" if profile == "strict" else "inline"
+    checks: list[str] = []
+    actions = governance.get("all_actions", [])
+    if not isinstance(actions, list):
+        raise RouteError("governance all_actions 必须是数组")
+    for action in actions:
+        if not isinstance(action, str):
+            raise RouteError("governance action 必须是字符串")
+        if action.startswith("min_route:"):
+            candidate = action.split(":", 1)[1]
+            if candidate not in ROUTES:
+                raise RouteError(f"治理动作的 min_route 非法: {candidate}")
+            min_route = candidate if min_route is None else _promote(min_route, candidate)
+        elif action.startswith("review_depth:"):
+            depth = action.split(":", 1)[1]
+            if depth not in ("quick", "thorough"):
+                raise RouteError(f"治理动作的 review_depth 非法: {depth}")
+            if depth == "thorough":
+                review_depth = depth
+        elif action.startswith("required_check:"):
+            check = action.split(":", 1)[1]
+            if not check:
+                raise RouteError("required_check 动作不得为空")
+            if check not in checks:
+                checks.append(check)
+        elif action.startswith("receipt_mode:"):
+            mode = action.split(":", 1)[1]
+            if mode not in ("inline", "formal"):
+                raise RouteError(f"治理动作的 receipt_mode 非法: {mode}")
+            if mode == "formal":
+                receipt_mode = mode
+        elif action in ("receipt", "independent_review"):
+            receipt_mode = "formal"
+            if action == "independent_review":
+                review_depth = "thorough"
+    return min_route, review_depth, receipt_mode, checks
+
+
+def _glob_to_regex(pattern: str) -> str:
+    """仓库路径 glob：* 单层、** 跨目录、? 单字符。"""
+    escaped = re.escape(pattern)
+    escaped = escaped.replace(r"\*\*/", "(?:[^/]*/)*")
+    escaped = escaped.replace(r"\*\*", ".*")
+    escaped = escaped.replace(r"\*", "[^/]*")
+    escaped = escaped.replace(r"\?", "[^/]")
+    return escaped
+
+
+def _path_matches(path: str, patterns: list[str]) -> bool:
+    for pattern in patterns:
+        if re.fullmatch(_glob_to_regex(pattern), path) is not None:
+            return True
+    return False
+
+
+def evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]:
+    minimum, reasons = card_minimum(card)
+    policy_min, review_depth, receipt_mode, policy_checks = _policy_requirements(governance)
+    if policy_min is not None:
+        previous = minimum
+        minimum = _promote(minimum, policy_min)
+        if minimum != previous:
+            reasons.append({"code": "GOVERNANCE_MIN_ROUTE",
+                            "message": f"治理规则要求至少 {policy_min}",
+                            "minimum": policy_min})
+
+    selected = card["route"]
+    route_valid = ROUTES.index(selected) >= ROUTES.index(minimum)
+    effective = _promote(selected, minimum)
+    if not route_valid:
+        reasons.append({"code": "ROUTE_TOO_LIGHT",
+                        "message": f"所选 {selected} 低于最低安全路线 {minimum}",
+                        "minimum": minimum})
+
+    changed = governance.get("changed_files", [])
+    if not isinstance(changed, list) or not all(isinstance(item, str) for item in changed):
+        raise RouteError("governance changed_files 必须是字符串数组")
+    planned = card["footprint"]["planned_paths"]
+    unplanned = sorted(path for path in changed if not _path_matches(path, planned))
+    drift = bool(unplanned)
+    if drift:
+        reasons.append({"code": "SCOPE_DRIFT",
+                        "message": "最终 diff 含 Route Card 未计划路径: " + ", ".join(unplanned),
+                        "minimum": minimum})
+
+    checks: list[str] = []
+    for check in ROUTE_CHECKS[effective] + card["required_checks"] + policy_checks:
+        if check not in checks:
+            checks.append(check)
+    if effective in ("standard", "initiative"):
+        review_depth = "thorough"
+
+    return {
+        "schema_version": 1,
+        "selected_route": selected,
+        "minimum_route": minimum,
+        "effective_route": effective,
+        "route_valid": route_valid,
+        "drift_detected": drift,
+        "changed_files": sorted(changed),
+        "unplanned_files": unplanned,
+        "work_kind": card["work_kind"],
+        "risk_overlays": card["risk_overlays"],
+        "requirements": {
+            "review_depth": review_depth,
+            "receipt_mode": receipt_mode,
+            "required_checks": checks,
+        },
+        "governance": {
+            "profile": governance.get("profile", "strict"),
+            "matched_rules": governance.get("matched_rules", []),
+            "required_actions": governance.get("required_actions", []),
+        },
+        "reasons": reasons,
+        "ok": route_valid and not drift,
+    }
+
+
+def _summary(result: dict[str, Any]) -> str:
+    status = "PASS" if result["ok"] else "BLOCKED"
+    lines = [
+        f"Route: {status} | selected={result['selected_route']} | minimum={result['minimum_route']}",
+        f"Governance: {result['governance']['profile']} | receipt={result['requirements']['receipt_mode']} | review={result['requirements']['review_depth']}",
+        "Required checks: " + ", ".join(result["requirements"]["required_checks"]),
+    ]
+    if result["unplanned_files"]:
+        lines.append("Unplanned files: " + ", ".join(result["unplanned_files"]))
+    for reason in result["reasons"]:
+        lines.append(f"  - {reason['code']}: {reason['message']}")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="route-eval",
+                                     description="任务复杂度路由与最终范围漂移校验")
+    parser.add_argument("repo", nargs="?", default=".", help="目标仓库根目录")
+    parser.add_argument("--card", help="Route Card JSON 路径")
+    final_group = parser.add_mutually_exclusive_group()
+    final_group.add_argument("--diff", help="最终 unified diff 路径；提供时同时执行治理与漂移检查")
+    final_group.add_argument("--git-ref", help="从 Git ref 到当前工作区生成最终 diff（含 untracked）")
+    parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
+    parser.add_argument("--init", action="store_true", help="输出 Route Card 起始模板")
+    args = parser.parse_args()
+
+    if args.init:
+        print(json.dumps(_template(), ensure_ascii=False, indent=2))
+        return 0
+    if not args.card:
+        print("✗ 路由评估阻断（fail-closed）: 除 --init 外必须提供 --card", file=sys.stderr)
+        return 3
+
+    repo = Path(args.repo).resolve()
+    diff_path = Path(args.diff).resolve() if args.diff else None
+    try:
+        if not repo.is_dir():
+            raise RouteError(f"目标仓库不存在或不是目录: {repo}")
+        card = load_card(Path(args.card))
+        generated_diff = git_final_diff(repo, args.git_ref) if args.git_ref else None
+        governance = _governance(repo, diff_path, generated_diff)
+        result = evaluate(card, governance)
+    except RouteError as exc:
+        print(f"✗ 路由评估阻断（fail-closed）: {exc}", file=sys.stderr)
+        return 3
+
+    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else _summary(result))
+    return 0 if result["ok"] else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

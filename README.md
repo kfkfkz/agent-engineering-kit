@@ -1,7 +1,7 @@
 # agent-engineering-kit
 
 给 Claude Code、Codex 和其他仓库级 AI Agent 使用的仓库内工程控制面。它不只是
-一组 Prompt/Skill：安装器负责受管资源生命周期，`doc-gate` 与
+一组 Prompt/Skill：安装器负责受管资源生命周期，`route-eval`、`doc-gate` 与
 `governance-eval` 负责确定性裁决，MCP 提供受约束的工具入口，benchmark 用机械指标
 评估 Agent 是否真的改善了交付结果。
 
@@ -15,7 +15,7 @@
 | 层 | 主要组件 | 保证什么 |
 | --- | --- | --- |
 | 工作流层 | `repo-delivery`、`design-pipeline`、TDD、安全审查等 Skills | 统一 Agent 的任务路由、取证、实现和交付顺序 |
-| 确定性门禁层 | `doc-gate`、`governance-eval`、`domain-check` | 文档追踪链、冻结凭证、策略阈值和 diff 治理可机械复现 |
+| 确定性门禁层 | `route-eval`、`doc-gate`、`governance-eval`、`domain-check` | 任务最低路线、范围漂移、文档追踪链、策略阈值和 diff 治理可机械复现 |
 | 生命周期层 | Python 安装器、Manifest v2、事务日志、平台后端 | 安装、更新、修复、恢复和卸载不依赖“脚本刚好跑完” |
 | 能力与证据层 | MCP、项目记忆、archify、benchmark、验证回执 | 结构化工具访问、知识复用、图表交付和效果评测 |
 
@@ -97,7 +97,8 @@ Windows 建立带内容血统校验的受管副本。也可以在任一平台明
 
 ## 日常怎么用
 
-通常只需要记住 `repo-delivery`。它会根据任务类型调用其他技能，并复用项目已有的 Spec Kit、SDD、版本文档或变更记录。
+通常只需要记住 `repo-delivery`。它会在调查后按意图缺口、影响范围、可逆性和风险选择
+最轻安全路线，再调用其他技能；任务是 bug 还是 feature 只表示工作种类，不直接决定仪式。
 
 | 场景 | Claude Code | Codex | 作用 |
 | --- | --- | --- | --- |
@@ -228,8 +229,9 @@ systematic-debugging 根因定位
 ```text
 repo-delivery
   ├─ 读取项目指令、宪章和相关记忆
-  ├─ 判定：直接修改 / 缺陷修复 / 既有变更 / 新功能（发现超预期影响面 → 动态升径）
-  ├─ ① 需求拆分：codebase-memory + 业务域地图 + memory-recall 取证
+  ├─ 调查后生成 Route Card：Direct / Bounded / Standard / Initiative
+  │   route-eval 校验最低路线；work_kind(bug/feature/...) 与复杂度正交
+  ├─ Standard/Initiative 按需进入 ① 需求拆分：codebase-memory + 业务域地图 + memory-recall 取证
   ├─ ② 需求确认：原始需求（01-需求/）→ 衍生需求场景与产出定义（验收依据），
   │   待澄清问题交人裁决；冻结时确认开发人员与上线时间（回填索引行）
   ├─ ③④⑤ design-pipeline（03-SDD/NNN-名称/）：概要设计 → (UI设计)
@@ -239,11 +241,13 @@ repo-delivery
   │     追踪链：场景 → 验收项A → 功能点F → 设计落点D → 用例TC → 任务T（全程机械校验）
   │     每阶段通过即冻结并回填索引行的"当前功能开发阶段"列
   ├─ ⑥ tdd 编码与验证（systematic-debugging / security-review 按需）
-  ├─ delivery-gate：governance-eval 治理裁决 + diff 审查 + 对抗复核 + 验证回执
+  ├─ delivery-gate：route-eval 最终漂移检查 + governance-eval 治理裁决
+  │   + diff 审查 + 对抗复核 + 验证回执
   └─ 线上联调清单（事实文档）+ 终稿 As-Built → 回写设计文档，提出记忆候选
 ```
 
-新功能走全链；直接修改与缺陷修复走短路，既有变更从影响面进入——不为小改动强加六道门禁。
+只有 Initiative 默认走全链。需求明确、单模块、单仓库、单会话的小型新增功能可以走
+Bounded，不因“新功能”标签承担六道门禁；复杂缺陷也会按实际影响升到 Standard/Initiative。
 
 工作流只做门禁、路由和收口，不另建一套平行的设计体系：
 
@@ -251,6 +255,53 @@ repo-delivery
 - 已有 spec、SDD、版本文档和代码是事实来源；
 - 项目专属技术栈、覆盖率、数据禁区等以当前项目为准；
 - 高风险决策仍需人工确认，AI 草稿不能自行标记为已确认。
+
+## 自适应复杂度路由
+
+AEK 把三个维度分开，避免把组织治理、任务规模和专项风险混成一个“严格程度”：
+
+| 维度 | 取值 | 决定什么 |
+| --- | --- | --- |
+| 项目治理 | `strict` / `lightweight` | 回执形态、组织级底线；不决定任务路线 |
+| 任务路线 | Direct / Bounded / Standard / Initiative | 本任务需要多少规划、设计、拆分和审查 |
+| 风险覆盖项 | 契约、Schema、安全、不可逆、跨服务/仓库、并发一致性等 | 只叠加相关专项检查和最低路线 |
+
+任务路线如下：
+
+| 路线 | 典型任务 | 最低交付要求 |
+| --- | --- | --- |
+| Direct | 文案、格式、无行为变化的局部修改 | 修改 + 针对性验证 |
+| Bounded | 清晰、局部、可逆、一个实施单元的小功能或缺陷 | 简短验收与范围 + 必要的 TDD + 定向测试 + 快速审查 |
+| Standard | 跨模块、公共行为变化、实质不确定性或高风险覆盖项 | 影响分析 + 适用设计 + 计划 + 独立审查 |
+| Initiative | 多仓库、较长多会话、多团队/并行工作流 | 完整 SDD + 工作单元拆分 + 集成门禁 |
+
+先生成 Route Card：
+
+```bash
+.repo-memory-kit/bin/route-eval --init > /tmp/aek-route-card.json
+# 填写 route、planned_paths、影响面与风险字段后校验
+.repo-memory-kit/bin/route-eval . --card /tmp/aek-route-card.json --json
+```
+
+Route Card 记录所选路线、工作种类、意图缺口、行为变化、预计路径/模块/仓库/会话数、
+可逆性、风险覆盖项、协作规模、不确定性和必需检查。`route-eval` 计算最低安全路线：允许
+主动选择更重路线，拒绝过轻路线。实现结束后直接让工具从基线读取最终工作区
+（包含未跟踪文件）：
+
+```bash
+.repo-memory-kit/bin/route-eval . \
+  --card /tmp/aek-route-card.json --git-ref HEAD --json
+```
+
+`--git-ref` 合并 tracked diff 与所有未忽略的 untracked 文件，避免新建 migration/security
+文件逃出治理；CI 已有可信完整 diff 时也可使用 `--diff <file>`。最终变更出现
+`planned_paths` 外文件会返回退出码 2；必须说明新范围、更新卡片并按需要升径后重跑，
+不能在交付阶段静默扩表制造 PASS。Route Card 默认是任务态证据，可放在现有
+issue/spec/计划或临时文件中，不要求每个小任务往仓库提交一份新文档。
+
+这套模型参考了 [BMAD Method 的 smallest safe path](https://docs.bmad-method.org/cs/build/build-a-change/)
+与按工作规模选择规划深度的思路；AEK 额外提供可机器执行的 Route Card、治理覆盖动作和
+最终 diff 漂移门禁，具体归属见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 设计文档工程（01-需求 / 03-SDD）
 
@@ -382,7 +433,12 @@ validate 只证明图能正确渲染，不证明架构事实正确。
 
 ### delivery-gate
 
-代码交付门禁（设计文档门禁已由 design-pipeline 接管）。阶段一：`governance-eval` 治理引擎对 diff 做确定性规则匹配（命中规则 + required_actions），叠加对最终 diff 的正确性、宪章、兼容性、测试、维护性和安全自审，高危发现做对抗式复核（运行环境提供子 Agent 时交给未参与实现的独立审查者），并对照任务清单预计修改范围检查范围蔓延。阶段二从项目自身的 CI、构建文件和宪章提取实际门禁执行验证闭环。结论枚举 `READY`、`NOT READY`、`NEEDS HUMAN REVIEW`，未运行的检查不会被写成通过；验证回执（`docs/delivery-receipts/`）是声称验证通过的唯一证据形态。
+代码交付门禁（设计文档门禁已由 design-pipeline 接管）。阶段一先用 `route-eval` 对照
+Route Card 检查所选/最低路线与最终 diff 范围漂移，再复用 `governance-eval` 对 diff 做
+规则匹配（命中规则 + required_actions），叠加正确性、宪章、兼容性、测试、维护性和安全
+审查，高危发现做对抗式复核。阶段二从项目自身 CI、构建文件和宪章提取实际门禁执行
+验证闭环。结论枚举 `READY`、`NOT READY`、`NEEDS HUMAN REVIEW`，未运行的检查不会被写成
+通过；回执形态由项目治理 profile 决定。
 
 ### spec-migrate 与 task-handoff
 
@@ -466,7 +522,7 @@ PROFILE 在有效 `confirmed` 条目达到 10 条时创建；后续积累达到�
 ```text
 .claude/skills/                 Claude Code 项目技能（含 archify/——bin/schemas/renderers 全量）
 .agents/skills/                 Codex 项目技能（同上，两棵树内容一致）
-.repo-memory-kit/bin/           校验器、生成器、Spec 迁移器、doc-gate 与 governance-eval
+.repo-memory-kit/bin/           校验器、生成器、Spec 迁移器、route/doc/governance 门禁
 .repo-memory-kit/governance     治理 profile 标记（strict / lightweight——唯一权威）
 .repo-memory-kit/governance.json  团队治理规则（首次安装写入，此后团队自持）
 docs/memory/RULES.md            记忆规则
@@ -479,8 +535,10 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 
 治理双轨：**profile（strict/lightweight）唯一权威在文本标记**，每次安装重写——切换即时生效；
 **团队规则在 governance.json**（路径/文件名/新增行正则 → required_actions），存在才读、
-非法即阻断（fail-closed）。`delivery-gate` 收口时把 diff 喂给 `governance-eval` 拿到
-命中规则与动作要求——命中独立审查的变更强制对抗复核。
+非法即阻断（fail-closed）。动作除 `receipt` / `independent_review` 外，还可声明
+`min_route:standard`、`review_depth:thorough`、`required_check:<name>`；`route-eval` 在最终
+diff 上复用同一治理结果，因此任务复杂度与风险规则不会形成两套事实源。既有团队自持的
+governance.json 不会在升级时被覆盖，可按需增量采用这些新动作。
 
 `.repo-memory-kit/` 下的 `manifest.json`（Manifest v2：版本与受管资源记录）、
 `install.lock`、事务目录与 zvec 索引都是**每机状态/派生物**，不提交进版本库。
@@ -631,13 +689,14 @@ diff 中出现真实新增的可执行测试信号，空文件或注释不计分
 ./tests/skill-sync.test.sh     # 技能副本一致性
 ./tests/spec-migrate.test.sh   # Spec Kit 迁移
 ./tests/doc-gate.test.sh       # 文档门禁（硬校验/追踪链/评审绑定/冻结哈希/治理引擎）
+./tests/route-eval.test.sh     # 自适应路由（Route Card/治理覆盖/最终 diff 漂移）
 ./tests/import-guard.test.sh   # Windows 可导入性守卫（AST）
 ./tests/mcp.test.sh            # MCP 协议（版本协商/生命周期/参数校验）
 ./tests/benchmark.test.sh      # Benchmark 评测器（路径边界/回归测试证据）
 shellcheck install.sh tests/*.test.sh
 ```
 
-当前九套件共 **604 条断言**；CI 含 Ubuntu 全量验证、ShellCheck、archify 真实执行，
+当前十套件均由 CI 执行；CI 含 Ubuntu 全量验证、ShellCheck、archify 真实执行，
 以及 Windows 原生导入和 copy 策略的 install / update / doctor / uninstall 生命周期。
 
 ## License

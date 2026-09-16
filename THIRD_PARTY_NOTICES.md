@@ -16,6 +16,15 @@
 - License: MIT
 - Adapted concepts: TDD 的 RED/GREEN/REFACTOR 纪律，以及从测试摩擦识别架构问题。
 
+## BMAD Method
+
+- Source: <https://github.com/bmad-code-org/BMAD-METHOD>
+- Copyright (c) 2025 BMad Code, LLC
+- License: MIT
+- Adapted concepts: 调查后选择最小安全路径、把意图缺口/可逆性/影响范围用于规划深度，
+  以及将较大工作拆成可交付实施单元。AEK 的 Route Card、四级任务路线和确定性
+  `route-eval` 是本项目自己的实现，不包含 BMAD 运行时或 CLI。
+
 完整的本项目许可见 [LICENSE](LICENSE)。上游名称仅用于归属说明，不表示上游作者为本项目背书。
 
 ## archify

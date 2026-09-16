@@ -50,6 +50,7 @@ class GovernanceResult:
     default_actions: list[str] = field(default_factory=list)
     required_actions: list[str] = field(default_factory=list)  # 合并（matched ∪ default 中的非 inline）
     all_actions: list[str] = field(default_factory=list)       # 全部（含 inline_review）
+    changed_files: list[str] = field(default_factory=list)     # 最终 diff 的规范化路径
 
     @property
     def is_inline_only(self) -> bool:
@@ -77,6 +78,7 @@ class GovernanceResult:
                 for m in self.matched],
             "required_actions": self.required_actions,
             "all_actions": self.all_actions,
+            "changed_files": self.changed_files,
             "is_inline_only": self.is_inline_only,
             "needs_formal_receipt": self.needs_formal_receipt,
             "needs_independent_review": self.needs_independent_review,
@@ -257,11 +259,11 @@ def _added_lines(diff_text: str) -> list[tuple[str, int, str]]:
             m = re.search(r"\+(\d+)", line)
             if m:
                 line_no = int(m.group(1)) - 1
-        elif line.startswith("+") and not line.startswith("+++"):
+        elif line.startswith("+") and not line.startswith("+++ "):
             line_no += 1
             content = line[1:]  # 去掉 +
             results.append((current_file, line_no, content))
-        elif line.startswith("-") and not line.startswith("---"):
+        elif line.startswith("-") and not line.startswith("--- "):
             pass  # 删除的行不计数
         else:
             line_no += 1
@@ -296,6 +298,7 @@ def evaluate_diff(diff_text: str, policy: dict[str, Any]) -> GovernanceResult:
     result.all_actions = list(result.default_actions)
 
     changed_files = _diff_files(diff_text)
+    result.changed_files = sorted(changed_files)
     added = _added_lines(diff_text)
     deleted = _deleted_files(diff_text)
 

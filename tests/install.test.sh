@@ -37,6 +37,7 @@ for tool in reuse-research security-review delivery-gate spec-migrate task-hando
     assert_exists "新增工程技能（$tool）" "$P/.agents/skills/$tool/SKILL.md"
 done
 assert_exists "Spec Kit 迁移器随仓库安装" "$P/.repo-memory-kit/bin/spec-migrate"
+assert_exists "任务路由评估器随仓库安装" "$P/.repo-memory-kit/bin/route-eval"
 assert_exists "CLAUDE.md 托管区块"       "$P/CLAUDE.md"
 assert_eq "cbmignore 托管区块数=1" "$(grep -c 'repo-memory-kit:start' "$P/.cbmignore")" "1"
 assert_eq "CLAUDE.md 区块标记=1"  "$(grep -cF '<!-- repo-memory-kit:start -->' "$P/CLAUDE.md")" "1"

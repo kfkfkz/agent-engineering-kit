@@ -9,13 +9,13 @@ jobs:
           fetch-depth: 0
       - name: 语法检查（sh -n / py_compile）
         run: |
-          sh -n install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/benchmark.test.sh
-          python3 -m py_compile memory-build spec-migrate memory-recall domain-check doc-gate governance-eval
+          sh -n install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/route-eval.test.sh tests/benchmark.test.sh
+          python3 -m py_compile memory-build spec-migrate memory-recall domain-check doc-gate governance-eval route-eval
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck >/dev/null
-          shellcheck install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/benchmark.test.sh
+          shellcheck install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/route-eval.test.sh tests/benchmark.test.sh
       - name: 安装器测试
         run: sh tests/install.test.sh
       - name: 安装 zvec（语义检索层/安装器测试依赖）
@@ -32,6 +32,8 @@ jobs:
         run: sh tests/mcp.test.sh
       - name: 文档门禁测试（doc-gate 硬校验/判定/冻结 + governance-eval）
         run: sh tests/doc-gate.test.sh
+      - name: 自适应任务路由测试（Route Card / 治理覆盖 / 范围漂移）
+        run: sh tests/route-eval.test.sh
       - name: Benchmark 评测器回归测试
         run: sh tests/benchmark.test.sh
       - name: Windows 可导入性守卫（AST：fcntl/msvcrt/O_NOFOLLOW 隔离在 platform/）
@@ -56,7 +58,7 @@ jobs:
           python-version: "3.12"
       - name: 全模块可导入（fcntl 已隔离在 platform/posix_fs）
         run: |
-          python -m py_compile installer/*.py installer/platform/*.py doc-gate governance-eval domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
+          python -m py_compile installer/*.py installer/platform/*.py doc-gate governance-eval route-eval domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
           python -c "import sys; sys.path.insert(0, '.'); import installer.install, installer.transaction, installer.uninstall, installer.zvec, installer.manifest, installer.registry, installer.doctor, installer.legacy, installer.preflight; print('installer modules import OK on Windows')"
       - name: 原生 Windows copy 生命周期（install / update / doctor / uninstall）
         shell: pwsh
@@ -83,9 +85,10 @@ jobs:
           if (Test-Path -LiteralPath $copy) {
             throw "uninstall left managed copy behind"
           }
-      - name: 平台无关工具测试（doc-gate + governance-eval CLI）
+      - name: 平台无关工具测试（doc-gate + governance-eval + route-eval CLI）
         shell: bash
         run: |
           python doc-gate --help >/dev/null
           printf 'strict\n' > /tmp/gov-marker
           echo "diff --git a/x b/x" | python governance-eval . && echo "governance-eval OK on Windows"
+          python route-eval --init | python -c "import json,sys; assert json.load(sys.stdin)['version'] == 1"

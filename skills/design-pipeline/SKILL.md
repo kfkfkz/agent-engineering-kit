@@ -6,6 +6,10 @@ description: "设计文档工程流水线：从已冻结的需求分析出发，
 把需求文档从"人给定的输入"推进到"冻结可编码的设计"。本技能只负责**编排**；
 裁决由 `.repo-memory-kit/bin/doc-gate`（确定性）承担——**你不判 PASS，issues 也不由你裁决**。
 
+本技能只由任务 Route Card 的 Standard（确有正式设计需要）或 Initiative 路线调用。
+Direct/Bounded 不为满足仪式进入完整流水线；Bounded 把验收、范围、决策、风险和验证写入
+项目已有计划/issue/spec 载体即可。治理 profile 为 strict 也不会单独触发本技能。
+
 ## 统一原则
 
 ```

@@ -121,7 +121,7 @@ KIT_SKILLS = [
 KIT_TOOLS = [
     "validate-memory.sh", "memory-build", "spec-migrate", "memory-recall",
     "domain-check", "session-reminder", "agent-engineering-mcp",
-    "doc-gate", "governance-eval",
+    "doc-gate", "governance-eval", "route-eval",
 ]
 
 
@@ -876,6 +876,16 @@ def trusted_canonical_hashes(spec: ResourceSpec, target: Path) -> set[str]:
     current = generate_fragment(spec, target)
     _, canonical = compute_fragment_hashes(current, target)
     hashes.add(canonical)
+    # CLAUDE/AGENTS 的旧安装形态是“当前模板裸段落”，没有 block marker。
+    # 它与带标记 current fragment 的 hash 必然不同；若只依赖构建时生成的
+    # legacy_hashes，新模板在下次发布哈希生成前会被误判为用户冲突。模板来自
+    # 只读 KIT_DIR + Registry，因此裸形态同样是安装器侧可信血统。
+    if (spec.resource_type == "managed_block"
+            and spec.id in ("claude-md-block", "agents-md-block")
+            and spec.source_path is not None):
+        bare = (KIT_DIR / spec.source_path).read_text(encoding="utf-8")
+        _, bare_canonical = compute_fragment_hashes(bare, target)
+        hashes.add(bare_canonical)
     hashes |= legacy_canonical_hashes_from_file(spec.id)
     return hashes
 

@@ -818,7 +818,8 @@ if [ -f "$REPO/.repo-memory-kit/governance.json" ]; then
         ok "json 只存团队规则（profile 唯一权威在 marker）"
     fi
     grep -q '"SEC-001"' "$REPO/.repo-memory-kit/governance.json" \
-        && ok "缺省规则 SEC-001/DB-001 在位" || bad "缺省规则缺失"
+        && grep -q '"min_route:standard"' "$REPO/.repo-memory-kit/governance.json" \
+        && ok "缺省规则 SEC-001/DB-001 与路线下限在位" || bad "缺省规则缺失"
 else
     bad "安装后无 governance.json——引擎无规则可用"
 fi

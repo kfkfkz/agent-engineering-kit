@@ -2,14 +2,14 @@
 
 历史踩坑与流程经验沉淀在 [docs/memory/](docs/memory/)——规则见 [RULES.md](docs/memory/RULES.md)（kit 管辖），索引见 [README.md](docs/memory/README.md)：
 
-- 非平凡的功能实现、缺陷修复、重构或迁移，使用 `repo-delivery` 技能先提取项目宪章门禁，再做入链判定与端到端收口；复用项目既有 spec/SDD，不另建平行文档体系
+- 非平凡的功能实现、缺陷修复、重构或迁移，使用 `repo-delivery` 技能先提取项目宪章门禁，再按 Route Card 选择 Direct / Bounded / Standard / Initiative 最轻安全路线；复用项目既有 spec/SDD，不另建平行文档体系
 - 显式启动：Claude Code 使用 `/repo-delivery [任务描述]`；Codex 使用 `$repo-delivery [任务描述]`。自然语言请求仍可自动触发
 - 代码结构、调用链和影响分析优先使用 `codebase-memory`；图谱不可用时必须披露降级及置信度
 - Bug、测试失败或异常行为先使用 `systematic-debugging` 建立根因链，再进入修复；不得用试错补丁替代诊断
 - 可观察行为默认使用 `tdd` 逐个纵向切片实现；难测、过度 mock 或散弹修改应作为架构信号回到设计链
 - 新依赖、外部集成、通用组件或关键选型先用 `reuse-research`，形成采用/扩展/组合/自建的证据化决策
 - 认证授权、外部输入、敏感操作、依赖或 Agent 配置变更使用 `security-review`；高危结论必须有利用路径并做对抗式复核
-- 设计定稿与交付收口用 `delivery-gate`（代码 diff 与设计文档两种形态：结构/字段/一致性/可验证性）；验证结论以 `docs/delivery-receipts/` 回执为唯一证据，无回执不得声称验证通过
+- 设计定稿由 `design-pipeline` 负责；代码交付用 `delivery-gate`，收口前用 `route-eval` 对照 Route Card 检查最低路线与最终 diff 漂移。验证结论以治理 profile 要求的持久回执为证，无回执不得声称验证通过
 - 已有 `.specify/specs` 先用 `spec-migrate` 检查；只有明确要求时才增量迁移，待核验标记不等于设计完成
 - 项目建有 `docs/03-SDD/` 时，功能的设计交付物（业务流程设计/详细设计/API/验收）以其版本目录为载体
 - 任务中断或跨 Agent/会话移交时使用 `task-handoff`，以当前源码和权威 spec 复核交接内容

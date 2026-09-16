@@ -357,6 +357,14 @@
       "skill-claude-delivery-gate": "canonical_sha256:3911837c3c133f007e4b9ec93c86b54f9d822191b6dce3a12682547ae12b39ad",
       "skill-claude-repo-delivery": "canonical_sha256:963e9a237b32ed7a32357afda09282d4d651eebcfc100c1d7f7a39182d20a644"
     },
+    "6426b50": {
+      "archify-.agents-bin-archify.mjs": "canonical_sha256:5027cafc1187712c536f284e883011c400b08917db5886d6ffb4c2ca4958d060",
+      "archify-.claude-bin-archify.mjs": "canonical_sha256:5027cafc1187712c536f284e883011c400b08917db5886d6ffb4c2ca4958d060",
+      "bin-doc-gate": "canonical_sha256:5496f1201b9c8b07b0c4b7730994acd871cc184d2f28a4fff6c70d4892dd13f8",
+      "req-tpl-flow": "canonical_sha256:36a27797a258305a6386949e35f18ee2672859fbf80e3d25de4ec87c64bd5f55",
+      "skill-agents-design-pipeline": "canonical_sha256:56f5aa8901bba7f121cb250cf2a1c4b366e60c0efb35f02dbf6bc6ee9c4c0fbc",
+      "skill-claude-design-pipeline": "canonical_sha256:56f5aa8901bba7f121cb250cf2a1c4b366e60c0efb35f02dbf6bc6ee9c4c0fbc"
+    },
     "64e6247": {
       "bin-memory-build": "canonical_sha256:afd8927adce5127f4dba23e92b0111f2b1b8d4b0c51abc2e843e5df34d0ee772",
       "bin-validate-memory.sh": "canonical_sha256:b816beff2bba50605a52c9c270ff55a0d4029374350c681c90bee693494c99d0",

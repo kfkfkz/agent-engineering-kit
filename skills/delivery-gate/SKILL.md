@@ -1,6 +1,6 @@
 ---
 name: delivery-gate
-description: "代码交付门禁：最终 diff 证据化审查 + 治理引擎裁决 + 验证闭环 + 交付回执。两阶段：治理评估（governance-eval 确定性引擎——diff 规则匹配）与对抗式复核，然后按项目门禁执行验证闭环。验证回执是声称验证通过的唯一证据形态（载体由 governance 标记决定）。结论枚举 READY / NOT READY / NEEDS HUMAN REVIEW。"
+description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移校验 + 治理引擎裁决 + 证据化审查 + 验证闭环 + 交付回执。两阶段：route-eval/governance-eval 确定性裁决与对抗式复核，然后按项目门禁执行验证闭环。回执载体由 governance 标记决定。结论枚举 READY / NOT READY / NEEDS HUMAN REVIEW。"
 ---
 
 # 交付门禁（代码变更）
@@ -18,18 +18,27 @@ description: "代码交付门禁：最终 diff 证据化审查 + 治理引擎裁
 必须可验证、高风险判定标准不变。本节优先于下方"必需产物"中的回执要求
 （冲突时以 governance marker 实际值为准）。
 
-## 阶段一：治理评估与最终 diff 审查
+## 阶段一：路线复核、治理评估与最终 diff 审查
 
-1. 固定本次任务目标、验收条件、基线和最终 diff；区分本次修改与用户已有改动。
-2. **治理引擎裁决**（确定性，不是你的语义判断）：把 diff 喂给
+1. 固定本次任务目标、验收条件、Route Card、基线和最终 diff；区分本次修改与用户已有改动。
+2. **路线与范围裁决**：运行
+   `.repo-memory-kit/bin/route-eval <仓库根> --card <Route Card> --git-ref <基线> --json`；
+   它会合并 tracked diff 与未忽略的 untracked 文件。仅当 CI 已提供可信完整 diff 时使用
+   `--diff <文件>`，不得用默认漏掉 untracked 的 `git diff` 冒充最终范围。
+   `route_valid=false` 或 `drift_detected=true` 时阻断：回到 `repo-delivery` 更新卡片、补充
+   适用设计/检查或升径后重跑。不得在交付阶段静默扩大 `planned_paths` 以制造 PASS；新增
+   路径必须说明来源和影响。Direct 若只在进度中记录等价字段，收口前生成临时卡片供校验。
+3. **治理引擎裁决**（确定性，不是你的语义判断）：`route-eval` 已复用同目录
+   `governance-eval` 的结果；需要单独诊断规则时再把 diff 喂给
    `.repo-memory-kit/bin/governance-eval <仓库根目录> --diff <file>`（或管道），
-   拿到命中规则 ID 与 required_actions（receipt / independent_review / inline_review）。
+   拿到命中规则 ID 与 required_actions（receipt / independent_review / inline_review /
+   min_route / required_check / review_depth）。
    引擎输出即门禁要求——命中 `independent_review` 时本节对抗式复核必须执行。
-3. 至少逐项检查：行为正确性与失败路径、项目宪章/规范、调用影响与兼容性、
+4. 至少逐项检查：行为正确性与失败路径、项目宪章/规范、调用影响与兼容性、
    测试充分性、复杂度与维护性、文档/记忆一致性、**与冻结设计文档的偏离**
    （diff 超出 任务清单 预计修改范围 = 显式记录，静默超范围视作未声明范围蔓延）。
-4. 命中安全触发条件时调用 `security-review`，并把其结果纳入同一门禁。
-5. 每个发现给出准确文件/符号、可观察后果、触发条件、证据和最小修复方向；按
+5. 命中安全触发条件时调用 `security-review`，并把其结果纳入同一门禁。
+6. 每个发现给出准确文件/符号、可观察后果、触发条件、证据和最小修复方向；按
    `CRITICAL/HIGH/MEDIUM/LOW` 标级。纯偏好不作为阻塞项。
 
 ### 对抗式复核
@@ -75,6 +84,7 @@ task: <一句话任务>
 scope: <变更范围（文件/模块）>
 verdict: READY / NOT READY / NEEDS HUMAN REVIEW
 governance: <引擎命中规则与 required_actions 摘要>
+route: <selected/minimum；是否存在 drift>
 review: <审查结论；对抗复核为独立 Agent 或同上下文>
 commit: <HEAD SHA 或 "uncommitted">
 base: <基线 SHA 或 "none">
@@ -87,6 +97,7 @@ base: <基线 SHA 或 "none">
 | 检查 | 方式/命令 | 结果 |
 | --- | --- | --- |
 | 治理评估 | governance-eval（命中规则/无命中） | <要求与满足情况> |
+| 路线复核 | route-eval（selected/minimum + drift） | <一致/已升径/阻断> |
 | 构建 | <命令>（退出码 <code>） | <一句话> |
 | 范围对照 | diff vs 任务清单预计修改范围 | <一致/超范围项> |
 
