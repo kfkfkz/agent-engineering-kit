@@ -16,9 +16,10 @@ import re
 import stat as stat_module
 import subprocess
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 # ── kit 仓库根（installer/ 的父目录；安装器代码的一部分，目标仓库不可篡改）──
 KIT_DIR = Path(__file__).resolve().parent.parent
@@ -278,9 +279,17 @@ def _requirement_specs() -> list[ResourceSpec]:
     return specs
 
 
+_PathT = TypeVar("_PathT", bound=PurePath)
+
+
 def _snapshot_rel_bytes(relative_path: PurePath) -> bytes:
     """供应链快照路径的跨平台规范字节；不得把宿主分隔符写入摘要。"""
     return relative_path.as_posix().encode("utf-8")
+
+
+def _sort_snapshot_files(vendor: _PathT, files: Iterable[_PathT]) -> list[_PathT]:
+    """以规范路径字节排序，避免 Windows 大小写折叠改变聚合顺序。"""
+    return sorted(files, key=lambda path: _snapshot_rel_bytes(path.relative_to(vendor)))
 
 
 def _archify_specs() -> list[ResourceSpec]:
@@ -299,7 +308,7 @@ def _archify_specs() -> list[ResourceSpec]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         raise SecurityError("vendor/archify.manifest.json 不可解析")
-    files = sorted(p for p in vendor.rglob("*") if p.is_file())
+    files = _sort_snapshot_files(vendor, (p for p in vendor.rglob("*") if p.is_file()))
     digest = _hashlib.sha256()
     for p in files:
         digest.update(_snapshot_rel_bytes(p.relative_to(vendor)))

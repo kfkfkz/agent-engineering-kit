@@ -97,11 +97,16 @@ fi
 
 if python3 - <<'EOF'
 from pathlib import PureWindowsPath
-from installer.registry import _snapshot_rel_bytes
+from installer.registry import _snapshot_rel_bytes, _sort_snapshot_files
 
 assert _snapshot_rel_bytes(PureWindowsPath(r"renderers\shared\utils.mjs")) == (
     b"renderers/shared/utils.mjs"
 )
+root = PureWindowsPath(r"C:\vendor")
+files = [root / "assets" / "a.txt", root / "LICENSE", root / "SKILL.md"]
+assert [p.relative_to(root).as_posix() for p in _sort_snapshot_files(root, files)] == [
+    "LICENSE", "SKILL.md", "assets/a.txt"
+]
 EOF
 then
     ok "archify 快照路径哈希跨平台统一为 POSIX 分隔符"
