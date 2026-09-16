@@ -17,7 +17,17 @@ jobs:
           sudo apt-get install -y -qq shellcheck >/dev/null
           shellcheck install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/route-eval.test.sh tests/benchmark.test.sh
       - name: 安装器测试
-        run: sh tests/install.test.sh
+        run: |
+          set +e
+          output="$(sh tests/install.test.sh 2>&1)"
+          rc=$?
+          printf '%s\n' "$output"
+          if [ "$rc" -ne 0 ]; then
+            detail="$(printf '%s\n' "$output" | grep '^✗' | tail -n 1)"
+            [ -n "$detail" ] || detail="$(printf '%s\n' "$output" | tail -n 1)"
+            printf '::error title=install.test.sh::%s\n' "$detail"
+            exit "$rc"
+          fi
       - name: 安装 zvec（语义检索层/安装器测试依赖）
         run: pip install --user --break-system-packages zvec
       - name: 安装器生命周期测试（事务/崩溃恢复/存量迁移/--svn 治理）
@@ -85,10 +95,13 @@ jobs:
           $repo = Join-Path $env:RUNNER_TEMP "aek-windows-repo"
           $codex = Join-Path $env:RUNNER_TEMP "aek-windows-workspace"
           New-Item -ItemType Directory -Force -Path $repo, $codex | Out-Null
-          python -m installer --codex-root $codex --link-strategy copy $repo
-          if ($LASTEXITCODE -ne 0) {
-            Write-Output "::error title=Windows copy lifecycle::install failed: $LASTEXITCODE"
-            exit $LASTEXITCODE
+          $output = python -m installer --codex-root $codex --link-strategy copy $repo 2>&1
+          $rc = $LASTEXITCODE
+          $output | ForEach-Object { Write-Output $_ }
+          if ($rc -ne 0) {
+            $detail = ($output | Select-Object -Last 1).ToString().Replace("::", ":")
+            Write-Output "::error title=Windows copy lifecycle::install failed ($rc) — $detail"
+            exit $rc
           }
           $copy = Join-Path $codex ".agents/skills/tdd/SKILL.md"
           if (-not (Test-Path -LiteralPath $copy -PathType Leaf)) {
