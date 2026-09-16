@@ -12,7 +12,13 @@ trap 'rm -rf "$T"' EXIT
 pass=0; fail=0
 
 ok()   { pass=$((pass+1)); echo "✓ $1"; }
-bad()  { fail=$((fail+1)); echo "✗ $1"; }
+bad()  {
+    fail=$((fail+1))
+    echo "✗ $1"
+    if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+        printf '::error title=install.test.sh::%s\n' "$1"
+    fi
+}
 assert_eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1（期望=$3 实际=$2）"; fi; }
 assert_exists() { if [ -e "$2" ]; then ok "$1"; else bad "$1: $2 不存在"; fi; }
 assert_gone() { if [ ! -e "$2" ]; then ok "$1"; else bad "$1: $2 仍存在"; fi; }

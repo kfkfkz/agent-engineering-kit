@@ -86,23 +86,38 @@ jobs:
           $codex = Join-Path $env:RUNNER_TEMP "aek-windows-workspace"
           New-Item -ItemType Directory -Force -Path $repo, $codex | Out-Null
           python -m installer --codex-root $codex --link-strategy copy $repo
-          if ($LASTEXITCODE -ne 0) { throw "install failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error title=Windows copy lifecycle::install failed: $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
           $copy = Join-Path $codex ".agents/skills/tdd/SKILL.md"
           if (-not (Test-Path -LiteralPath $copy -PathType Leaf)) {
-            throw "copy strategy did not expose tdd skill"
+            Write-Output "::error title=Windows copy lifecycle::copy strategy did not expose tdd skill"
+            exit 1
           }
           $item = Get-Item -LiteralPath $copy
           if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "copy strategy unexpectedly created a reparse point"
+            Write-Output "::error title=Windows copy lifecycle::copy strategy unexpectedly created a reparse point"
+            exit 1
           }
           python -m installer --update --codex-root $codex --link-strategy copy $repo
-          if ($LASTEXITCODE -ne 0) { throw "update failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error title=Windows copy lifecycle::update failed: $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
           python -m installer --doctor --codex-root $codex $repo
-          if ($LASTEXITCODE -ne 0) { throw "doctor failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error title=Windows copy lifecycle::doctor failed: $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
           python -m installer --uninstall --codex-root $codex $repo
-          if ($LASTEXITCODE -ne 0) { throw "uninstall failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error title=Windows copy lifecycle::uninstall failed: $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
           if (Test-Path -LiteralPath $copy) {
-            throw "uninstall left managed copy behind"
+            Write-Output "::error title=Windows copy lifecycle::uninstall left managed copy behind"
+            exit 1
           }
       - name: 平台无关工具测试（doc-gate + governance-eval + route-eval CLI）
         shell: bash
