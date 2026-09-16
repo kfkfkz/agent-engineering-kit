@@ -99,7 +99,13 @@ jobs:
           $rc = $LASTEXITCODE
           $output | ForEach-Object { Write-Output $_ }
           if ($rc -ne 0) {
-            $detail = ($output | Select-Object -Last 1).ToString().Replace("::", ":")
+            $failures = @($output | Where-Object { $_.ToString().StartsWith("✗") })
+            if ($failures.Count -gt 0) {
+              $detail = ($failures | ForEach-Object { $_.ToString() }) -join " | "
+            } else {
+              $detail = ($output | Select-Object -Last 1).ToString()
+            }
+            $detail = $detail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A").Replace("::", ":")
             Write-Output "::error title=Windows copy lifecycle::install failed ($rc) — $detail"
             exit $rc
           }
