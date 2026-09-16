@@ -131,7 +131,7 @@ jobs:
             Write-Output "::error title=Windows copy lifecycle::uninstall left managed copy behind"
             exit 1
           }
-      - name: 全部公开 CLI 的原生 Windows smoke
+      - name: Windows smoke — document and routing CLIs
         shell: bash
         run: |
           export PYTHONIOENCODING=cp1252
@@ -139,14 +139,28 @@ jobs:
           printf 'strict\n' > /tmp/gov-marker
           echo "diff --git a/x b/x" | python governance-eval . && echo "governance-eval OK on Windows"
           python route-eval --init | python -c "import json,sys; assert json.load(sys.stdin)['version'] == 1"
-          python spec-migrate --help >/dev/null
-          python memory-recall --list . >/dev/null
-          printf '' | python memory-build --files . >/dev/null
+      - name: Windows smoke — spec-migrate
+        shell: bash
+        run: PYTHONIOENCODING=cp1252 python spec-migrate --help >/dev/null
+      - name: Windows smoke — memory-recall
+        shell: bash
+        run: PYTHONIOENCODING=cp1252 python memory-recall --list . >/dev/null
+      - name: Windows smoke — memory-build
+        shell: bash
+        run: printf '' | PYTHONIOENCODING=cp1252 python memory-build --files . >/dev/null
+      - name: Windows smoke — domain-check expected error
+        shell: bash
+        run: |
+          export PYTHONIOENCODING=cp1252
           if output="$(python domain-check . 2>&1)"; then
             echo "domain-check unexpectedly found a domain map" >&2
             exit 1
           fi
           printf '%s\n' "$output" | grep -q '未找到'
+      - name: Windows smoke — MCP UTF-8 JSON-RPC
+        shell: bash
+        run: |
+          export PYTHONIOENCODING=cp1252
           printf '%s\n' \
             '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}' \
             '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
