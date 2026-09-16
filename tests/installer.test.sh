@@ -1388,6 +1388,150 @@ LEGACY_AFTER=$(sha256sum "$P23/.repo-memory-kit/manifest" | cut -d' ' -f1)
 [ ! -f "$P23/.repo-memory-kit/manifest.json" ] \
     && ok "18.4c rollback 删除未完成安装的 v2 清单" || bad "18.4c v2 清单残留"
 
+# 18.5 内部 delete 的 CAS 校验与 unlink 之间替换最终组件：
+# 卸载必须保留竞争写入的用户文件，不能把旧 hash 当成删除新文件的授权。
+P24="$T/internal-delete-race"
+mkdir -p "$P24"
+python3 -m installer "$P24" >/dev/null 2>&1
+python3 - "$P24" <<'PY' >/dev/null 2>&1
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+from installer.uninstall import run_uninstall
+
+target = Path(sys.argv[1]).resolve()
+victim = target / "docs/memory/RULES.md"
+real_hash = txm.file_sha256
+injected = False
+
+def replace_after_cas(path):
+    global injected
+    digest = real_hash(path)
+    if Path(path) == victim and not injected:
+        injected = True
+        victim.unlink()
+        victim.write_text("user replacement\n", encoding="utf-8")
+    return digest
+
+txm.file_sha256 = replace_after_cas
+rc = run_uninstall(target)
+assert injected, "race injection did not reach delete commit"
+assert rc == 1, rc
+assert victim.read_text(encoding="utf-8") == "user replacement\n"
+PY
+[ $? = 0 ] && ok "18.5 内部 delete 窗口不误删竞争文件" \
+    || bad "18.5 内部 delete 窗口误删用户文件"
+
+# 18.6 原子隔离后、真正 unlink 前崩溃：事务记录能派生同名隔离路径，
+# recover 在“唯一 delete 步骤已是 NEW”时应 roll-forward 补删并清理隔离对象。
+P25="$T/internal-delete-crash"
+mkdir -p "$P25/docs/memory"
+printf 'managed before crash\n' > "$P25/docs/memory/RULES.md"
+python3 - "$P25" <<'PY' >/dev/null 2>&1
+import hashlib
+import os
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+from installer.registry import secure_mkdir
+
+target = Path(sys.argv[1]).resolve()
+victim = target / "docs/memory/RULES.md"
+step = txm.CommitStep(
+    spec_id="memory-rules", spec_ids=("memory-rules",), kind="delete",
+    pre_container_hash=hashlib.sha256(victim.read_bytes()).hexdigest(),
+    post_container_hash=None, pre_mode=0o644)
+tx = txm.TransactionRecord.new(target, "uninstall")
+secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")
+secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}/backups")
+tx.plan = [step]
+tx.status = "committing"
+tx.write(target)
+
+real_unlink = txm.os.unlink
+def crash_before_isolation_unlink(path, *args, **kwargs):
+    if str(path).startswith(".kit-txdel-"):
+        raise SystemExit(77)
+    return real_unlink(path, *args, **kwargs)
+
+txm.os.unlink = crash_before_isolation_unlink
+try:
+    txm.commit_one(target, step, tx.tx_id)
+except SystemExit as e:
+    assert e.code == 77
+finally:
+    txm.os.unlink = real_unlink
+
+isolation = victim.with_name(f".kit-txdel-{tx.tx_id}-{victim.name}")
+assert not victim.exists() and isolation.is_file()
+rr = txm.recover(target)
+assert rr.status == "roll_forward_completed", (rr.status, rr.detail)
+assert not victim.exists() and not isolation.exists()
+PY
+[ $? = 0 ] && ok "18.6 内部 delete 隔离崩溃可 roll-forward 补完" \
+    || bad "18.6 内部 delete 隔离崩溃恢复失败"
+
+# 18.7 同一隔离崩溃处于“部分已提交”事务时，recover 应从隔离名
+# 恢复原对象，而不是把整个事务误判为已完成。
+P26="$T/internal-delete-rollback"
+mkdir -p "$P26/docs/memory"
+printf 'managed before rollback\n' > "$P26/docs/memory/RULES.md"
+printf 'unchanged peer\n' > "$P26/docs/memory/_PITFALL_TEMPLATE.md"
+python3 - "$P26" <<'PY' >/dev/null 2>&1
+import hashlib
+import os
+import sys
+from pathlib import Path
+sys.path.insert(0, ".")
+from installer import transaction as txm
+from installer.registry import secure_mkdir
+
+target = Path(sys.argv[1]).resolve()
+victim = target / "docs/memory/RULES.md"
+peer = target / "docs/memory/_PITFALL_TEMPLATE.md"
+original = victim.read_bytes()
+delete_step = txm.CommitStep(
+    spec_id="memory-rules", spec_ids=("memory-rules",), kind="delete",
+    pre_container_hash=hashlib.sha256(original).hexdigest(),
+    post_container_hash=None, pre_mode=0o644)
+peer_step = txm.CommitStep(
+    spec_id="pitfall-template", spec_ids=("pitfall-template",), kind="replace",
+    pre_container_hash=hashlib.sha256(peer.read_bytes()).hexdigest(),
+    post_container_hash=hashlib.sha256(b"future peer\n").hexdigest(),
+    pre_mode=0o644)
+tx = txm.TransactionRecord.new(target, "uninstall")
+secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}")
+secure_mkdir(target, f".repo-memory-kit/tx/{tx.tx_id}/backups")
+tx.plan = [delete_step, peer_step]
+tx.status = "committing"
+tx.write(target)
+
+real_unlink = txm.os.unlink
+def crash_before_isolation_unlink(path, *args, **kwargs):
+    if str(path).startswith(".kit-txdel-"):
+        raise SystemExit(77)
+    return real_unlink(path, *args, **kwargs)
+
+txm.os.unlink = crash_before_isolation_unlink
+try:
+    txm.commit_one(target, delete_step, tx.tx_id)
+except SystemExit as e:
+    assert e.code == 77
+finally:
+    txm.os.unlink = real_unlink
+
+isolation = victim.with_name(f".kit-txdel-{tx.tx_id}-{victim.name}")
+rr = txm.recover(target)
+assert rr.status == "rolled_back", (rr.status, rr.detail)
+assert victim.read_bytes() == original
+assert not isolation.exists()
+assert peer.read_bytes() == b"unchanged peer\n"
+PY
+[ $? = 0 ] && ok "18.7 内部 delete 隔离崩溃可 roll-back 还原" \
+    || bad "18.7 内部 delete 隔离崩溃回滚失败"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

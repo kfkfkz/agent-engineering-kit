@@ -12,7 +12,7 @@ import errno
 import os
 
 
-class AtomicRenameNotSupported(Exception):
+class AtomicRenameNotSupported(OSError):
     """平台不支持原子 no-replace rename（极老的 kernel/glibc）。"""
 
 

@@ -1,8 +1,29 @@
 # agent-engineering-kit
 
-给 Claude Code、Codex 和其他仓库级 AI Agent 使用的一体化工程工作流包。
+给 Claude Code、Codex 和其他仓库级 AI Agent 使用的仓库内工程控制面。它不只是
+一组 Prompt/Skill：安装器负责受管资源生命周期，`doc-gate` 与
+`governance-eval` 负责确定性裁决，MCP 提供受约束的工具入口，benchmark 用机械指标
+评估 Agent 是否真的改善了交付结果。
 
-安装一次后，团队成员会使用同一套需求与设计文档流水线（确定性门禁 + 人工评审关口）、项目宪章、复用调研、代码取证、系统调试、TDD、安全审查、交付验证和项目记忆规则，减少"不同 Agent 各写一套设计、各走一套流程"的偏差。设计文档的评审与门禁由 doc-gate 确定性裁决（AI 只做 sensor），业务流程图由 archify 生成（vendor 供应链锁定）；代码审查与交付验证由内置工作流闭环完成，不要求额外的审查 CLI。
+安装一次后，团队成员会使用同一套需求与设计文档流水线（确定性门禁 + 人工评审关口）、
+项目宪章、复用调研、代码取证、系统调试、TDD、安全审查、交付验证和项目记忆规则，
+减少“不同 Agent 各写一套设计、各走一套流程”的偏差。AI 负责提出候选和评审问题，
+脚本负责可重复判定，维护者保留需求确认、业务流程签核和高风险决策权。
+
+## 当前架构
+
+| 层 | 主要组件 | 保证什么 |
+| --- | --- | --- |
+| 工作流层 | `repo-delivery`、`design-pipeline`、TDD、安全审查等 Skills | 统一 Agent 的任务路由、取证、实现和交付顺序 |
+| 确定性门禁层 | `doc-gate`、`governance-eval`、`domain-check` | 文档追踪链、冻结凭证、策略阈值和 diff 治理可机械复现 |
+| 生命周期层 | Python 安装器、Manifest v2、事务日志、平台后端 | 安装、更新、修复、恢复和卸载不依赖“脚本刚好跑完” |
+| 能力与证据层 | MCP、项目记忆、archify、benchmark、验证回执 | 结构化工具访问、知识复用、图表交付和效果评测 |
+
+这次架构升级已经把几个原本独立的脚本边界收进同一模型：Manifest、治理状态和合法
+v1 清单退役都进入内部事务；Codex workspace 的创建/删除以外部事务步骤记录意图并可恢复；
+文档初始化采用排他锁、原子发布和失败回滚；策略文件与 MCP 请求按 schema fail-closed；
+Git 中文/特殊路径使用机器安全的解析方式；Windows 默认使用 copy 策略，不要求开发者模式或
+符号链接权限。
 
 ## 三分钟接入
 
@@ -14,7 +35,16 @@ cd agent-engineering-kit
 ./install.sh /path/to/your-project
 ```
 
-安装是幂等的，可以重复执行。它不会联网，也不会覆盖项目已有的记忆条目。安装器需要本机有 **Python 3.10+**。Linux/macOS 全功能可用（WSL 同）；Windows 原生提供 `compatible` 安全档：`install.bat` 入口、平台抽象层和默认 `--link-strategy copy`（不依赖符号链接权限），并在 Windows CI 覆盖 install / update / doctor / uninstall。Windows 后端仍是 path-based reparse-point 预检，不能提供 POSIX `dir_fd + O_NOFOLLOW` 的对抗性 TOCTOU 保证；有此威胁模型时建议 WSL。
+安装是幂等的，可以重复执行。它默认不联网，也不会覆盖项目已有的记忆条目；只有显式
+`--with-codebase-memory` 会调用外部安装器。安装器需要本机有 **Python 3.10+**。
+
+| 平台 | 默认 workspace 策略 | 安全档 | CI 覆盖 |
+| --- | --- | --- | --- |
+| Linux / macOS / WSL | `symlink` | `strict`：`dir_fd + O_NOFOLLOW`，删除前原子隔离 | Ubuntu 全套件；POSIX 生命周期与故障注入 |
+| Windows 原生 | `copy` | `compatible`：path-based reparse-point 预检 | Windows import + install / update / doctor / uninstall |
+
+Windows 的 `compatible` 后端不能提供 POSIX 后端针对恶意本机并发进程的完整 TOCTOU
+保证；存在此威胁模型时使用 WSL。普通 Windows 团队不需要开启符号链接权限。
 
 先预览、不写入：
 
@@ -46,7 +76,7 @@ $repo-delivery 实现订单导出功能
 
 也可以直接用自然语言描述任务。非平凡的功能、缺陷修复、重构和迁移会由 Agent 自动进入交付工作流。
 
-### 3. Codex 从父目录启动时
+### 3. Codex 从 workspace 根启动时
 
 Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 workspace 根目录启动，而项目是其子目录，请这样安装：
 
@@ -54,7 +84,16 @@ Codex 只会从当前目录向上发现 `.agents/skills`。如果日常在 works
 ./install.sh --codex-root /path/to/workspace /path/to/workspace/your-project
 ```
 
-安装器会在 workspace 建立指向目标项目技能的受管符号链接，技能内容仍由目标项目统一维护。
+`--link-strategy auto` 是默认值：POSIX 在 workspace 建立指向目标项目技能的受管符号链接，
+Windows 建立带内容血统校验的受管副本。也可以在任一平台明确选择：
+
+```bash
+# 不依赖 symlink；适合 Windows，也可用于受限的 POSIX 环境
+./install.sh --codex-root /path/to/workspace --link-strategy copy /path/to/project
+```
+
+更新会核验或补建这些 workspace 产物；卸载只删除仍与记录血统一致的链接/副本，用户修改过的
+内容会进入冲突状态并保留现场。
 
 ## 日常怎么用
 
@@ -248,6 +287,11 @@ docs/03-SDD/
 severity 阈值判定，连续 3 次失败 BLOCKED 升级人工。PASS 即冻结（哈希凭证），
 冻结后改动即失配。需求分析与业务流程设计是**人工签核阶段**（评审权在人）。
 
+门禁阈值可通过 `.repo-memory-kit/doc-policy.json` 配置：`max_blocker`、`max_major`、
+`max_minor` 必须是非负整数，`max_iterations` 必须大于等于 1。文件一旦存在，JSON 损坏、
+字段类型错误或出现未知字段都会在写 gate 前阻断，不会静默回退到默认策略。上游文档只要被
+编辑且尚未重新冻结，其所有下游凭证立即失效。
+
 **业务流程图由 archify 生成**：写类型化 JSON → validate（9/9 校验）→ deliver
 （自包含交互 HTML）→ visual-check（校验 + 自动产出双主题证据截图）。
 查看器内置 PNG/SVG/WebM 导出。无 Node.js 时回退 mermaid 并披露。
@@ -344,6 +388,20 @@ Change Precision 评测。
 
 `memory-check` 负责全量或增量巡检；`memory-capture` 负责把已验证的工程经验转成候选条目。候选必须经人确认后才能写入，避免未经验证的 AI 总结污染项目记忆。
 
+## MCP 工具入口
+
+安装器会把 `agent-engineering-mcp` 注册到目标仓库的 Claude/Codex 配置片段。
+服务器只绑定安装它的仓库，不接受 Agent 传入任意路径，并暴露四个工具：
+
+- `memory_recall`：语义检索项目文档与记忆；
+- `memory_build`：重建、校验索引或计算变更影响；
+- `domain_check`：校验业务域地图的登记、状态和证据路径；
+- `kit_status`：查看 kit、语义索引和域地图状态。
+
+MCP 实现完整的 initialize 生命周期与 JSON-RPC envelope/参数校验；非法
+请求返回结构化错误，notification 不回包，单个工具异常不会终止 stdio 服务。
+它委托现有 CLI 实现，不另复制一套业务逻辑。
+
 ## 项目记忆（按模块分目录）
 
 记忆条目按**接口入口所属业务模块**分目录存放（模块名以项目业务域地图的登记为准），条目类型在 frontmatter 的 `type` 字段：
@@ -420,9 +478,22 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 非法即阻断（fail-closed）。`delivery-gate` 收口时把 diff 喂给 `governance-eval` 拿到
 命中规则与动作要求——命中独立审查的变更强制对抗复核。
 
-`.repo-memory-kit/` 下的 `manifest.json`（Manifest v2：版本与受管资源记录）、`install.lock`、事务目录与 zvec 索引都是**每机状态/派生物**，不提交进版本库。
+`.repo-memory-kit/` 下的 `manifest.json`（Manifest v2：版本与受管资源记录）、
+`install.lock`、事务目录与 zvec 索引都是**每机状态/派生物**，不提交进版本库。
 
-所有记忆条目与 `docs/memory/README.md` 属于项目用户，更新和卸载不会删除它们。安装器是事务化的（崩溃安全）：安装/卸载先在内存生成完整计划并落盘事务日志（HMAC 保护），再以内容 CAS 提交；中断后再次运行会自动恢复现场（回滚或补完）。删除授权要求 Manifest 记录与内容血统**双条件匹配**——被手工修改过的受管内容按 conflict 保护并报告，`--repair` 只恢复有 kit 血统的漂移文件；容器型文件（CLAUDE.md、`.mcp.json`、`settings.json` 等）只移除 kit 片段，即使移除后为空也不删容器，跳过的条目会保留在缩减版清单里。
+所有记忆条目与 `docs/memory/README.md` 属于项目用户，更新和卸载不会删除它们。
+安装器的生命周期保证是：
+
+1. 先在内存生成完整 plan，再写 HMAC 保护的事务记录和 staged 内容；
+2. 每个受管资源按 pre/post hash 分类和提交，Manifest 是最后一个内部提交步骤；
+3. 治理 marker、治理规则和合法 v1 Manifest 退役与其他受管资源同事务；
+4. workspace 链接/副本作为外部步骤先记意图，崩溃后可根据策略和内容血统补建或补删；
+5. 恢复只在全部步骤明确为 OLD/NEW 时自动回滚或补完，CONFLICT 进入 `needs_human`；
+6. 删除授权要求 Manifest 记录与当前内容血统**双条件匹配**。
+
+因此，被手工修改过的受管内容会按 conflict 保护并保留现场；`--repair` 只恢复有 kit
+血统的漂移文件。容器型文件（`CLAUDE.md`、`.mcp.json`、`settings.json` 等）
+只移除 kit 片段，即使移除后为空也不删容器；跳过的条目会保留在缩减版清单里。
 
 为兼容已经接入的项目，内部状态目录 `.repo-memory-kit` 以及托管区块标记继续使用旧命名。它们只是稳定的安装协议，不代表当前项目名称；请勿在业务仓库中手工改名。
 
@@ -503,7 +574,8 @@ git pull
 ./install.sh --recover=rollback /path/to/your-project    # 或 --recover=roll-forward
 ```
 
-使用 workspace 符号链接的项目：更新时建议再次传入 `--codex-root`（新链接的创建与核验只认显式参数）；卸载会自动读取已记录的位置，也可显式传入以便复核。
+使用 Codex workspace 产物的项目：更新时建议再次传入 `--codex-root`（新链接/副本的
+创建与核验只认显式参数）；卸载会自动读取已记录的位置，也可显式传入以便复核。
 
 卸载：
 
@@ -522,6 +594,30 @@ git pull
 - 代码图谱增强：仅在使用 `--with-codebase-memory` 时需要网络。
 - git 不是目标项目的硬要求；SVN 或纯本地项目也可以使用记忆系统和显式文件清单检查。
 
+## 效果评测
+
+`tests/benchmark/evaluate.py` 用机械证据评测 Agent 交付，不使用 LLM judge。当前指标包括：
+
+- Task Correctness：场景验证命令是否通过；
+- Evidence Completeness：设计、测试方案、回归测试和交付回执是否齐全；
+- Change Precision：实际 diff 是否落在预计修改范围，是否触及禁止路径；
+- Memory Utilization：是否引用了场景相关记忆，实现是否体现其决策。
+
+```bash
+# 评测一个交付仓库
+python3 tests/benchmark/evaluate.py \
+  --repo /path/to/agent-output --scenario bug-fix-regression --base main
+
+# paired 对比：未安装 kit 与安装 kit 的同一任务
+python3 tests/benchmark/evaluate.py \
+  --compare /path/to/vanilla /path/to/with-kit \
+  --scenario bug-fix-regression --base main
+```
+
+评测器使用 NUL 分隔的 Git 路径输出，同时纳入未跟踪文件；“有回归测试”要求
+diff 中出现真实新增的可执行测试信号，空文件或注释不计分。内置场景是评测基线，
+不是所有项目的通用质量标准；项目应按实际路径、测试命令和证据要求扩展场景。
+
 ## 开发与验证
 
 ```bash
@@ -537,7 +633,8 @@ git pull
 shellcheck install.sh tests/*.test.sh
 ```
 
-九套件 500+ 断言；CI 含 Ubuntu 全量 + Windows 导入冒烟。
+当前九套件共 **594 条断言**；CI 含 Ubuntu 全量验证、ShellCheck、archify 真实执行，
+以及 Windows 原生导入和 copy 策略的 install / update / doctor / uninstall 生命周期。
 
 ## License
 

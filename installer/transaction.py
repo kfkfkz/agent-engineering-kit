@@ -3,7 +3,7 @@
 三条写序不变量（崩溃恢复正确性的根基，§11.1）：
 1. 完整 plan 先于受管资源副作用（基础设施目录例外：锁目录与 tx/<id> 容器目录
    允许在 plan 落盘前创建——幂等、无资源副作用，否则首次安装 ENOENT）
-2. committing 先于首个替换
+2. committing 先于首个 replace / rename / unlink
 3. 外部副作用意图先行（codex link：intent 落盘 fsync → unlink → 记完成）
 """
 from __future__ import annotations
@@ -46,7 +46,7 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 TransactionStatus = Literal[
     "planning",       # 内容生成与 pre 状态采集全部在内存完成后，一次性写入完整 plan
     "staging",        # staged 文件落盘中（纯 I/O，内容已定）。崩溃 → 全部可安全清理
-    "committing",     # 完整 plan 已落盘。★ 此状态落盘必须发生在第一个 os.replace/unlink 之前
+    "committing",     # 完整 plan 已落盘。★ 此状态落盘必须发生在第一个 replace/rename/unlink 之前
     "done",           # 全部完成，manifest 已写/缩减（install）或已删（完整 uninstall）
     "rolled_back",    # 已回滚（含外部步骤补偿）
     "failed",         # 可安全清理（无已提交项；外部步骤已补偿）
@@ -534,6 +534,165 @@ def backup_container(target: Path, step: CommitStep, tx_id: str) -> bool:
 
 # ══════════════════════════ §11.6 Commit 阶段 ══════════════════════════
 
+def _delete_isolation(step: CommitStep, tx_id: str) -> tuple[str, str, str]:
+    """返回（父目录、原名、事务隔离名）；隔离路径始终从受信 plan 派生。"""
+    rel = PurePosixPath(resolve_spec(step.spec_id).destination_path)
+    return str(rel.parent), rel.name, f".kit-txdel-{tx_id}-{rel.name}"
+
+
+def _hash_regular_at(parent_fd: int, name: str) -> str:
+    """在固定父目录内不跟随最终组件读取 hash。"""
+    fd = os.open(name, os.O_RDONLY | _plat.O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(f"隔离对象不是普通文件: {name}")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                return digest.hexdigest()
+            digest.update(chunk)
+    finally:
+        os.close(fd)
+
+
+def _restore_delete_isolation(parent_fd: int, isolation: str,
+                              original: str) -> bool:
+    """不覆盖竞争文件地恢复隔离对象。"""
+    try:
+        _plat.rename_noreplace(parent_fd, isolation, parent_fd, original)
+        os.fsync(parent_fd)
+        return True
+    except OSError:
+        return False
+
+
+def _commit_delete_strict(target: Path, step: CommitStep,
+                          tx_id: str) -> CommitResult:
+    """POSIX 删除：原子隔离最终组件，再核验被移对象。"""
+    parent_rel, original, isolation = _delete_isolation(step, tx_id)
+    parent_fd = _plat.secure_walk_dir_fd(target, parent_rel)
+    try:
+        try:
+            os.stat(isolation, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            return CommitResult(
+                "needs_human", detail=f"删除隔离名已存在: {isolation}")
+
+        try:
+            _plat.rename_noreplace(parent_fd, original, parent_fd, isolation)
+        except FileNotFoundError:
+            return CommitResult("conflict", detail="delete target disappeared")
+        except FileExistsError:
+            return CommitResult(
+                "needs_human", detail=f"删除隔离名冲突: {isolation}")
+        except OSError as e:
+            return CommitResult("needs_human", detail=f"无法原子隔离删除目标: {e}")
+
+        try:
+            isolated_hash = _hash_regular_at(parent_fd, isolation)
+        except OSError as e:
+            restored = _restore_delete_isolation(parent_fd, isolation, original)
+            return CommitResult(
+                "needs_human",
+                detail=f"隔离对象不可安全核验: {e}; restored={restored}")
+        if isolated_hash != step.pre_container_hash:
+            restored = _restore_delete_isolation(parent_fd, isolation, original)
+            return CommitResult(
+                "conflict" if restored else "needs_human",
+                detail="delete target changed after CAS"
+                       + ("" if restored else f"; isolation={isolation}"))
+
+        try:
+            os.unlink(isolation, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except OSError as e:
+            restored = _restore_delete_isolation(parent_fd, isolation, original)
+            return CommitResult(
+                "needs_human",
+                detail=f"隔离对象删除失败: {e}; restored={restored}")
+        step.committed = True
+        return CommitResult("committed")
+    finally:
+        os.close(parent_fd)
+
+
+def _delete_isolation_hash(target: Path, step: CommitStep,
+                           tx_id: str) -> str | None:
+    """读取中断删除的隔离对象；不存在返回 None。"""
+    parent_rel, _original, isolation = _delete_isolation(step, tx_id)
+    parent_fd = _plat.secure_walk_dir_fd(target, parent_rel)
+    try:
+        try:
+            os.stat(isolation, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return None
+        return _hash_regular_at(parent_fd, isolation)
+    finally:
+        os.close(parent_fd)
+
+
+def _restore_pending_delete(target: Path, step: CommitStep,
+                            tx_id: str) -> bool:
+    """回滚时优先恢复原子隔离的原对象。"""
+    parent_rel, original, isolation = _delete_isolation(step, tx_id)
+    parent_fd = _plat.secure_walk_dir_fd(target, parent_rel)
+    try:
+        try:
+            if _hash_regular_at(parent_fd, isolation) != step.pre_container_hash:
+                return False
+        except (FileNotFoundError, OSError):
+            return False
+        try:
+            os.stat(original, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return _restore_delete_isolation(parent_fd, isolation, original)
+        return False
+    finally:
+        os.close(parent_fd)
+
+
+def complete_internal_deletions(target: Path,
+                                tx: TransactionRecord) -> list[str]:
+    """补完崩溃留下的 POSIX 删除隔离对象。"""
+    if _plat.security_level() != "strict":
+        return []
+    failures: list[str] = []
+    for step in tx.plan:
+        if step.kind != "delete" or step.pre_container_hash is None:
+            continue
+        try:
+            isolated_hash = _delete_isolation_hash(target, step, tx.tx_id)
+        except OSError as e:
+            failures.append(f"{step.spec_id}: 隔离对象不可读: {e}")
+            continue
+        if isolated_hash is None:
+            continue
+        if isolated_hash != step.pre_container_hash:
+            failures.append(f"{step.spec_id}: 隔离对象 hash 冲突")
+            continue
+        parent_rel, original, isolation = _delete_isolation(step, tx.tx_id)
+        parent_fd = _plat.secure_walk_dir_fd(target, parent_rel)
+        try:
+            try:
+                os.stat(original, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                try:
+                    # 原路径仍为空才补完隔离删除；原路径被占则
+                    # 保留两个对象交给人工，绝不删竞争文件。
+                    os.unlink(isolation, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                except OSError as e:
+                    failures.append(f"{step.spec_id}: 隔离对象删除失败: {e}")
+            else:
+                failures.append(f"{step.spec_id}: 原路径与隔离对象同时存在")
+        finally:
+            os.close(parent_fd)
+    return failures
+
+
 def commit_one(target: Path, step: CommitStep, tx_id: str) -> CommitResult:
     paths = derive_transaction_paths(target, step.spec_id, tx_id)
     dst, staged = paths.dst, paths.staged
@@ -550,6 +709,8 @@ def commit_one(target: Path, step: CommitStep, tx_id: str) -> CommitResult:
         if step.pre_container_hash is None:
             step.committed = True              # 本来就不存在
             return CommitResult("committed")
+        if _plat.security_level() == "strict":
+            return _commit_delete_strict(target, step, tx_id)
         secure_unlink(target, paths.spec.destination_path)
         step.committed = True
         return CommitResult("committed")
@@ -584,6 +745,14 @@ def rollback_one(target: Path, step: CommitStep, tx: TransactionRecord) -> bool:
     dst, backup = paths.dst, paths.backup
 
     if step.kind == "delete":
+        if _plat.security_level() == "strict":
+            try:
+                isolation_exists = (
+                    _delete_isolation_hash(target, step, tx.tx_id) is not None)
+            except OSError:
+                return False
+            if isolation_exists:
+                return _restore_pending_delete(target, step, tx.tx_id)
         if dst.exists():
             if step.pre_container_hash is None:
                 return True
@@ -702,7 +871,23 @@ def classify_committing(target: Path, tx: TransactionRecord) -> dict[str, list[C
         dst = derive_destination(target, step.spec_id)
 
         if step.kind == "delete":
-            if not dst.exists():
+            if (_plat.security_level() == "strict"
+                    and step.pre_container_hash is not None):
+                try:
+                    isolated_hash = _delete_isolation_hash(
+                        target, step, tx.tx_id)
+                except OSError:
+                    classified["CONFLICT"].append(step)
+                    continue
+                if isolated_hash is not None:
+                    # 隔离对象与原路径同时存在，或隔离内容不符
+                    # HMAC 保护的 pre hash，都不能自动处置。
+                    if os.path.lexists(dst) or isolated_hash != step.pre_container_hash:
+                        classified["CONFLICT"].append(step)
+                    else:
+                        classified["NEW"].append(step)
+                    continue
+            if not os.path.lexists(dst):
                 classified["NEW"].append(step)
             elif step.pre_container_hash is None:
                 classified["OLD"].append(step)
@@ -1030,6 +1215,7 @@ def recover(target: Path) -> RecoveryResult:
 
         if not classified["OLD"]:
             # 全部已提交 → roll-forward：补收尾
+            failures = complete_internal_deletions(target, tx)
             if tx.kind == "install":
                 manifest_error = _finalize_install_manifest(
                     target, classified["NEW"])
@@ -1040,7 +1226,8 @@ def recover(target: Path) -> RecoveryResult:
                     return RecoveryResult("needs_human", detail=tx.detail)
                 # 外部 create 步骤按记录补建（意图先行——第七轮审计：统一外部
                 # 事务模型；记录含 strategy/expected_hash，copy 血统可验）
-                failures = complete_external_creations(target, tx)
+                if not failures:
+                    failures = complete_external_creations(target, tx)
                 if not failures and not tx.external:
                     # 崩溃早于 ensure_codex_links（无 create 记录）→ marker 回退：
                     # 从 marker + KIT_SKILLS 按 link_strategy 补建（升级场景）
@@ -1058,10 +1245,11 @@ def recover(target: Path) -> RecoveryResult:
                             _recreate_external_link(link, expected, tx.link_strategy)
             else:
                 # uninstall 的 roll-forward 只补删，绝不重建已删除的链接
-                failures = complete_external_removals(target, tx)
+                if not failures:
+                    failures = complete_external_removals(target, tx)
             if failures:
                 tx.status = "needs_human"
-                tx.detail = f"外部步骤收尾失败: {failures}"
+                tx.detail = f"事务收尾失败: {failures}"
                 write_transaction_atomic(target, tx)
                 return RecoveryResult("needs_human", detail=tx.detail)
             tx.status = "done"
@@ -1184,6 +1372,7 @@ def recover_manual(target: Path, strategy: str) -> RecoveryResult:
                 tx.detail = f"roll-forward 中止: {step.spec_id}: {result.detail or result.status}"
                 write_transaction_atomic(target, tx)
                 return RecoveryResult("needs_human", detail=tx.detail)
+        failures = complete_internal_deletions(target, tx)
         if tx.kind == "install":
             manifest_error = _finalize_install_manifest(
                 target, classified["NEW"] + classified["OLD"])
@@ -1194,13 +1383,14 @@ def recover_manual(target: Path, strategy: str) -> RecoveryResult:
                 return RecoveryResult("needs_human", detail=tx.detail)
         # 同 recover()：install 方向补建 create（记录含 strategy/血统）；
         # 卸载方向补删不重建
-        if tx.kind == "install":
-            failures = complete_external_creations(target, tx)
-        else:
-            failures = complete_external_removals(target, tx)
+        if not failures:
+            if tx.kind == "install":
+                failures = complete_external_creations(target, tx)
+            else:
+                failures = complete_external_removals(target, tx)
         if failures:
             tx.status = "needs_human"
-            tx.detail = f"外部步骤收尾失败: {failures}"
+            tx.detail = f"事务收尾失败: {failures}"
             write_transaction_atomic(target, tx)
             return RecoveryResult("needs_human", detail=tx.detail)
         tx.status = "done"
