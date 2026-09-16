@@ -16,6 +16,17 @@ import os
 import re
 import sys
 
+
+def _configure_utf8_stdio():
+    """Keep CLI output independent from the host's narrow code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_configure_utf8_stdio()
+
 STALE_DAYS = 90
 # 跨仓库前缀:优先从环境变量 CROSS_REPO_PREFIXES 读取(冒号分隔),无则空集
 # 团队在 .claude/settings.json 或 CI 中按项目配置,不硬编码项目名

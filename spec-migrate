@@ -23,6 +23,17 @@ import sys
 from pathlib import Path
 
 
+def _configure_utf8_stdio() -> None:
+    """Keep CLI output independent from the host's narrow code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_configure_utf8_stdio()
+
+
 CORE_FILES = ("spec.md", "plan.md", "tasks.md")
 PENDING_PREFIX = "agent-engineering-kit:migration-pending:"
 TEMPLATE_START = "<!-- agent-engineering-kit:template-overlay:start -->"

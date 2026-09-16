@@ -22,7 +22,6 @@
 共享锁打开 generation（§15.4）。旧布局 zvec/recall 只读兼容（发布新索引后移除）。
 """
 import argparse
-import fcntl
 import gc
 import hashlib
 import json
@@ -33,6 +32,60 @@ import sys
 import time
 import uuid
 from pathlib import Path
+
+
+def _configure_utf8_stdio():
+    """Keep CLI output independent from the host's narrow code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_configure_utf8_stdio()
+
+O_BINARY = getattr(os, "O_BINARY", 0)
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+if os.name == "nt":
+    import msvcrt as _file_lock
+else:
+    import fcntl as _file_lock
+
+
+def _lock_shared_nb(fd):
+    """Acquire the platform's non-blocking shared/read lock."""
+    if os.name == "nt":
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            _file_lock.locking(fd, _file_lock.LK_NBRLCK, 1)
+        except OSError as exc:
+            raise BlockingIOError(f"Windows shared lock conflict: {exc}") from exc
+    else:
+        _file_lock.flock(fd, _file_lock.LOCK_SH | _file_lock.LOCK_NB)
+
+
+def _lock_exclusive_nb(fd):
+    """Acquire the platform's non-blocking exclusive/write lock."""
+    if os.name == "nt":
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            _file_lock.locking(fd, _file_lock.LK_NBLCK, 1)
+        except OSError as exc:
+            raise BlockingIOError(f"Windows exclusive lock conflict: {exc}") from exc
+    else:
+        _file_lock.flock(fd, _file_lock.LOCK_EX | _file_lock.LOCK_NB)
+
+
+def _fsync_directory(path):
+    """Persist directory entries where directory fsync is supported."""
+    if os.name == "nt":
+        return
+    dir_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 ZVEC_ROOT_REL = ".repo-memory-kit/zvec"
 LEGACY_STORE_REL = ".repo-memory-kit/zvec/recall"
@@ -193,11 +246,11 @@ def open_current_generation(repo, retries=3):
         gen_dir = read_current(repo)                 # pointer 校验（UUID + 逃逸检查）
         lock_file = gen_dir / ".lock"
         try:
-            fd = os.open(lock_file, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(lock_file, os.O_RDONLY | O_BINARY | O_NOFOLLOW)
         except FileNotFoundError:
             continue                                 # 正被回收 → 重读 pointer
         try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            _lock_shared_nb(fd)
         except BlockingIOError:
             os.close(fd)
             continue                                 # 清理方持 EX → 重读 pointer
@@ -232,16 +285,21 @@ def cleanup_old_generations(zvec_dir, keep, min_age_seconds):
             continue
         lock_file = g / ".lock"
         try:
-            fd = os.open(lock_file, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = os.open(lock_file, os.O_RDONLY | O_BINARY | O_NOFOLLOW)
         except OSError:
             continue
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_exclusive_nb(fd)
         except BlockingIOError:
             os.close(fd)
             continue
         try:
-            shutil.rmtree(g)
+            try:
+                shutil.rmtree(g)
+            except OSError:
+                # Windows may deny deleting a lock file while its handle is open.
+                # Collection is best-effort; publication correctness is independent.
+                pass
         finally:
             os.close(fd)
 
@@ -316,9 +374,10 @@ def cmd_rebuild(repo):
     (zvec_dir / "generations").mkdir(parents=True, exist_ok=True)
 
     # 构建方进程锁（无 O_TRUNC——open(path, "w") 会截断外部文件）
-    lock_fd = os.open(zvec_dir / "rebuild.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    lock_fd = os.open(zvec_dir / "rebuild.lock",
+                      os.O_WRONLY | os.O_CREAT | O_BINARY | O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_exclusive_nb(lock_fd)
     except BlockingIOError:
         os.close(lock_fd)
         sys.exit("另一个 rebuild 正在运行")
@@ -330,7 +389,9 @@ def cmd_rebuild(repo):
         snapshot_hash = compute_corpus_hash(docs)
 
         snapshot = zvec_dir / f"snapshot-{gen_name}.jsonl"
-        snap_fd = os.open(snapshot, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        snap_fd = os.open(snapshot,
+                          os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_BINARY | O_NOFOLLOW,
+                          0o600)
         try:
             payload = "\n".join(
                 json.dumps(d, ensure_ascii=False, sort_keys=True) for d in docs).encode()
@@ -395,33 +456,29 @@ def cmd_rebuild(repo):
                 (".metadata.json", meta, 0o600),
                 (".doc-count", str(len(docs)).encode(), 0o644),
                 (".lock", b"", 0o600)):
-            fd = os.open(gen_dir / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+            fd = os.open(gen_dir / name,
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_BINARY | O_NOFOLLOW,
+                         mode)
             try:
                 os.write(fd, content)
                 os.fsync(fd)
             finally:
                 os.close(fd)
         os.unlink(gen_dir / ".build-metadata.json")   # 校验完成，删除构建中间物
-        dir_fd = os.open(gen_dir, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)                          # generation 落盘完成后才能发布
-        finally:
-            os.close(dir_fd)
+        _fsync_directory(gen_dir)                     # generation 落盘完成后才能发布
 
         # 5. 原子切换 pointer
         tmp = zvec_dir / f"current.json.{uuid.uuid4()}.tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        fd = os.open(tmp,
+                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_BINARY | O_NOFOLLOW,
+                     0o644)
         try:
             os.write(fd, json.dumps({"generation": gen_name, "docs": len(docs)}).encode())
             os.fsync(fd)
         finally:
             os.close(fd)
         os.replace(tmp, zvec_dir / "current.json")
-        dir_fd = os.open(zvec_dir, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        _fsync_directory(zvec_dir)
 
         # 6. 延迟回收 + 旧布局退役（current.json 已指向新代，旧 recall 不再被读取）
         cleanup_old_generations(zvec_dir, keep=2, min_age_seconds=600)

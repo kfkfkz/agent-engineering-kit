@@ -19,6 +19,17 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+
+def _configure_utf8_stdio() -> None:
+    """Keep CLI output independent from the host's narrow code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_configure_utf8_stdio()
+
 ROUTES = ("direct", "bounded", "standard", "initiative")
 WORK_KINDS = ("docs", "bug", "feature", "refactor", "migration", "chore", "other")
 INTENT_GAPS = ("none", "minor", "material")

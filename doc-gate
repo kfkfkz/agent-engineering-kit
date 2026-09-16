@@ -32,6 +32,17 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+
+def _configure_utf8_stdio() -> None:
+    """Keep CLI output independent from the host's narrow code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_configure_utf8_stdio()
+
 DEFAULT_POLICY = {"max_blocker": 0, "max_major": 0, "max_minor": 5, "max_iterations": 3}
 
 

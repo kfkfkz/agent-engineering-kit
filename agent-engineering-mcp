@@ -19,6 +19,17 @@ import os
 import subprocess
 import sys
 
+
+def _configure_utf8_stdio():
+    """Keep CLI protocol/output independent from the host's narrow code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_configure_utf8_stdio()
+
 KIT_BIN = os.path.dirname(os.path.abspath(__file__))
 # 绑定目标仓库:MCP 服务器只能操作安装它的仓库,不允许 Agent 传任意路径
 # KIT_BIN 形如 <repo>/.repo-memory-kit/bin,向上三级即仓库根

@@ -19,6 +19,17 @@ docs/memory/README.md 回归纯 seed：仅首次创建、此后归用户所有�
 import json, os, re, subprocess, sys, tempfile
 from pathlib import Path
 
+
+def _configure_utf8_stdio():
+    """Keep CLI output independent from the host's narrow code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
+_configure_utf8_stdio()
+
 STATUS_MAP = {"confirmed": "已确认", "unverified": "待验证", "deprecated": "已废弃", "superseded": "已替代"}
 VALID_STATUS = set(STATUS_MAP)
 TYPE_BY_DIR = {"pitfalls": "pitfall", "decisions": "decision", "playbooks": "playbook"}

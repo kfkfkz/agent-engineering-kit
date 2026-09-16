@@ -130,6 +130,76 @@ else
 fi
 rm -rf "$ENCODING_TMP"
 
+if PYTHONIOENCODING=cp1252 python3 - <<'EOF'
+import os
+import subprocess
+import sys
+
+env = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+commands = [
+    ([sys.executable, "doc-gate", "--help"], None, {0}),
+    ([sys.executable, "governance-eval", "."], b"", {0}),
+    ([sys.executable, "route-eval", "--help"], None, {0}),
+    ([sys.executable, "spec-migrate", "--help"], None, {0}),
+    ([sys.executable, "memory-recall", "--list", "."], None, {0}),
+    ([sys.executable, "memory-build", "--check", "."], None, {0, 1}),
+    ([sys.executable, "domain-check", "."], None, {0, 1}),
+    (
+        [sys.executable, "agent-engineering-mcp"],
+        b'{"jsonrpc":"2.0","id":1,"method":"tools/list"}\n',
+        {0},
+    ),
+]
+for argv, stdin, expected in commands:
+    proc = subprocess.run(argv, input=stdin, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, env=env, check=False)
+    if proc.returncode not in expected:
+        raise AssertionError(
+            f"{argv[1]} exit={proc.returncode}: "
+            + proc.stderr.decode("ascii", errors="backslashreplace")
+        )
+    if b"UnicodeEncodeError" in proc.stderr:
+        raise AssertionError(f"{argv[1]} depends on the host output encoding")
+EOF
+then
+    ok "全部公开 Python CLI 在窄系统编码下可输出 Unicode"
+else
+    bad "公开 Python CLI 输出仍依赖系统编码"
+fi
+
+if python3 - <<'EOF'
+import builtins
+import os
+import pathlib  # load the host path flavour before simulating os.name
+import runpy
+import shutil   # avoid re-selecting nt/posix implementation after os.name changes
+import sys
+import types
+
+real_import = builtins.__import__
+fake_msvcrt = types.SimpleNamespace(
+    LK_NBLCK=1, LK_NBRLCK=2, LK_UNLCK=0,
+    locking=lambda _fd, _mode, _count: None,
+)
+
+def platform_import(name, *args, **kwargs):
+    if name == "fcntl":
+        raise ModuleNotFoundError("No module named 'fcntl'")
+    if name == "msvcrt":
+        return fake_msvcrt
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = platform_import
+os.name = "nt"
+sys.modules["msvcrt"] = fake_msvcrt
+runpy.run_path("memory-recall", run_name="memory_recall")
+EOF
+then
+    ok "memory-recall 可在无 fcntl 的 Windows 运行时加载"
+else
+    bad "memory-recall 仍在导入期依赖 POSIX fcntl"
+fi
+
 if python3 - <<'EOF'
 import inspect
 from installer import platform
