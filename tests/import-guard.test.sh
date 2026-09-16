@@ -86,6 +86,15 @@ else
     bad "Windows CI 仍把 installer/*.py 字面量交给 py_compile"
 fi
 
+# archify 的供应链锁按原始字节计算；Windows checkout 也必须保留 LF。
+ATTRS="$(git check-attr text eol -- vendor/archify/SKILL.md)"
+if printf '%s\n' "$ATTRS" | grep -q 'text: set' \
+   && printf '%s\n' "$ATTRS" | grep -q 'eol: lf'; then
+    ok "archify vendor 快照跨平台固定为 LF"
+else
+    bad "archify vendor 未固定 LF——Windows checkout 会破坏供应链哈希"
+fi
+
 echo
 echo "import-guard 测试: $pass 通过, $fail 失败"
 [ "$fail" -eq 0 ] || exit 1

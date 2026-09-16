@@ -1,0 +1,3 @@
+# vendor/archify 的供应链清单按原始字节聚合哈希；所有平台必须检出相同 LF。
+/vendor/archify/** text eol=lf
+/vendor/archify.manifest.json text eol=lf
