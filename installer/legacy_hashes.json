@@ -102,6 +102,12 @@
     "3f010dc": {
       "bin-agent-engineering-mcp": "canonical_sha256:f923be647a36dd82ae838ca2d46e58438ab23d9dc2297bb93ff8ba8bae838e59"
     },
+    "43170fa": {
+      "skill-agents-design-pipeline": "canonical_sha256:246c06120b82e25b76c60da23e2ce680bdf842ef78a62f4e7e6ac74de516957e",
+      "skill-agents-repo-delivery": "canonical_sha256:bb7b10f565edb87de0df5d480e97c872b6ffda103758ce058d08512c968854c4",
+      "skill-claude-design-pipeline": "canonical_sha256:246c06120b82e25b76c60da23e2ce680bdf842ef78a62f4e7e6ac74de516957e",
+      "skill-claude-repo-delivery": "canonical_sha256:bb7b10f565edb87de0df5d480e97c872b6ffda103758ce058d08512c968854c4"
+    },
     "433646f": {
       "agents-md-block": "canonical_sha256:efb5e39a7c414fde77968db859ca4b065aaca0a0a6b1b548333144f69c1ef6da",
       "claude-md-block": "canonical_sha256:eefb5eafb795ef3b173d8b0b815970f32275577df3cb061c065df613a583b721",
