@@ -150,6 +150,21 @@ if "doc-gate freeze" in human_gate_section:
 if "完成内部冻结" not in human_gate_section:
     errors.append("repo-delivery 的人工门禁说明没有抽象为内部冻结")
 
+task_template = (ROOT / "templates/requirements/任务清单.md").read_text(encoding="utf-8")
+for phrase in ("执行前计划基线", "执行记录与勾选状态", "完整终态哈希"):
+    if phrase not in task_template:
+        errors.append(f"任务清单模板缺少执行期冻结协议: {phrase}")
+
+delivery_gate = (ROOT / "skills/delivery-gate/SKILL.md").read_text(encoding="utf-8")
+for phrase in ("统一收口", "doc-gate closeout", "计划.closeout.json"):
+    if phrase not in delivery_gate:
+        errors.append(f"delivery-gate 缺少计划收口步骤: {phrase}")
+for phrase in ("执行前计划基线", "doc-gate closeout"):
+    if phrase not in delivery:
+        errors.append(f"repo-delivery 缺少执行期计划协议: {phrase}")
+if "执行前计划基线" not in pipeline:
+    errors.append("design-pipeline 未说明计划门禁建立执行前基线")
+
 # An upstream source title previously looked exactly like an invokable skill.
 tdd = (ROOT / "skills/tdd/SKILL.md").read_text(encoding="utf-8")
 if "`improve-codebase-architecture`" in tdd:

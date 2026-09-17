@@ -244,6 +244,10 @@ canonical 入口（Claude Code：`/repo-delivery`；Codex：`$repo-delivery`）�
 `delivery-gate` 或阶段名称冒充为并列的“下一步 skill”。小需求不强制走全链——但走了的
 阶段必须过门禁，没有“半冻结”状态。
 
+计划阶段 PASS 建立的是**执行前计划基线**：任务定义、预计范围、验证方式保持冻结；进入
+实现后允许任务清单更新执行记录和 checkbox 状态。它们不是设计漂移，也不要求逐任务重跑
+计划门禁；完整终态由后续 `delivery-gate` 在统一收口时冻结。
+
 ## 来源
 
 迭代式评审、sensor/judge 分离与有界修订循环改编自 kit 设计文档

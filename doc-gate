@@ -11,6 +11,7 @@
   doc-gate freeze <SDD目录> [--by 维护者]        维护者签写冻结记录后落哈希凭证
   doc-gate check <需求目录> --stage <阶段> [--json]
   doc-gate gate  <需求目录> --stage <阶段> [--no-review] [--json]
+  doc-gate closeout <需求目录> [--json]          执行完成后冻结计划终态
   doc-gate status <需求目录> [--json]
 
 阶段: 需求分析 / 概要设计 / 业务流程设计 / UI设计 /
@@ -127,6 +128,79 @@ def _sha256(path: Path) -> str | None:
         return hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
         return None
+
+
+def _plan_baseline_text(doc: str, text: str) -> str:
+    """Return the immutable planning projection used during execution.
+
+    Task definitions, scopes and verification methods remain hash-bound.  Only
+    checkbox state and the body of the execution-record section are mutable;
+    closeout later binds the complete final documents again.
+    """
+    projected = re.sub(r"(?m)^(\s*[-*]\s*)\[[ xX]\]", r"\1[ ]", text)
+    if doc == "任务清单.md":
+        projected = re.sub(
+            r"(?ms)(^##\s+执行记录\s*\n).*?(?=^##\s+|\Z)",
+            r"\1<AEK-EXECUTION-RECORD>\n\n",
+            projected,
+        )
+    return projected
+
+
+def _plan_baseline_hashes(req_dir: Path) -> dict[str, str]:
+    hashes = {}
+    for doc in STAGES["计划"]["docs"]:
+        text = _read(req_dir / doc)
+        if text is not None:
+            hashes[doc] = hashlib.sha256(
+                _plan_baseline_text(doc, text).encode("utf-8")
+            ).hexdigest()
+    return hashes
+
+
+def _execution_record_rows(text: str) -> dict[str, list[str]]:
+    match = re.search(
+        r"(?ms)^##\s+执行记录\s*\n(.*?)(?=^##\s+|\Z)", text
+    )
+    if match is None:
+        return {}
+    rows = {}
+    for line in match.group(1).splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells and re.fullmatch(r"T\d+", cells[0]):
+            rows[cells[0]] = cells
+    return rows
+
+
+def _plan_completion_failures(req_dir: Path) -> list[str]:
+    task_text = _read(req_dir / "任务清单.md") or ""
+    test_text = _read(req_dir / "测试方案.md") or ""
+    tasks = parse_t_items(task_text)
+    rows = _execution_record_rows(task_text)
+    failures = []
+    if not tasks:
+        failures.append("任务清单没有可收口的 T-ID")
+    for task_id in tasks:
+        cells = rows.get(task_id)
+        if cells is None:
+            failures.append(f"{task_id} 缺执行记录")
+            continue
+        state = cells[1] if len(cells) > 1 else ""
+        actual_scope = cells[2] if len(cells) > 2 else ""
+        verification = cells[3] if len(cells) > 3 else ""
+        if state not in ("完成", "DONE"):
+            failures.append(f"{task_id} 状态不是完成")
+        if not actual_scope:
+            failures.append(f"{task_id} 缺实际改动范围")
+        if not verification:
+            failures.append(f"{task_id} 缺验证结果")
+    unknown_rows = sorted(set(rows) - set(tasks))
+    if unknown_rows:
+        failures.append("执行记录含未知任务: " + "、".join(unknown_rows))
+    unchecked = len(re.findall(r"(?m)^\s*[-*]\s*\[\s*\]", task_text + "\n" + test_text))
+    if unchecked:
+        failures.append(f"仍有 {unchecked} 个未完成检查项")
+    return failures
 
 
 def _archify_delivery_error(receipt_path: Path) -> tuple[str | None, str | None]:
@@ -384,7 +458,16 @@ def _stage_fingerprint(req_dir: Path, stage: str) -> str | None:
         return None
     ident = {"status": g.get("status"),
              "doc_hashes": g.get("doc_hashes"),
+             "execution_baseline_hashes": g.get("execution_baseline_hashes"),
              "upstream_fingerprints": g.get("upstream_fingerprints")}
+    if stage == "计划":
+        closeout_text = _read(req_dir / "reviews" / "计划.closeout.json")
+        if closeout_text is not None:
+            try:
+                closeout = json.loads(closeout_text)
+            except json.JSONDecodeError:
+                closeout = {}
+            ident["closeout_doc_hashes"] = closeout.get("doc_hashes")
     return hashlib.sha256(
         json.dumps(ident, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
@@ -437,12 +520,53 @@ def stage_frozen(req_dir: Path, stage: str) -> tuple[str, str]:
         return "BLOCKED", "最近判定 BLOCKED（人工介入）"
     if gate.get("status") != "PASS":
         return "DRAFT", f"最近判定 {gate.get('status')}"
-    for doc, want in (gate.get("doc_hashes") or {}).items():
-        cur = _sha256(req_dir / doc)
-        if cur is None:
-            return "DRAFT", f"{doc} 已不存在"
-        if cur != want:
-            return "DRAFT", f"{doc} 冻结后有改动（哈希失配）"
+    plan_detail = None
+    if stage == "计划":
+        closeout_file = req_dir / "reviews" / "计划.closeout.json"
+        closeout_text = _read(closeout_file)
+        if closeout_text is not None:
+            try:
+                closeout = json.loads(closeout_text)
+            except json.JSONDecodeError:
+                return "DRAFT", "计划.closeout.json 损坏"
+            if closeout.get("status") != "PASS":
+                return "DRAFT", "计划收口凭证不是 PASS"
+            if closeout.get("plan_gate_sha256") != _sha256(gate_file):
+                return "DRAFT", "计划门禁已更新——需重新收口"
+            closeout_hashes = closeout.get("doc_hashes") or {}
+            if set(closeout_hashes) != set(STAGES["计划"]["docs"]):
+                return "DRAFT", "计划收口凭证未完整覆盖阶段文档"
+            for doc, want in closeout_hashes.items():
+                cur = _sha256(req_dir / doc)
+                if cur is None:
+                    return "DRAFT", f"{doc} 已不存在"
+                if cur != want:
+                    return "DRAFT", f"{doc} 收口后有改动（哈希失配）"
+            plan_detail = "gate.json PASS（已收口，完整终态哈希一致）"
+        elif gate.get("execution_baseline_hashes"):
+            current = _plan_baseline_hashes(req_dir)
+            baseline_hashes = gate["execution_baseline_hashes"]
+            if set(baseline_hashes) != set(STAGES["计划"]["docs"]):
+                return "DRAFT", "执行前计划基线未完整覆盖阶段文档"
+            for doc, want in baseline_hashes.items():
+                if current.get(doc) != want:
+                    return "DRAFT", f"{doc} 执行前计划基线有改动（哈希失配）"
+            plan_detail = "gate.json PASS（执行中，允许更新执行记录与勾选状态）"
+        else:
+            # Legacy credentials predate the execution baseline projection.
+            for doc, want in (gate.get("doc_hashes") or {}).items():
+                cur = _sha256(req_dir / doc)
+                if cur is None:
+                    return "DRAFT", f"{doc} 已不存在"
+                if cur != want:
+                    return "DRAFT", f"{doc} 冻结后有改动（哈希失配）"
+    else:
+        for doc, want in (gate.get("doc_hashes") or {}).items():
+            cur = _sha256(req_dir / doc)
+            if cur is None:
+                return "DRAFT", f"{doc} 已不存在"
+            if cur != want:
+                return "DRAFT", f"{doc} 冻结后有改动（哈希失配）"
     # 上游指纹核验（第八轮审计 P1）：任一上游重冻结 → 本阶段失效，需重过门禁
     recorded = gate.get("upstream_fingerprints") or {}
     for up in STAGES[stage]["upstream"]:
@@ -452,6 +576,8 @@ def stage_frozen(req_dir: Path, stage: str) -> tuple[str, str]:
         if recorded.get(up) != cur_fp:
             return "DRAFT", (f"上游 {up} 已重新冻结（指纹失配）——"
                             f"本阶段需重过门禁")
+    if plan_detail is not None:
+        return "FROZEN", plan_detail
     return "FROZEN", f"gate.json PASS（iteration {gate.get('iteration')}）"
 
 
@@ -585,6 +711,7 @@ def run_checks(req_dir: Path, stage: str) -> Checks:
             d_all.update(parse_d_items(text) if text is not None else {})
 
         covered_a = [a for v in tc_items.values() for a in v["accepts"]]
+        c.add("trace", "任务清单至少包含一个任务", bool(t_items), "无 T-ID")
         c.add("trace", "每个验收项有 ≥1 测试用例",
               bool(tc_items) and set(req_a) <= set(covered_a),
               f"未覆盖: {('、'.join(sorted(set(req_a) - set(covered_a))) or '无')}")
@@ -791,6 +918,8 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
                  else f"已连续 {policy['max_iterations']} 轮不达标——升级人工介入"
                  if not was_blocked else "BLOCKED 未解除：人工介入后需重新评审且判定 PASS"),
     }
+    if stage == "计划" and status == "PASS":
+        gate["execution_baseline_hashes"] = _plan_baseline_hashes(req_dir)
     gate_file = reviews_dir / f"{stage}.gate.json"
     gate_file.write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
     with log_file.open("a", encoding="utf-8") as f:
@@ -860,6 +989,91 @@ def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool) -> in
     else:
         print(f"✓ {stage} 已签核冻结（凭证绑定 sha256；approved_by={gate['approved_by']}）——"
               f"下游阶段可开始")
+    return 0
+
+
+def cmd_closeout(req_dir: Path, as_json: bool) -> int:
+    """Validate execution facts and bind the complete final plan documents.
+
+    The initial plan gate remains the immutable execution baseline.  This
+    separate credential closes the intentionally mutable execution window and
+    makes every later document edit invalidate the final state again.
+    """
+    reviews_dir = req_dir / "reviews"
+    gate_file = reviews_dir / "计划.gate.json"
+    gate_text = _read(gate_file)
+    if gate_text is None:
+        print("✗ 计划尚未通过门禁，不能执行收口")
+        return 3
+    try:
+        gate = json.loads(gate_text)
+    except json.JSONDecodeError:
+        print("✗ 计划.gate.json 损坏，不能执行收口")
+        return 3
+    if gate.get("status") != "PASS":
+        print(f"✗ 计划最近判定 {gate.get('status')}，不能执行收口")
+        return 3
+
+    checks = run_checks(req_dir, "计划")
+    failures = [
+        f"硬校验失败: {item['name']}"
+        for item in checks.fails
+    ]
+    expected_baseline = gate.get("execution_baseline_hashes")
+    if expected_baseline:
+        current_baseline = _plan_baseline_hashes(req_dir)
+        if set(expected_baseline) != set(STAGES["计划"]["docs"]):
+            failures.append("执行前计划基线未完整覆盖阶段文档")
+        else:
+            for doc, want in expected_baseline.items():
+                if current_baseline.get(doc) != want:
+                    failures.append(f"{doc} 的执行前计划基线已改变")
+    failures.extend(_plan_completion_failures(req_dir))
+
+    reviews_dir.mkdir(parents=True, exist_ok=True)
+    (reviews_dir / "hard-checks.json").write_text(
+        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    if failures:
+        if as_json:
+            print(json.dumps({"stage": "计划", "status": "NEEDS_REVISION",
+                              "failures": failures}, ensure_ascii=False, indent=2))
+        else:
+            print(f"✗ 计划收口未通过（{len(failures)} 项）：")
+            for failure in failures:
+                print(f"  ✗ {failure}")
+        return 1
+
+    closeout = {
+        "stage": "计划",
+        "status": "PASS",
+        "kind": "execution_closeout",
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "plan_gate_sha256": _sha256(gate_file),
+        "baseline_mode": "projected" if expected_baseline else "legacy_unavailable",
+        "doc_hashes": {
+            doc: _sha256(req_dir / doc)
+            for doc in STAGES["计划"]["docs"]
+        },
+        "upstream_fingerprints": {
+            up: _stage_fingerprint(req_dir, up)
+            for up in STAGES["计划"]["upstream"]
+        },
+    }
+    (reviews_dir / "计划.closeout.json").write_text(
+        json.dumps(closeout, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    with (reviews_dir / "计划.gate.log").open("a", encoding="utf-8") as log:
+        log.write(json.dumps({"time": closeout["time"], "stage": "计划",
+                              "status": "PASS", "event": "execution_closeout"},
+                             ensure_ascii=False) + "\n")
+    if as_json:
+        print(json.dumps(closeout, ensure_ascii=False, indent=2))
+    else:
+        if not expected_baseline:
+            print("⚠ 旧版计划凭证无执行前基线；已按当前验证终态迁移，"
+                  "范围真实性仍以 Route Card/diff 对照为准")
+        print("✓ 计划执行已统一收口（完整终态哈希已冻结）")
     return 0
 
 
@@ -1413,6 +1627,9 @@ def main() -> int:
                     help="需求分析 / 业务流程设计")
     fp.add_argument("--by", default="", help="签核人（进 approved_by）")
     fp.add_argument("--json", action="store_true")
+    cp = sub.add_parser("closeout", help="执行完成后校验并冻结计划终态")
+    cp.add_argument("dir")
+    cp.add_argument("--json", action="store_true")
     sp = sub.add_parser("status")
     sp.add_argument("dir")
     sp.add_argument("--json", action="store_true")
@@ -1432,6 +1649,8 @@ def main() -> int:
     if args.cmd == "freeze":
         return cmd_freeze(req_dir, args.stage,
                           getattr(args, "by", ""), getattr(args, "json", False))
+    if args.cmd == "closeout":
+        return cmd_closeout(req_dir, args.json)
     return cmd_status(req_dir, args.json)
 
 

@@ -596,6 +596,87 @@ run_rc python3 "$DG" check "$D" --stage 计划
 assert_eq "check 计划 通过（追踪 A→TC、T→D）" "$rc" "0"
 run_rc python3 "$DG" gate "$D" --stage 计划
 assert_eq "gate 计划 PASS" "$rc" "0"
+assert_grep "计划凭证保存执行前基线" 'execution_baseline_hashes' "$D/reviews/计划.gate.json"
+
+# 执行期计划协议：执行事实可变，计划定义不可变；收口后完整终态重新冻结
+sed -i 's/| T1 | TODO |  |  |  |/| T1 | 进行中 | src\/user.py | pytest PASS |  |/' "$D/任务清单.md"
+OUT="$(python3 "$DG" status "$D")"
+echo "$OUT" | grep -q "计划.*FROZEN.*执行中" \
+    && ok "执行记录更新不使计划基线失效" \
+    || bad "执行记录更新后计划未保持 FROZEN: $OUT"
+
+sed -i 's/目标：停用能力可用/目标：停用与导出能力可用/' "$D/任务清单.md"
+OUT="$(python3 "$DG" status "$D")"
+echo "$OUT" | grep -q "计划.*DRAFT.*执行前计划基线" \
+    && ok "执行中修改任务定义仍触发 DRAFT" \
+    || bad "任务定义漂移未被检出: $OUT"
+run_rc python3 "$DG" closeout "$D"
+assert_eq "任务定义漂移时拒绝收口" "$rc" "1"
+sed -i 's/目标：停用与导出能力可用/目标：停用能力可用/' "$D/任务清单.md"
+
+run_rc python3 "$DG" closeout "$D"
+assert_eq "执行未完成时拒绝收口" "$rc" "1"
+sed -i 's/- \[ \]/- [x]/g' "$D/任务清单.md" "$D/测试方案.md"
+sed -i 's/| T1 | 进行中 |/| T1 | 完成 |/' "$D/任务清单.md"
+run_rc python3 "$DG" closeout "$D"
+assert_eq "执行完成后统一收口" "$rc" "0"
+assert_exists "计划收口凭证" "$D/reviews/计划.closeout.json"
+assert_grep "收口凭证类型正确" 'execution_closeout' "$D/reviews/计划.closeout.json"
+OUT="$(python3 "$DG" status "$D")"
+echo "$OUT" | grep -q "计划.*FROZEN.*已收口" \
+    && ok "计划收口后完整终态 FROZEN" \
+    || bad "计划收口状态异常: $OUT"
+
+sed -i 's/pytest PASS |  |/pytest PASS | 已归档 |/' "$D/任务清单.md"
+OUT="$(python3 "$DG" status "$D")"
+echo "$OUT" | grep -q "计划.*DRAFT.*收口后有改动" \
+    && ok "收口后执行记录改动重新触发 DRAFT" \
+    || bad "收口后改动未失效: $OUT"
+run_rc python3 "$DG" closeout "$D"
+assert_eq "收口后更新可统一重冻" "$rc" "0"
+
+D_LEGACY="$REPO/docs/03-SDD/018-旧计划凭证收口"
+cp -r "$D" "$D_LEGACY"
+rm -f "$D_LEGACY/reviews/计划.closeout.json"
+python3 -c "import json; p='$D_LEGACY/reviews/计划.gate.json'; d=json.load(open(p, encoding='utf-8')); d.pop('execution_baseline_hashes', None); open(p, 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2))"
+sed -i 's/已归档/旧凭证迁移/' "$D_LEGACY/任务清单.md"
+run_rc python3 "$DG" closeout "$D_LEGACY"
+assert_eq "旧版计划凭证可在收口时迁移" "$rc" "0"
+assert_grep "旧版收口凭证标记基线不可用" 'legacy_unavailable' "$D_LEGACY/reviews/计划.closeout.json"
+OUT="$(python3 "$DG" status "$D_LEGACY")"
+echo "$OUT" | grep -q "计划.*FROZEN.*已收口" \
+    && ok "旧版计划收口后完整终态 FROZEN" \
+    || bad "旧版计划收口状态异常: $OUT"
+python3 -c "import json; p='$D_LEGACY/reviews/计划.closeout.json'; d=json.load(open(p, encoding='utf-8')); d['doc_hashes'].pop('测试方案.md'); open(p, 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2))"
+OUT="$(python3 "$DG" status "$D_LEGACY")"
+echo "$OUT" | grep -q "计划.*DRAFT.*未完整覆盖" \
+    && ok "收口凭证缺文档哈希时 fail-closed" \
+    || bad "不完整收口凭证未被拒绝: $OUT"
+run_rc python3 "$DG" closeout "$D_LEGACY"
+assert_eq "修复不完整凭证后可重新收口" "$rc" "0"
+
+D_PARTIAL="$REPO/docs/03-SDD/021-残缺计划基线"
+cp -r "$D" "$D_PARTIAL"
+rm -f "$D_PARTIAL/reviews/计划.closeout.json"
+python3 -c "import json; p='$D_PARTIAL/reviews/计划.gate.json'; d=json.load(open(p, encoding='utf-8')); d['execution_baseline_hashes'].pop('测试方案.md'); open(p, 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2))"
+rc=0
+PARTIAL_OUT="$(python3 "$DG" closeout "$D_PARTIAL")" || rc=$?
+assert_eq "残缺执行前基线拒绝收口" "$rc" "1"
+echo "$PARTIAL_OUT" | grep -q '执行前计划基线未完整覆盖' \
+    && ok "残缺执行前基线给出明确原因" \
+    || bad "残缺执行前基线原因不明确: $PARTIAL_OUT"
+
+D_EMPTY="$REPO/docs/03-SDD/019-空任务收口"
+cp -r "$D" "$D_EMPTY"
+rm -f "$D_EMPTY/reviews/计划.closeout.json"
+python3 -c "import json; p='$D_EMPTY/reviews/计划.gate.json'; d=json.load(open(p, encoding='utf-8')); d.pop('execution_baseline_hashes', None); open(p, 'w', encoding='utf-8').write(json.dumps(d, ensure_ascii=False, indent=2))"
+sed -i '/^### T1：/,/^## 执行记录/{ /^## 执行记录/!d; }' "$D_EMPTY/任务清单.md"
+rc=0
+EMPTY_OUT="$(python3 "$DG" closeout "$D_EMPTY")" || rc=$?
+assert_eq "空任务清单拒绝收口" "$rc" "1"
+echo "$EMPTY_OUT" | grep -q '没有可收口的 T-ID' \
+    && ok "空任务收口给出明确原因" \
+    || bad "空任务收口原因不明确: $EMPTY_OUT"
 
 # ════════════════ S3 status：状态派生与哈希失配 ════════════════
 OUT="$(python3 "$DG" status "$D")"
