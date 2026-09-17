@@ -159,11 +159,40 @@ delivery_gate = (ROOT / "skills/delivery-gate/SKILL.md").read_text(encoding="utf
 for phrase in ("统一收口", "doc-gate closeout", "计划.closeout.json"):
     if phrase not in delivery_gate:
         errors.append(f"delivery-gate 缺少计划收口步骤: {phrase}")
+for phrase in (
+    "性能与容量风险覆盖",
+    "performance-review",
+    "N+1",
+    "EXPLAIN",
+    "代表性数据规模",
+    "不得虚构性能阈值",
+    "静态审查不能证明运行时性能",
+    "NEEDS HUMAN REVIEW",
+):
+    if phrase not in delivery_gate:
+        errors.append(f"delivery-gate 缺少性能审查契约: {phrase}")
+if "未命中时不增加性能专项步骤" not in delivery_gate:
+    errors.append("delivery-gate 没有保持性能审查的风险触发式预算")
 for phrase in ("执行前计划基线", "doc-gate closeout"):
     if phrase not in delivery:
         errors.append(f"repo-delivery 缺少执行期计划协议: {phrase}")
+for phrase in ("performance_capacity", "性能/容量风险", "performance-review"):
+    if phrase not in delivery:
+        errors.append(f"repo-delivery 缺少性能风险路由: {phrase}")
 if "执行前计划基线" not in pipeline:
     errors.append("design-pipeline 未说明计划门禁建立执行前基线")
+
+detail_template = (ROOT / "templates/requirements/详细设计.md").read_text(encoding="utf-8")
+database_template = (ROOT / "templates/requirements/数据库设计.md").read_text(encoding="utf-8")
+test_template = (ROOT / "templates/requirements/测试方案.md").read_text(encoding="utf-8")
+for path, text, phrases in (
+    ("详细设计.md", detail_template, ("性能与容量设计", "延迟/吞吐/资源预算")),
+    ("数据库设计.md", database_template, ("查询与容量", "执行计划", "锁与表重写")),
+    ("测试方案.md", test_template, ("性能与容量验证", "代表性数据规模", "基线/目标")),
+):
+    for phrase in phrases:
+        if phrase not in text:
+            errors.append(f"{path} 缺少性能证据字段: {phrase}")
 
 # An upstream source title previously looked exactly like an invokable skill.
 tdd = (ROOT / "skills/tdd/SKILL.md").read_text(encoding="utf-8")

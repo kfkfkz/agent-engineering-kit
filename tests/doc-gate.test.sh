@@ -908,7 +908,8 @@ if [ -f "$REPO/.repo-memory-kit/governance.json" ]; then
     fi
     grep -q '"SEC-001"' "$REPO/.repo-memory-kit/governance.json" \
         && grep -q '"min_route:standard"' "$REPO/.repo-memory-kit/governance.json" \
-        && ok "缺省规则 SEC-001/DB-001 与路线下限在位" || bad "缺省规则缺失"
+        && grep -q '"required_check:performance-review"' "$REPO/.repo-memory-kit/governance.json" \
+        && ok "缺省规则 SEC-001/DB-001、路线下限与性能审查在位" || bad "缺省规则缺失"
 else
     bad "安装后无 governance.json——引擎无规则可用"
 fi

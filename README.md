@@ -10,6 +10,8 @@
 减少“不同 Agent 各写一套设计、各走一套流程”的偏差。AI 负责提出候选和评审问题，
 脚本负责可重复判定，维护者保留需求确认、业务流程签核和高风险决策权。
 
+需要先理解设计目标、完整工作模型与适用边界，可阅读 [AEK Overview](overview.md)。
+
 ## 当前架构
 
 | 层 | 主要组件 | 保证什么 |
@@ -280,7 +282,7 @@ AEK 把三个维度分开，避免把组织治理、任务规模和专项风险�
 | --- | --- | --- |
 | 项目治理 | `strict` / `lightweight` | 回执形态、组织级底线；不决定任务路线 |
 | 任务路线 | Direct / Bounded / Standard / Initiative | 本任务需要多少规划、设计、拆分和审查 |
-| 风险覆盖项 | 契约、Schema、安全、不可逆、跨服务/仓库、并发一致性等 | 只叠加相关专项检查和最低路线 |
+| 风险覆盖项 | 契约、Schema、安全、性能/容量、不可逆、跨服务/仓库、并发一致性等 | 只叠加相关专项检查和最低路线 |
 
 任务路线如下：
 
@@ -485,6 +487,13 @@ Route Card 检查所选/最低路线与最终 diff 范围漂移，再复用 `gov
 验证闭环。结论枚举 `READY`、`NOT READY`、`NEEDS HUMAN REVIEW`，未运行的检查不会被写成
 通过；回执形态由项目治理 profile 决定。
 
+性能审查也是按风险叠加：SQL/ORM、schema/索引/回填、批处理与远程扇出、热点循环、
+缓存/并发争用或明确容量目标命中 `performance_capacity` 时，`route-eval` 自动要求
+`performance-review`。SQL 审查不仅看语句形状，还要求在代表性数据规模下核对实际 SQL、
+查询次数/N+1、数据库原生执行计划、索引与基数、锁/表重写和预算或变更前基线；一般代码
+则检查复杂度、IO 扇出、分配/序列化、背压和竞争。未命中时不增加性能专项步骤，保留
+Direct/Bounded 的低成本路径。
+
 ### spec-migrate 与 task-handoff
 
 `spec-migrate` 把已有 Spec Kit 文档安全映射到统一字段，保留原文并显式标记待核验内容；`task-handoff` 在中断或跨 Agent/会话时记录目标、证据、修改、验证、风险和唯一下一步。
@@ -584,6 +593,10 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 `min_route:standard`、`review_depth:thorough`、`required_check:<name>`；`route-eval` 在最终
 diff 上复用同一治理结果，因此任务复杂度与风险规则不会形成两套事实源。既有团队自持的
 governance.json 不会在升级时被覆盖，可按需增量采用这些新动作。
+新安装的缺省 `DB-001` 还会为 SQL/schema/迁移文件加入
+`required_check:performance-review`；存量项目的团队自持规则不会被升级覆盖，需要团队确认后
+自行把该动作加入原有数据库规则。即使未改团队规则，`repo-delivery` 仍会在语义命中
+`performance_capacity` 时通过 Route Card 启用同一专项检查。
 
 `.repo-memory-kit/` 下的 `manifest.json`（Manifest v2：版本与受管资源记录）、
 `install.lock`、事务目录与 zvec 索引都是**每机状态/派生物**，不提交进版本库。

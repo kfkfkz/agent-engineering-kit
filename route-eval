@@ -41,7 +41,11 @@ ROUTE_OVERRIDE_KINDS = ("user_requested", "project_required")
 RISK_OVERLAYS = {
     "public_contract", "schema_migration", "security_privacy", "irreversible",
     "cross_service", "cross_repo", "concurrency_consistency", "core_data_flow",
-    "compliance",
+    "compliance", "performance_capacity",
+}
+
+RISK_OVERLAY_CHECKS: dict[str, list[str]] = {
+    "performance_capacity": ["performance-review"],
 }
 
 ROUTE_CHECKS: dict[str, list[str]] = {
@@ -454,8 +458,14 @@ def evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]
                         "message": "最终 diff 含 Route Card 未计划路径: " + ", ".join(unplanned),
                         "minimum": minimum})
 
+    risk_checks = [
+        check
+        for risk in card["risk_overlays"]
+        for check in RISK_OVERLAY_CHECKS.get(risk, [])
+    ]
     checks: list[str] = []
-    for check in ROUTE_CHECKS[effective] + card["required_checks"] + policy_checks:
+    for check in (ROUTE_CHECKS[effective] + risk_checks
+                  + card["required_checks"] + policy_checks):
         if check not in checks:
             checks.append(check)
     if effective in ("standard", "initiative"):

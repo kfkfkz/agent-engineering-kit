@@ -105,6 +105,18 @@ python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"
 python3 -c "import json; d=json.load(open('$T/out.json')); assert d['minimum_route']=='standard'" \
     && ok "Schema overlay 计算 Standard 下限" || bad "Schema overlay 下限错误"
 
+# 性能/容量风险只在显式命中时叠加专项审查，并至少提升到 Standard。
+write_card standard feature local 1 1 1 '["performance_capacity"]' '["src/query.py"]'
+python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"
+python3 - "$T/out.json" <<'PY' \
+    && ok "性能风险叠加专项审查" \
+    || bad "性能风险未进入路线或专项检查"
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["minimum_route"] == "standard"
+assert "performance-review" in d["requirements"]["required_checks"]
+PY
+
 # 多仓库/较长多会话工作进入 Initiative；work_kind 本身不参与升级。
 write_card initiative feature local 2 2 3 '["cross_repo"]' '["service-a/**","service-b/**"]'
 python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"
@@ -212,7 +224,7 @@ cat > "$REPO/.repo-memory-kit/governance.json" <<'EOF'
   "version": 1,
   "rules": [{
     "id": "DB-001",
-    "require": ["receipt", "independent_review", "min_route:standard", "required_check:migration-plan"],
+    "require": ["receipt", "independent_review", "min_route:standard", "required_check:migration-plan", "required_check:performance-review"],
     "match": {"files": ["*.sql"]}
   }]
 }
@@ -239,6 +251,7 @@ assert d["effective_route"] == "standard"
 assert d["requirements"]["review_depth"] == "thorough"
 assert "impact-analysis" in d["requirements"]["required_checks"]
 assert "migration-plan" in d["requirements"]["required_checks"]
+assert "performance-review" in d["requirements"]["required_checks"]
 assert d["governance"]["matched_rules"][0]["rule_id"] == "DB-001"
 PY
 

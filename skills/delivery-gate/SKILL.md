@@ -1,6 +1,6 @@
 ---
 name: delivery-gate
-description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移校验 + 治理引擎裁决 + 证据化审查 + 验证闭环 + 交付回执。两阶段：route-eval/governance-eval 确定性裁决与对抗式复核，然后按项目门禁执行验证闭环。回执载体由 governance 标记决定。结论枚举 READY / NOT READY / NEEDS HUMAN REVIEW。"
+description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移校验 + 治理引擎裁决 + 证据化审查（含风险触发式性能/容量审查）+ 验证闭环 + 交付回执。两阶段：route-eval/governance-eval 确定性裁决与对抗式复核，然后按项目门禁执行验证闭环。回执载体由 governance 标记决定。结论枚举 READY / NOT READY / NEEDS HUMAN REVIEW。"
 ---
 
 # 交付门禁（代码变更）
@@ -39,8 +39,41 @@ description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移�
    测试充分性、复杂度与维护性、文档/记忆一致性、**与冻结设计文档的偏离**
    （diff 超出 任务清单 预计修改范围 = 显式记录，静默超范围视作未声明范围蔓延）。
 5. 命中安全触发条件时调用 `security-review`，并把其结果纳入同一门禁。
-6. 每个发现给出准确文件/符号、可观察后果、触发条件、证据和最小修复方向；按
+6. Route Card 含 `performance_capacity`，或治理输出要求 `performance-review` 时，执行
+   下方“性能与容量风险覆盖”；未命中时不增加性能专项步骤。
+7. 每个发现给出准确文件/符号、可观察后果、触发条件、证据和最小修复方向；按
    `CRITICAL/HIGH/MEDIUM/LOW` 标级。纯偏好不作为阻塞项。
+
+### 性能与容量风险覆盖
+
+这是风险触发式专项审查，不是所有代码变更的固定仪式。以下任一情况命中：SQL/ORM 查询
+形状、访问模式或预期数据量变化；schema、索引、约束、迁移、回填变化；批处理、循环内 IO、远程扇出、
+大对象序列化；缓存、锁、并发、队列背压变化；已知热点路径；需求/宪章明确延迟、吞吐、
+CPU、内存、IO 或数据量目标。命中后在 Route Card 标记 `performance_capacity`；最终 diff
+新增这类风险时必须更新卡片重评，不能只在回执里补一句“已关注性能”。
+
+先从需求、冻结设计、SLO/NFR、现有基准与生产观测提取预算，优先级为：项目明确门槛 >
+已确认设计目标 > 可复现的变更前基线。**不得虚构性能阈值**；没有目标时说明采用的基线、
+数据规模与局限。根据改动只执行适用项：
+
+1. **SQL/ORM 查询**：记录实际 SQL（含 ORM 生成结果）、参数分布、调用次数与事务边界；检查
+   N+1、循环查询、无界结果集/扫描、深 OFFSET、不可用谓词、连接/排序/聚合与索引匹配。
+2. **运行计划**：在代表性数据规模和统计信息下使用目标数据库原生 `EXPLAIN`；安全的非生产
+   环境才使用会真正执行语句的 `EXPLAIN ANALYZE` 或等价能力，写语句必须放在可回滚事务/
+   隔离环境，禁止拿生产写路径试验。比较估算/实际行数、扫描/访问方式、连接顺序与循环次数、
+   sort/hash spill、buffer/temp IO、锁等待和执行时间；计划形状必须与数据基数一起解释。
+3. **索引与迁移**：核对过滤、连接、排序与复合索引前缀/选择性，评估重复索引和写放大；
+   审查 DDL 锁级别、锁持续时间、表重写、并发建索引、约束校验、长事务、回填批次/节流与回滚。
+4. **非 SQL 路径**：检查复杂度随输入规模的增长、循环内 IO/远程调用、分配与序列化、批量与
+   背压、锁竞争/任务泄漏、缓存命中与失效；按项目既有工具补微基准、负载或剖析证据。
+5. **端到端验证**：在预算对应的并发、数据量、冷/热缓存和失败场景下记录 p50/p95/p99、
+   吞吐或资源指标中实际适用者，并与目标或变更前基线比较；单次耗时不得冒充容量结论。
+
+性能发现必须写明位置、场景/数据规模、证据、预算或基线、可观察后果、最小修复与置信度。
+**静态审查不能证明运行时性能**：它只能发现候选风险。强制 `performance-review` 缺少可复现
+环境、代表性数据、执行计划/基准或权威预算时，结论最多为 `NEEDS HUMAN REVIEW` 并列出补验；
+证据已显示违反明确预算时为 `NOT READY`。只有适用证据满足门槛，或证明该项对当前路径确实
+不适用并给出证据，才可 `READY`。
 
 ### 对抗式复核
 
@@ -62,7 +95,8 @@ Standard/Initiative 才按影响面扩大验证：
 
 1. 构建、编译或类型检查；
 2. 格式化、lint 和静态分析；
-3. 针对性测试、相关模块测试、必要的全量/集成/契约/并发/性能测试；
+3. 针对性测试、相关模块测试、必要的全量/集成/契约/并发/性能测试；命中性能覆盖项时附上
+   数据规模、预算/基线、命令与原始指标摘要，不能只写“性能通过”；
 4. `security-review` 要求的扫描与安全回归；
 5. spec/设计文档、变更记录、用户文档和项目记忆的一致性检查；
 6. 需求目录有线上联调清单时核对其完整性：遗留 NOT_RUN 项必须如实进回执，
@@ -145,4 +179,8 @@ base: <基线 SHA 或 "none">
 
 多维审查、证据门槛、skeptic 复核与分阶段验证闭环思路参考并改编自
 [Everything Claude Code 的 orch-review workflow 与 verification-loop](https://github.com/affaan-m/ECC)，
-Copyright 2026 Affaan Mustafa，MIT License。
+Copyright 2026 Affaan Mustafa，MIT License。按风险启用审查维度的思路参考
+[PR-Agent 的可配置 review sections](https://github.com/The-PR-Agent/pr-agent/blob/main/docs/docs/tools/review.md)，
+MIT License；SQL 迁移静态规则思路参考
+[Squawk](https://github.com/sbdchd/squawk)，MIT OR Apache-2.0；执行计划证据口径参考
+[PostgreSQL EXPLAIN 文档](https://www.postgresql.org/docs/current/using-explain.html)，PostgreSQL License。
