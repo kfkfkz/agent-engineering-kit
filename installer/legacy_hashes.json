@@ -529,6 +529,15 @@
     "c344ec6": {
       "bin-agent-engineering-mcp": "canonical_sha256:6db5760c3a04be2da3ad4ceb1db0f0f0e5f3117260bd1ceba94a9fc845b32fac"
     },
+    "c79b6a1": {
+      "memory-rules": "canonical_sha256:9da6080159b497d97abd77b7a435e522224a7f76992319291ce2ecfac59ccecb",
+      "skill-agents-design-pipeline": "canonical_sha256:0228bcb718cf03fcc0f077541f0cd53143a3b4c3faf29afeabfacc938f6517cf",
+      "skill-agents-repo-delivery": "canonical_sha256:43b4f910a34b1148901e2d60b3dee5c1ae4161e69044a5f5295a23d503aadfa2",
+      "skill-agents-tdd": "canonical_sha256:7985cd47e5b3810be88c60a675b89574e87bd7c44b5f76c6278d196d9b124d44",
+      "skill-claude-design-pipeline": "canonical_sha256:0228bcb718cf03fcc0f077541f0cd53143a3b4c3faf29afeabfacc938f6517cf",
+      "skill-claude-repo-delivery": "canonical_sha256:43b4f910a34b1148901e2d60b3dee5c1ae4161e69044a5f5295a23d503aadfa2",
+      "skill-claude-tdd": "canonical_sha256:7985cd47e5b3810be88c60a675b89574e87bd7c44b5f76c6278d196d9b124d44"
+    },
     "c9d0ff5": {
       "bin-memory-build": "canonical_sha256:68a56dbe1da85e5007cf0546193a5a0f620cbf50d8e65a73888b00169da09a52",
       "bin-memory-recall": "canonical_sha256:f761486b310846686ffdadea6a0cb63fd40e09f9ea441cc2e3fe938f90062099",
