@@ -58,6 +58,7 @@ RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVe
 printf '%s\n' "$RESP" | python3 -c "
 import json,sys; r=json.load(sys.stdin)
 assert r['result']['protocolVersion']=='2025-06-18'  # 回显
+assert r['result']['serverInfo']=={'name':'agent-engineering-kit','version':'1.0.0'}
 " && ok "T1b 版本协商：回显客户端版本" || bad "T1b: $RESP"
 
 # T1c: 客户端发送未知版本 → 默认版本
