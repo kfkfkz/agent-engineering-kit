@@ -27,6 +27,16 @@
     "0c97756": {
       "bin-agent-engineering-mcp": "canonical_sha256:212f04f82de47d0d421de274061dff215ed9cd793ad3463a002c41aad65ee358"
     },
+    "10422ac": {
+      "bin-doc-gate": "canonical_sha256:58a77a8062573032319adcca7928e2557e1301a5c72b87d7c528958bdb1a354a",
+      "req-tpl-tasks": "canonical_sha256:24b730ac0c7f635e9bc664db9f0e15d3b418d3c91034b36d92b712cc74809681",
+      "skill-agents-delivery-gate": "canonical_sha256:788fe34d664ce8eb264423bfbc2d44a643744c0ad305fd805e94c072d7a033e6",
+      "skill-agents-design-pipeline": "canonical_sha256:956ad7e0d5569587f6974dd438dc02d0d1ac731797323a62726c535d54d1d133",
+      "skill-agents-repo-delivery": "canonical_sha256:7208bf54864c6eed1e3a61a97d52b21f18debf741b511344a07d5b5433b4533d",
+      "skill-claude-delivery-gate": "canonical_sha256:788fe34d664ce8eb264423bfbc2d44a643744c0ad305fd805e94c072d7a033e6",
+      "skill-claude-design-pipeline": "canonical_sha256:956ad7e0d5569587f6974dd438dc02d0d1ac731797323a62726c535d54d1d133",
+      "skill-claude-repo-delivery": "canonical_sha256:7208bf54864c6eed1e3a61a97d52b21f18debf741b511344a07d5b5433b4533d"
+    },
     "16bbee7": {
       "skill-agents-delivery-gate": "canonical_sha256:9ede680125536a9ca8e4b3ca3cfd1e26e83fdc7f84531e467d10c0f751804e63",
       "skill-agents-repo-delivery": "canonical_sha256:0a003d08bd5c001c7a48f603a58c05e4d1706ddec1bc3ebf0a4a6006417fdd6e",
