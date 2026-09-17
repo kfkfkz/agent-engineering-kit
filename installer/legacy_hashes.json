@@ -354,6 +354,19 @@
     "5cac786": {
       "bin-memory-recall": "canonical_sha256:fe737988741bd411cfec03da3340ed6d8f502de767dded1f5151b2e57643d912"
     },
+    "5f2c9bf": {
+      "agents-md-block": "canonical_sha256:805408670a14734ca8678cb9643afbf42f6d2299afd3e6f41f1397ef1462a8e8",
+      "bin-route-eval": "canonical_sha256:028061d4c182d168e386b6f96bbe364e7b0d050abcd5cbedb22fa77d95df04cc",
+      "claude-md-block": "canonical_sha256:8a08d25a8f9875a8892c85ab91fcd22c88cfb6907936eb5fcd4693c355d12b89",
+      "skill-agents-delivery-gate": "canonical_sha256:1318a5ea260b940eb9cc9a4c4b36b24f9f3a4d326f5302b4d9a978b557a547c6",
+      "skill-agents-repo-delivery": "canonical_sha256:46f7f47f2918cf3981066ea7c90819aa0a4219d4147cc53f71e049fbab7ba983",
+      "skill-claude-delivery-gate": "canonical_sha256:1318a5ea260b940eb9cc9a4c4b36b24f9f3a4d326f5302b4d9a978b557a547c6",
+      "skill-claude-repo-delivery": "canonical_sha256:46f7f47f2918cf3981066ea7c90819aa0a4219d4147cc53f71e049fbab7ba983"
+    },
+    "5f2c9bf:legacy-section": {
+      "agents-md-block": "canonical_sha256:8f177c299cccd87c47b065fe57c03cd45b3f92667f723fab165268c84ddabe77",
+      "claude-md-block": "canonical_sha256:b2b52dfa703f949a4d5a038c5e8246ba032e9b7594eb63fb3c9798c9b8dd3d5d"
+    },
     "5f37daf": {
       "skill-agents-delivery-gate": "canonical_sha256:3911837c3c133f007e4b9ec93c86b54f9d822191b6dce3a12682547ae12b39ad",
       "skill-agents-repo-delivery": "canonical_sha256:963e9a237b32ed7a32357afda09282d4d651eebcfc100c1d7f7a39182d20a644",
