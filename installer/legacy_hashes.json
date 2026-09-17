@@ -540,6 +540,15 @@
     "b664ee2": {
       "bin-memory-build": "canonical_sha256:b09a0cadaf3c1cb137ef07e1d3ed98701cd2a5d03f96a06b02ebf7d5dbfe2e69"
     },
+    "b8bc3ff": {
+      "bin-doc-gate": "canonical_sha256:279c5fd5543e4c7aca9126027de57b00b6e92ae8dad28addd1f6c3a7305aaa03",
+      "req-tpl-analysis": "canonical_sha256:519f381fa0d3fe1bb0ab007824e4d2949beb28be59d179b69f3ab8ed309d7c88",
+      "req-tpl-flow": "canonical_sha256:273c20faf662886445a34f547050632d3c471a827313064f79dd8002a16f1a2a",
+      "skill-agents-design-pipeline": "canonical_sha256:682984dbae4dab6bfd75aa4d14ec70bde4c9b39feac9667bf73be0cec87cece4",
+      "skill-agents-repo-delivery": "canonical_sha256:6f056603c2785d1151076a585dca89ab12f3a1ce07ab83c3f77c440ad7291c02",
+      "skill-claude-design-pipeline": "canonical_sha256:682984dbae4dab6bfd75aa4d14ec70bde4c9b39feac9667bf73be0cec87cece4",
+      "skill-claude-repo-delivery": "canonical_sha256:6f056603c2785d1151076a585dca89ab12f3a1ce07ab83c3f77c440ad7291c02"
+    },
     "b929f45": {
       "bin-doc-gate": "canonical_sha256:36ba7313d3537d0d69c8833fc85d4a1ee8e321e1ad1a65e00a2c6ea65a623585",
       "requirements-index": "canonical_sha256:08e98b0b8968c1133cee8373c00c2d1bae54843d34b87520f3e33f89302d7238",
