@@ -2,7 +2,7 @@
 
 历史踩坑与流程经验沉淀在 [docs/memory/](docs/memory/)——规则见 [RULES.md](docs/memory/RULES.md)（kit 管辖），索引见 [README.md](docs/memory/README.md)：
 
-- 非平凡的功能实现、缺陷修复、重构或迁移，使用 `repo-delivery` 技能先提取项目宪章门禁，再按 Route Card 选择 Direct / Bounded / Standard / Initiative 最轻安全路线；复用项目既有 spec/SDD，不另建平行文档体系
+- 非平凡的功能实现、缺陷修复、重构或迁移，使用 `repo-delivery` 技能先做低成本 Route Card 分流，再按 Direct / Bounded / Standard / Initiative 最轻安全路线提取适用门禁；只有正向证据才升径，并遵循 `execution_profile` 限制上下文、设计与验证深度；复用项目既有 spec/SDD，不另建平行文档体系
 - 显式启动：Claude Code 使用 `/repo-delivery [任务描述]`；Codex 使用 `$repo-delivery [任务描述]`。自然语言请求仍可自动触发
 - 代码结构、调用链和影响分析优先使用 `codebase-memory`；图谱不可用时必须披露降级及置信度
 - Bug、测试失败或异常行为先使用 `systematic-debugging` 建立根因链，再进入修复；不得用试错补丁替代诊断

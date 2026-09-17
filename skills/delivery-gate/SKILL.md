@@ -25,8 +25,9 @@ description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移�
    `.repo-memory-kit/bin/route-eval <仓库根> --card <Route Card> --git-ref <基线> --json`；
    它会合并 tracked diff 与未忽略的 untracked 文件。仅当 CI 已提供可信完整 diff 时使用
    `--diff <文件>`，不得用默认漏掉 untracked 的 `git diff` 冒充最终范围。
-   `route_valid=false` 或 `drift_detected=true` 时阻断：回到 `repo-delivery` 更新卡片、补充
-   适用设计/检查或升径后重跑。不得在交付阶段静默扩大 `planned_paths` 以制造 PASS；新增
+   `route_valid=false`、`route_efficient=false` 或 `drift_detected=true` 时阻断：路线过轻就
+   补充适用设计/检查或升径；路线过重就降到 `recommended_route`，除非存在带具体原因的
+   `route_override`。不得在交付阶段静默扩大 `planned_paths` 以制造 PASS；新增
    路径必须说明来源和影响。Direct 若只在进度中记录等价字段，收口前生成临时卡片供校验。
 3. **治理引擎裁决**（确定性，不是你的语义判断）：`route-eval` 已复用同目录
    `governance-eval` 的结果；需要单独诊断规则时再把 diff 喂给
@@ -54,7 +55,10 @@ description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移�
 ## 阶段二：验证闭环
 
 先从项目宪章、根指令、CI 和构建文件提取真实门禁，不硬编码语言、覆盖率或工具。
-按项目与变更适用性运行，先快后慢：
+按项目与变更适用性运行，先快后慢，并遵循 `execution_profile.verification_depth`：当
+`receipt_detail=compact`（Direct/Bounded）时，只执行改动直接相关的验证和快速审查，
+不得扩成全仓库审查、无关测试矩阵或独立设计复核；治理规则/风险覆盖项明确要求的检查除外。
+Standard/Initiative 才按影响面扩大验证：
 
 1. 构建、编译或类型检查；
 2. 格式化、lint 和静态分析；
@@ -75,6 +79,11 @@ description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移�
 strict 写入 `docs/delivery-receipts/YYYY-MM-DD-<中文任务名>.md`，lightweight 低风险
 允许 commit message 内嵌；**同日同任务重跑时追加 `-2`、`-3` 序号，不覆盖**（目录不存在
 则创建）：
+
+回执的**存在形式**与**详细程度**正交：strict 仍要求 Direct/Bounded 落文件，但
+`receipt_detail=compact` 时只保留任务、范围、路线、实际执行命令/结果、发现和结论，不为
+填满模板运行无关检查；`receipt_detail=full` 才使用完整影响面与审查细节。下列模板是 full
+上限，compact 可删除不适用的表格行，但不得省略失败、未执行的强制项或人工补验步骤。
 
 ```markdown
 ---

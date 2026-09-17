@@ -37,6 +37,7 @@ write_card() {
   "risk_overlays": $risks,
   "coordination": "single",
   "uncertainty": "low",
+  "route_override": null,
   "required_checks": [],
   "escalate_if": []
 }
@@ -69,6 +70,13 @@ assert d["minimum_route"] == "bounded"
 assert d["selected_route"] == "bounded"
 assert "targeted-tests" in d["requirements"]["required_checks"]
 assert "full-sdd" not in d["requirements"]["required_checks"]
+assert d["execution_profile"] == {
+    "context_depth": "targeted",
+    "planning_depth": "compact",
+    "design_depth": "decision_only",
+    "verification_depth": "targeted",
+    "receipt_detail": "compact",
+}
 PY
 
 # 选得过轻时必须用专用退出码 2 阻断，并给出最低路线。
@@ -103,11 +111,26 @@ python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"
 python3 -c "import json; d=json.load(open('$T/out.json')); assert d['minimum_route']=='initiative' and 'full-sdd' in d['requirements']['required_checks']" \
     && ok "跨仓库多会话工作进入 Initiative" || bad "Initiative 判定错误"
 
-# 较重路线可以由用户主动选择，不强制降级。
+# 无证据选择更重路线也是路由错误；只有用户/项目明确要求时才能例外。
 write_card standard docs none 1 1 1 '[]' '["README.md"]'
+run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json
+assert_eq "无理由过度路由被阻断" "$rc" "2"
+python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json" 2>/dev/null || true
+python3 -c "import json; d=json.load(open('$T/out.json')); assert not d['route_efficient'] and d['route_fit']=='too_heavy' and d['recommended_route']=='direct' and d['effective_route']=='direct' and d['execution_profile']['context_depth']=='minimal'" \
+    && ok "过度路由给出推荐路线" || bad "过度路由缺少机器可读证据"
+python3 - "$T/card.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p, encoding="utf-8"))
+d["route_override"] = {
+    "kind": "user_requested",
+    "reason": "用户明确要求执行 Standard 的完整独立审查"
+}
+json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False)
+PY
 python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"
-python3 -c "import json; d=json.load(open('$T/out.json')); assert d['route_valid'] and d['minimum_route']=='direct' and d['selected_route']=='standard'" \
-    && ok "允许主动选择更重路线" || bad "错误拒绝更重路线"
+python3 -c "import json; d=json.load(open('$T/out.json')); assert d['route_valid'] and d['route_efficient'] and d['route_fit']=='overridden' and d['minimum_route']=='direct'" \
+    && ok "显式用户要求允许采用更重路线" || bad "合法路线例外被错误拒绝"
 
 # 最终 diff 超出 planned_paths 必须报告路由漂移并返回 2。
 write_card bounded feature local 1 1 1 '[]' '["src/export.py","tests/**"]'
@@ -223,6 +246,16 @@ PY
 printf '{"version":1,"route":"bounded"}\n' > "$T/bad-card.json"
 run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/bad-card.json"
 assert_eq "不完整 Route Card fail-closed" "$rc" "3"
+write_card standard docs none 1 1 1 '[]' '["README.md"]'
+python3 - "$T/card.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p, encoding="utf-8"))
+d["route_override"] = {"kind": "project_required", "reason": "项目要求"}
+json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False)
+PY
+run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json"
+assert_eq "项目级超配必须给出规则来源" "$rc" "3"
 write_card bounded feature local 1 1 1 '[]' '["../outside.py"]'
 run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json"
 assert_eq "planned_paths 拒绝绝对/逃逸路径" "$rc" "3"
@@ -231,7 +264,7 @@ write_card bounded feature local 1 1 1 '[]' '["src/x.py"]'
 run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json"
 assert_eq "计划阶段也校验治理策略并 fail-closed" "$rc" "3"
 python3 "$KIT/route-eval" --init > "$T/init.json"
-python3 -c "import json; d=json.load(open('$T/init.json')); assert d['version']==1 and d['route']=='bounded' and d['footprint']['planned_paths']==[]" \
+python3 -c "import json; d=json.load(open('$T/init.json')); assert d['version']==1 and d['route']=='bounded' and d['footprint']['planned_paths']==[] and d['route_override'] is None" \
     && ok "--init 输出合法 Route Card" || bad "--init 模板非法"
 
 echo

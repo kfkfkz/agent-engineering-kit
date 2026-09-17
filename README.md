@@ -97,8 +97,8 @@ Windows 建立带内容血统校验的受管副本。也可以在任一平台明
 
 ## 日常怎么用
 
-通常只需要记住 `repo-delivery`。它会在调查后按意图缺口、影响范围、可逆性和风险选择
-最轻安全路线，再调用其他技能；任务是 bug 还是 feature 只表示工作种类，不直接决定仪式。
+通常只需要记住 `repo-delivery`。它会先做低成本分流，再按意图缺口、影响范围、可逆性和
+风险选择最轻安全路线；任务是 bug 还是 feature 只表示工作种类，不直接决定仪式。
 
 | 场景 | Claude Code | Codex | 作用 |
 | --- | --- | --- | --- |
@@ -237,8 +237,8 @@ systematic-debugging 根因定位
 
 ```text
 repo-delivery
-  ├─ 读取项目指令、宪章和相关记忆
-  ├─ 调查后生成 Route Card：Direct / Bounded / Standard / Initiative
+  ├─ 零阶段快速分流：请求 + 根指令 + 候选入口 → 临时 Route Card / execution_profile
+  ├─ 按执行深度读取适用宪章、代码与记忆，确认 Direct / Bounded / Standard / Initiative
   │   route-eval 校验最低路线；work_kind(bug/feature/...) 与复杂度正交
   ├─ Standard/Initiative 按需进入 ① 需求拆分：codebase-memory + 业务域地图 + memory-recall 取证
   ├─ ② 需求确认：原始需求（01-需求/）→ 衍生需求场景与产出定义（验收依据），
@@ -284,7 +284,9 @@ AEK 把三个维度分开，避免把组织治理、任务规模和专项风险�
 | Standard | 跨模块、公共行为变化、实质不确定性或高风险覆盖项 | 影响分析 + 适用设计 + 计划 + 独立审查 |
 | Initiative | 多仓库、较长多会话、多团队/并行工作流 | 完整 SDD + 工作单元拆分 + 集成门禁 |
 
-先生成 Route Card：
+先做零阶段快速分流，再决定读多少上下文。此时只读取用户请求、根指令、governance marker、
+候选代码/测试入口和必要目录，不先遍历全部记忆与 SDD。没有正向证据不得升径；“尚未读完
+整个仓库”不是高不确定性。然后生成 Route Card：
 
 ```bash
 .repo-memory-kit/bin/route-eval --init > /tmp/aek-route-card.json
@@ -293,8 +295,28 @@ AEK 把三个维度分开，避免把组织治理、任务规模和专项风险�
 ```
 
 Route Card 记录所选路线、工作种类、意图缺口、行为变化、预计路径/模块/仓库/会话数、
-可逆性、风险覆盖项、协作规模、不确定性和必需检查。`route-eval` 计算最低安全路线：允许
-主动选择更重路线，拒绝过轻路线。实现结束后直接让工具从基线读取最终工作区
+可逆性、风险覆盖项、协作规模、不确定性、可选的 `route_override` 和必需检查。三个容易
+误判的字段有明确语义：
+
+- `public` 是外部 API/协议、持久化格式或向后兼容承诺；产品内部局部可见功能仍是 `local`；
+- `modules` 是独立部署、版本或业务边界，不是源码/测试目录数或修改文件数；
+- `sessions` 是计划中的跨会话交接，不是对话轮数或工具调用次数。
+
+`route-eval` 同时检查安全性和经济性：路线过轻会阻断，无理由选择更重路线也会以
+`route_fit=too_heavy` 阻断并返回 `recommended_route`。只有用户明确要求或项目现有规则
+明确要求时，才可填写带具体原因的 `route_override`；`project_required` 还必须提供规则来源
+`source`，项目级最低路线优先写进治理规则。
+工具还返回机器可读的 `execution_profile`：
+
+| 路线 | 上下文 | 计划/设计 | 验证 | 回执详细度 |
+| --- | --- | --- | --- | --- |
+| Direct | 最小目标上下文 | 无独立计划、无设计 | 定向 | compact |
+| Bounded | 目标相关上下文 | 紧凑计划、只记关键决策 | 定向 | compact |
+| Standard | 影响面上下文 | 结构化计划、适用设计 | 影响面 | full |
+| Initiative | 项目/工作流上下文 | 工作单元 + 完整 SDD | 集成 | full |
+
+strict 仍可要求 compact 回执落独立文件，但不会因此把 Direct/Bounded 扩成全仓库审查或完整
+设计链。风险覆盖项和项目强制门禁仍可叠加相关检查。实现结束后直接让工具从基线读取最终工作区
 （包含未跟踪文件）：
 
 ```bash

@@ -1,6 +1,6 @@
 ---
 name: repo-delivery
-description: "遵循项目宪章完成非平凡仓库变更的端到端交付编排：提取强制门禁、入链判定、按需取证与计划、编码验证、文档回写和记忆沉淀。适用于实现功能、修复缺陷、重构、迁移或完整交付；不用于纯解释、只读评审或明显的一行文案修改。"
+description: "按任务复杂度选择最小安全路径的端到端交付编排：先做低成本分流，再按需提取项目门禁、取证与计划、编码验证、文档回写和记忆沉淀。适用于实现功能、修复缺陷、重构、迁移或完整交付；不用于纯解释、只读评审或明显的一行文案修改。"
 ---
 
 把当前仓库变更从任务入口推进到可验证、可交接的完成状态。本技能只负责**提取门禁、路由和收口**：项目已有的 `AGENTS.md`、constitution、`.specify/`、SDD、版本文档和代码仍是权威来源，不复制全文，不新建一套平行文档体系。
@@ -34,9 +34,39 @@ CLI 路径内部调用；不要把它推荐成业务流程设计后的“下一�
 
 先解析本 `SKILL.md` 的真实路径（跟随符号链接），将技能目录向上三级作为目标仓库根目录；确认该目录包含 `.repo-memory-kit/manifest.json` 与 `docs/memory/RULES.md`。后续相对路径与命令以该仓库为准。校验失败时使用用户明确指定的仓库；仍无法唯一定位则询问，禁止在猜测目录执行。
 
+## 0. 零阶段快速分流（先限预算，再深读）
+
+在加载完整记忆、SDD、历史决策或做全图影响分析之前，先用低成本证据建立**临时 Route
+Card**：只读用户请求、仓库根指令、governance marker、候选代码/测试入口和必要的目录清单。
+根指令明确要求的前置文件照常读取，但不要因为“可能相关”遍历全部文档。然后运行
+`.repo-memory-kit/bin/route-eval <仓库根> --card <临时卡片> --json`，按返回的
+`execution_profile` 限制后续上下文、规划、设计、验证和回执详细度。
+
+升级路线必须有**正向证据**：没有正向证据时不得升径；不能因为“尚未把整个仓库读完”、
+Agent 主观谨慎或功能名称听起来重要而提高路线。能从仓库快速查明的问题不是
+`intent_gaps=material`，未做调查也不能填写 `uncertainty=high`。以下字段按语义而非文件数猜测：
+
+- `behavior_change=public` 只指外部 API/协议、持久化格式或向后兼容承诺；单个产品内部、
+  局部可见的小功能仍是 `local`，不是因为“用户看得见”就算公共契约。
+- `footprint.modules` 统计独立部署、独立版本或明确业务边界，不是源代码与测试目录的数量；
+  同一实施单元内的 controller/service/test 和多文件修改仍计一个模块。
+- `footprint.sessions` 统计已计划的跨会话交接/恢复，不是对话轮数或工具调用次数；当前会话
+  内连续使用多个工具仍计一个 session。
+- `planned_paths` 用于范围漂移检查；路径多本身不升级路线。
+
+`route-eval` 返回 `route_fit=too_heavy` 时同样阻断。只有用户明确要求，或项目已有规则明确
+要求更重路线，才可填写 `route_override.kind=user_requested|project_required` 和具体原因；
+`project_required` 还必须用 `source` 指向根指令/constitution 的规则来源。项目底线能表达为
+治理规则时优先使用 `min_route:<route>`，不得用空泛的“更稳妥”绕过。
+
+执行预算必须落地：Direct 只做最小上下文、无独立计划/设计和定向验证；Bounded 只读目标
+上下文、写紧凑计划/必要决策并做定向验证；Standard 才做影响级上下文和结构化计划；
+Initiative 才加载项目级上下文并走完整 SDD。临时卡片在调查发现真实新证据后可更新，
+但每次升径都要记录触发证据。
+
 ## 1. 提取宪章门禁
 
-先通过仓库根部指令定位当前生效的 constitution/宪章；常见位置包括 `.specify/memory/constitution.md`，但不得仅凭路径猜测权威文件。只提取与本任务相关的强制要求，形成一份短门禁清单，至少检查：
+零阶段确定 `execution_profile` 后，通过仓库根部指令定位当前生效的 constitution/宪章；常见位置包括 `.specify/memory/constitution.md`，但不得仅凭路径猜测权威文件。只提取与本任务及所选路线相关的强制要求，形成一份短门禁清单，至少检查：
 
 - 是否要求规范先于代码，以及哪个阶段必须人工确认；
 - 当前设计正文是否必须保持单一有效口径，能否保留修订附录；
@@ -67,7 +97,7 @@ refactor / migration）与**任务路线**正交：小型新增功能可以是 B
 
 ### Route Card（计划契约）
 
-调查后创建短 Route Card。Direct 可只在首次进度中给出同等字段；其他路线写入当前任务
+在零阶段临时卡片上补充调查证据，形成短 Route Card。Direct 可只在首次进度中给出同等字段；其他路线写入当前任务
 已有载体或临时文件，不为它新建一套提交进仓库的文档体系。用以下命令生成起点并校验：
 
 ```bash
@@ -77,12 +107,16 @@ refactor / migration）与**任务路线**正交：小型新增功能可以是 B
 ```
 
 Route Card 必须给出 `route/work_kind/intent_gaps/behavior_change`，预计路径与模块/仓库/
-会话数，`reversibility/risk_overlays/coordination/uncertainty`，以及专项检查和升级条件。
+会话数，`reversibility/risk_overlays/coordination/uncertainty`、可选的 `route_override`，
+以及专项检查和升级条件。校验输出的 `recommended_route` 是默认选择，`execution_profile`
+是本任务允许的执行深度。
 首次进度用一行报告：
 
 `路线(所选/最低) | 意图缺口 | 影响面 | 可逆性 | 风险覆盖项 | 必需检查 | 升级条件`
 
-`route-eval` 是最低路线的确定性裁决者；允许主动选择更重路线，不允许选择更轻路线。
+`route-eval` 同时裁决安全性和经济性：路线过轻或无理由过重都会阻断。只有用户明确要求或
+项目规则明确要求时，才允许用带具体原因的 `route_override` 选择高于 `recommended_route`
+的路线。
 治理规则可以用 `min_route:<route>`、`required_check:<name>`、
 `review_depth:thorough` 叠加组织底线。
 规划阶段由 Route Card 的风险覆盖项表达语义风险；路径和新增行规则在拿到最终 diff 后机械复核。
@@ -97,8 +131,10 @@ Route Card 必须给出 `route/work_kind/intent_gaps/behavior_change`，预计�
 
 ## 3. 按需取上下文
 
-1. 读取仓库根部指令和当前交付框架；constitution 已在门禁阶段读取，不重复加载。
-2. 若存在 `docs/memory/PROFILE.md`，先读画像，再查 `docs/memory/README.md`；命中相关 pitfall/playbook/decision 才下钻全文。
+1. 读取仓库根部指令和当前交付框架；constitution 已在门禁阶段读取，不重复加载。严格遵循
+   `execution_profile.context_depth`：Direct/Bounded 不做全仓库上下文扩展。
+2. 仅当任务相关且执行深度允许时读取 `docs/memory/PROFILE.md` 和 `docs/memory/README.md`；
+   命中相关 pitfall/playbook/decision 才下钻全文。Direct 默认跳过全局画像，除非根指令强制。
 3. 只读取与任务相关的规范、业务域地图、spec/SDD/变更记录；默认忽略 `old/`、归档和已废弃材料。
 4. 结构化代码检索使用 `codebase-memory`：默认 Verify 级定位符号、调用链与影响范围；关键结论回到当前源码和测试核实。字符串、配置和未被索引的文件再用文本检索。
 5. 动手前确认现有可复用能力、受影响契约、测试入口及相关记忆。涉及新依赖、外部集成、通用组件或关键技术选型时调用 `reuse-research`，给出采用/扩展/组合/自建及证据；已有路径明确的小改动不额外加流程。

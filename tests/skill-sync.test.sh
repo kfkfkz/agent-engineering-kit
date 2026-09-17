@@ -62,6 +62,41 @@ else
     bad "用户可见的 skill 路由名存在歧义或无效引用"
 fi
 
+# repo-delivery 必须先做低成本分流，并精确定义会导致误升径的字段。
+RD="$P/.agents/skills/repo-delivery/SKILL.md"
+grep -q '^## 0\. 零阶段快速分流' "$RD" \
+    && ok "repo-delivery 在深读上下文前先做零阶段分流" \
+    || bad "repo-delivery 缺少零阶段快速分流"
+grep -q '没有正向证据.*不得升径' "$RD" \
+    && ok "repo-delivery 要求用正向证据升级路线" \
+    || bad "repo-delivery 缺少防保守过度路由规则"
+grep -q '不是源代码与测试目录的数量' "$RD" \
+    && ok "modules 按独立边界而非目录计数" \
+    || bad "modules 计数语义仍可能误升径"
+grep -q '不是对话轮数或工具调用次数' "$RD" \
+    && ok "sessions 按跨会话交接而非工具调用计数" \
+    || bad "sessions 计数语义仍可能误升径"
+grep -q 'route_fit=too_heavy' "$RD" \
+    && grep -q 'route_override' "$RD" \
+    && ok "无理由超配路线会被机械阻断" \
+    || bad "repo-delivery 未说明超配路线阻断机制"
+grep -q 'execution_profile' "$RD" \
+    && ok "repo-delivery 消费机器可读执行深度" \
+    || bad "repo-delivery 未消费 execution_profile"
+
+DG="$P/.agents/skills/delivery-gate/SKILL.md"
+grep -q 'receipt_detail=compact' "$DG" \
+    && grep -q '不得扩成全仓库审查' "$DG" \
+    && ok "delivery-gate 对轻路线保持紧凑验证预算" \
+    || bad "delivery-gate 仍可能把轻路线扩成重型门禁"
+
+for section in "$SRC/templates/agents-md-section.md" "$SRC/templates/claude-md-section.md"; do
+    grep -q '只有正向证据才升径' "$section" \
+        && grep -q 'execution_profile' "$section" \
+        && ok "$(basename "$section") 固化轻量路由纪律" \
+        || bad "$(basename "$section") 缺少轻量路由纪律"
+done
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

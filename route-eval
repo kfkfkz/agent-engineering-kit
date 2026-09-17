@@ -5,7 +5,7 @@
 - strict/lightweight 决定回执形态；
 - direct/bounded/standard/initiative 决定本任务的规划和审查深度。
 
-退出码：0=路线有效且无漂移；2=路线过轻或最终范围漂移；3=输入/策略非法。
+退出码：0=路线适配且无漂移；2=路线过轻、无理由过重或最终范围漂移；3=输入/策略非法。
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ BEHAVIOR_CHANGES = ("none", "local", "public")
 REVERSIBILITY = ("easy", "moderate", "hard")
 COORDINATION = ("single", "multi_contributor", "multi_team")
 UNCERTAINTY = ("low", "medium", "high")
+ROUTE_OVERRIDE_KINDS = ("user_requested", "project_required")
 RISK_OVERLAYS = {
     "public_contract", "schema_migration", "security_privacy", "irreversible",
     "cross_service", "cross_repo", "concurrency_consistency", "core_data_flow",
@@ -50,6 +51,39 @@ ROUTE_CHECKS: dict[str, list[str]] = {
                  "thorough-review", "route-drift-check"],
     "initiative": ["full-sdd", "work-unit-decomposition", "integration-gate",
                    "thorough-review", "route-drift-check"],
+}
+
+# 机器可读的“仪式预算”。路线不仅决定要做什么，也明确哪些重型产物不该做，
+# 让编排器在 Direct/Bounded 上尽早停止扩展上下文。
+ROUTE_EXECUTION_PROFILES: dict[str, dict[str, str]] = {
+    "direct": {
+        "context_depth": "minimal",
+        "planning_depth": "none",
+        "design_depth": "none",
+        "verification_depth": "targeted",
+        "receipt_detail": "compact",
+    },
+    "bounded": {
+        "context_depth": "targeted",
+        "planning_depth": "compact",
+        "design_depth": "decision_only",
+        "verification_depth": "targeted",
+        "receipt_detail": "compact",
+    },
+    "standard": {
+        "context_depth": "impact",
+        "planning_depth": "structured",
+        "design_depth": "applicable",
+        "verification_depth": "impact",
+        "receipt_detail": "full",
+    },
+    "initiative": {
+        "context_depth": "program",
+        "planning_depth": "work_units",
+        "design_depth": "full_sdd",
+        "verification_depth": "integration",
+        "receipt_detail": "full",
+    },
 }
 
 
@@ -74,6 +108,7 @@ def _template() -> dict[str, Any]:
         "risk_overlays": [],
         "coordination": "single",
         "uncertainty": "low",
+        "route_override": None,
         "required_checks": [],
         "escalate_if": [],
     }
@@ -111,6 +146,23 @@ def load_card(path: Path) -> dict[str, Any]:
     _enum(data, "reversibility", REVERSIBILITY)
     _enum(data, "coordination", COORDINATION)
     _enum(data, "uncertainty", UNCERTAINTY)
+    override = data.get("route_override")
+    if override is not None:
+        if not isinstance(override, dict):
+            raise RouteError("route_override 必须为 null 或对象")
+        kind = override.get("kind")
+        reason = override.get("reason")
+        if kind not in ROUTE_OVERRIDE_KINDS:
+            raise RouteError(
+                "route_override.kind 必须是: " + ", ".join(ROUTE_OVERRIDE_KINDS))
+        if not isinstance(reason, str) or not reason.strip():
+            raise RouteError("route_override.reason 必须是非空字符串")
+        source = override.get("source")
+        if kind == "project_required" and (
+                not isinstance(source, str) or not source.strip()):
+            raise RouteError("project_required 的 route_override.source 必须指向项目规则来源")
+        if source is not None and (not isinstance(source, str) or not source.strip()):
+            raise RouteError("route_override.source 必须是非空字符串")
     risks = _string_list(data, "risk_overlays")
     unknown_risks = sorted(set(risks) - RISK_OVERLAYS)
     if unknown_risks:
@@ -361,7 +413,31 @@ def evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]
 
     selected = card["route"]
     route_valid = ROUTES.index(selected) >= ROUTES.index(minimum)
-    effective = _promote(selected, minimum)
+    route_override = card.get("route_override")
+    if not route_valid:
+        route_fit = "too_light"
+        route_efficient = True
+    elif ROUTES.index(selected) > ROUTES.index(minimum):
+        if route_override is None:
+            route_fit = "too_heavy"
+            route_efficient = False
+            reasons.append({"code": "ROUTE_TOO_HEAVY",
+                            "message": (f"所选 {selected} 高于足够安全的 {minimum}，"
+                                        "但没有用户或项目明确要求"),
+                            "minimum": minimum})
+        else:
+            route_fit = "overridden"
+            route_efficient = True
+            reasons.append({"code": "ROUTE_OVERRIDE",
+                            "message": (f"按 {route_override['kind']} 采用高于最低值的 "
+                                        f"{selected}: {route_override['reason']}"),
+                            "minimum": minimum})
+    else:
+        route_fit = "exact"
+        route_efficient = True
+    # 阻断结果也要给出下一次应采用的执行预算：过轻时取安全下限，
+    # 无理由过重时取推荐路线；合法 override 才保留较重的所选路线。
+    effective = minimum if route_fit in ("too_light", "too_heavy") else selected
     if not route_valid:
         reasons.append({"code": "ROUTE_TOO_LIGHT",
                         "message": f"所选 {selected} 低于最低安全路线 {minimum}",
@@ -389,13 +465,18 @@ def evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]
         "schema_version": 1,
         "selected_route": selected,
         "minimum_route": minimum,
+        "recommended_route": minimum,
         "effective_route": effective,
         "route_valid": route_valid,
+        "route_efficient": route_efficient,
+        "route_fit": route_fit,
+        "route_override": route_override,
         "drift_detected": drift,
         "changed_files": sorted(changed),
         "unplanned_files": unplanned,
         "work_kind": card["work_kind"],
         "risk_overlays": card["risk_overlays"],
+        "execution_profile": dict(ROUTE_EXECUTION_PROFILES[effective]),
         "requirements": {
             "review_depth": review_depth,
             "receipt_mode": receipt_mode,
@@ -407,14 +488,15 @@ def evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]
             "required_actions": governance.get("required_actions", []),
         },
         "reasons": reasons,
-        "ok": route_valid and not drift,
+        "ok": route_valid and route_efficient and not drift,
     }
 
 
 def _summary(result: dict[str, Any]) -> str:
     status = "PASS" if result["ok"] else "BLOCKED"
     lines = [
-        f"Route: {status} | selected={result['selected_route']} | minimum={result['minimum_route']}",
+        (f"Route: {status} | selected={result['selected_route']} | "
+         f"minimum={result['minimum_route']} | fit={result['route_fit']}"),
         f"Governance: {result['governance']['profile']} | receipt={result['requirements']['receipt_mode']} | review={result['requirements']['review_depth']}",
         "Required checks: " + ", ".join(result["requirements"]["required_checks"]),
     ]
