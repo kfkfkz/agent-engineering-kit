@@ -509,6 +509,12 @@
       "agents-md-block": "canonical_sha256:ea73e6045b796312c0c8758051f906a412a9a05b4ff1dbc9ae7402ef60328f65",
       "claude-md-block": "canonical_sha256:002c3ce5900872ccd594fc96f215d01142ad475bb3264816b342324f033284c7"
     },
+    "a4dfc30": {
+      "skill-agents-design-pipeline": "canonical_sha256:58963e3da6637b84bef1d11947e74987200997dcf56e12cf47f1386f55774cfa",
+      "skill-agents-repo-delivery": "canonical_sha256:845329f6320dc1c355e0e71d83b2ebe35713eaec52f2ca8d9859dfc13a42b500",
+      "skill-claude-design-pipeline": "canonical_sha256:58963e3da6637b84bef1d11947e74987200997dcf56e12cf47f1386f55774cfa",
+      "skill-claude-repo-delivery": "canonical_sha256:845329f6320dc1c355e0e71d83b2ebe35713eaec52f2ca8d9859dfc13a42b500"
+    },
     "a643ae3": {
       "bin-memory-build": "canonical_sha256:64b174ed117d9ac021d60eee2252a400e117f4e2f233ce83a6a00266aef11573",
       "bin-spec-migrate": "canonical_sha256:2ef3c777ff81d8c28117fee1f538dfb6eeaae5bca9374d3118c970271a1e732e",
