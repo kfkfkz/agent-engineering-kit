@@ -26,7 +26,14 @@ assert_grep() { if grep -q "$2" "$3"; then ok "$1"; else bad "$1: 在 $3 中未�
 
 # ── T1 首次安装 ──
 P="$T/proj1"; mkdir -p "$P"; printf '# T\n' > "$P/CLAUDE.md"
-"$KIT/install.sh" "$P" >/dev/null
+INSTALL_OUT="$("$KIT/install.sh" "$P")"
+echo "$INSTALL_OUT" | grep -q '/memory-capture' \
+    && echo "$INSTALL_OUT" | grep -q "\$memory-capture" \
+    && ok "安装完成提示使用 memory-capture skill" \
+    || bad "安装完成提示缺少双客户端 memory-capture 入口"
+! echo "$INSTALL_OUT" | grep -q '完成。下一步：把最近一个 bug' \
+    && ok "安装完成不再要求手工写 pitfall" \
+    || bad "安装完成仍输出手工 pitfall 下一步"
 assert_exists "RULES.md 安装"            "$P/docs/memory/RULES.md"
 assert_exists "README.md 创建"           "$P/docs/memory/README.md"
 assert_exists "坑条目模板安装"            "$P/docs/memory/_PITFALL_TEMPLATE.md"

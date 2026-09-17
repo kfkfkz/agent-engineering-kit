@@ -717,9 +717,8 @@ def run_install(target: Path, *, repair: bool = False,
         print(line)
     for line in link_reports:
         print(line)
-    print("完成。下一步：把最近一个 bug 写成第一条 pitfall（复制 _PITFALL_TEMPLATE.md 到"
-          "对应模块目录、按日期命名、frontmatter 填 type/module）；记忆索引由 memory-build "
-          "本地生成（.repo-memory-kit/memory-index.md），匹配首选 memory-recall 语义检索。")
+    print("完成。需要沉淀经验时使用 memory-capture skill："
+          "Claude Code `/memory-capture`；Codex `$memory-capture`。")
     return 0
 
 

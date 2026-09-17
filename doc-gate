@@ -1344,8 +1344,9 @@ def _cmd_init_locked(repo: Path, name: str, as_json: bool) -> int:
         for s in skipped:
             print(f"• 已存在跳过 {s}")
         print(f"{'✓' if row_added else '•'} 索引行{'已登记' if row_added else '（同号已存在，跳过）'}")
-        print("下一步：维护者填写 原始需求.md → Agent 衍生需求分析 → "
-              "维护者签核后 doc-gate freeze")
+        skill_arg = f"docs/03-SDD/{name}"
+        print(f"继续入口：Claude Code `/design-pipeline {skill_arg}`；"
+              f"Codex `$design-pipeline {skill_arg}`。")
     return 0
 
 

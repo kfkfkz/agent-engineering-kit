@@ -396,8 +396,16 @@ run_rc python3 -m installer "$REPO" >/dev/null 2>&1   # 安装 _模板 与索引
 "$KIT/install.sh" "$REPO" >/dev/null 2>&1
 chmod 0600 "$REPO/docs/01-需求/README.md"
 INDEX_MODE_BEFORE=$(python3 -c "import os,stat; print(oct(stat.S_IMODE(os.stat('$REPO/docs/01-需求/README.md').st_mode)))")
-run_rc python3 "$DG" init 020-登记测试 --repo "$REPO"
+rc=0
+INIT_OUT="$(python3 "$DG" init 020-登记测试 --repo "$REPO")" || rc=$?
 assert_eq "init 退出码 0" "$rc" "0"
+echo "$INIT_OUT" | grep -q '/design-pipeline' \
+    && echo "$INIT_OUT" | grep -q "\$design-pipeline" \
+    && ok "init 用户继续入口使用 design-pipeline skill" \
+    || bad "init 用户继续入口未提供双客户端 skill"
+! echo "$INIT_OUT" | grep -q 'doc-gate freeze' \
+    && ok "init 输出不泄漏内部 freeze CLI" \
+    || bad "init 输出仍把内部 freeze CLI 当下一步"
 [ -f "$REPO/docs/01-需求/020-登记测试/原始需求.md" ] \
     && ok "init 建 01-需求 侧原始需求" || bad "init 缺原始需求"
 N20=$(find "$REPO/docs/03-SDD/020-登记测试" -maxdepth 1 -type f 2>/dev/null | wc -l)
