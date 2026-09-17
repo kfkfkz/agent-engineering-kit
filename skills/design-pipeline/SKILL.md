@@ -197,9 +197,12 @@ node "$ARCHIFY_CLI" visual-check <名称>.html --json
 
 ### 8. 完成与交接
 
-全部阶段冻结后：`doc-gate status` 确认 → 交接编码（`tdd` 按 任务清单 的纵向切片，
-交付链进入 ⑥，收口走 `delivery-gate` 代码形态）。小需求不强制走全链——但走了的
-阶段必须过门禁，没有"半冻结"状态。
+全部阶段冻结后：`doc-gate status` 确认 → 返回 `repo-delivery`，由总编排按 Route Card
+进入 ⑥；需要编码时由它调用 `tdd` 按任务清单做纵向切片，最后由它调用
+`delivery-gate` 收口。若本技能是被单独显式调用的，只向用户建议当前客户端对应的
+canonical 入口（Claude Code：`/repo-delivery`；Codex：`$repo-delivery`），不要把 `tdd`、
+`delivery-gate` 或阶段名称冒充为并列的“下一步 skill”。小需求不强制走全链——但走了的
+阶段必须过门禁，没有“半冻结”状态。
 
 ## 来源
 

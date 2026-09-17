@@ -84,7 +84,7 @@ L0  权威文档与代码（记忆区外）   证据：源码（第一事实源�
 
 - 日期在 frontmatter：`created` 为定位/创建日期，`verified` 为最近验证日期（playbook 必填，即"最后有效"）。
 - **用后即校**：任何 Agent 或人引用条目时发现与现状不符，必须当场矫正内容并更新 `verified`；无法确认的标记 `deprecated`。
-- **定期巡检**：每个迭代周期或大功能开工前执行一次全量巡检；改代码前执行增量巡检（`memory-build --changed` 或 `/memory-check <符号>`）。
+- **定期巡检**：每个迭代周期或大功能开工前执行一次全量巡检；改代码前执行增量巡检（CLI：`memory-build --changed`；skill：Claude Code 用 `/memory-check <符号>`，Codex 用 `$memory-check <符号>`）。
 
 ### 前置依赖（默认强制）
 

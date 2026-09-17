@@ -56,6 +56,12 @@ grep -q '\.delivery\.json' "$DP" \
     && ok "业务流程模板不再默认诱导 Mermaid" \
     || bad "业务流程模板仍含默认 Mermaid 块"
 
+if python3 "$SRC/tests/check-skill-routing.py"; then
+    ok "用户可见的 skill 路由名可解析且平台写法完整"
+else
+    bad "用户可见的 skill 路由名存在歧义或无效引用"
+fi
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

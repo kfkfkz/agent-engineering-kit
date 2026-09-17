@@ -53,4 +53,4 @@ metadata:
 
 每个切片运行目标测试；阶段结束运行相关测试，交付前运行宪章要求的完整套件、覆盖率和静态检查。报告：已覆盖行为、采用的接缝、RED 证据、完整验证、未覆盖风险，以及是否发现需要另行决策的架构信号。
 
-本技能吸收 Matt Pocock `tdd` 的公共接口、独立预期值和纵向切片思想，并用 `improve-codebase-architecture` 的深模块、locality 与 deletion test 校准测试接缝。上游版权为 Copyright (c) 2026 Matt Pocock，按 MIT License 使用和改编；来源：`mattpocock/skills`。
+本技能吸收 Matt Pocock 上游资料中 tdd 的公共接口、独立预期值和纵向切片思想，并参考其中 improve-codebase-architecture 的深模块、locality 与 deletion test 校准测试接缝；后二者是来源资料名，不是 AEK 可调用 skill。上游版权为 Copyright (c) 2026 Matt Pocock，按 MIT License 使用和改编；来源：`mattpocock/skills`。

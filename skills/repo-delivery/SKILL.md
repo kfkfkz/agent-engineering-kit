@@ -13,6 +13,23 @@ description: "遵循项目宪章完成非平凡仓库变更的端到端交付编
 
 命令后的内容就是本次交付目标；未附参数时使用当前对话中最近的可执行任务。若上下文中没有可执行目标，只询问任务是什么，不自行臆造工作。
 
+### 路由名称约束
+
+下游 skill 的 canonical name 只能从已安装清单选择：`design-pipeline`、
+`codebase-memory`、`systematic-debugging`、`tdd`、`reuse-research`、
+`security-review`、`delivery-gate`、`memory-check`、`memory-capture`、
+`spec-migrate`、`task-handoff`。不要翻译、缩写、改下划线或把阶段名拼成新 skill。
+用户可见的显式调用按当前客户端输出：Claude Code 在 canonical name 前加 `/`，Codex
+在 canonical name 前加 `$`；
+能在当前任务内自动路由时直接继续，不把内部阶段交还给用户手工串联。
+
+工具名不是 skill：`memory-recall` 是 CLI，`memory-build` 是 CLI，`doc-gate` 是 CLI，
+`route-eval` 是 CLI，`governance-eval` 是 CLI，`domain-check` 是 CLI。调用它们时给出
+`.repo-memory-kit/bin/<tool>` 或文中已定义的完整命令，不给工具名添加 slash/dollar
+调用前缀，也不说“使用某某 skill”。`archify` 虽随 kit 安装为技能包，但本流程按
+`design-pipeline` 给出的
+CLI 路径内部调用；不要把它推荐成业务流程设计后的“下一步 skill”。
+
 ## 定位目标仓库
 
 先解析本 `SKILL.md` 的真实路径（跟随符号链接），将技能目录向上三级作为目标仓库根目录；确认该目录包含 `.repo-memory-kit/manifest.json` 与 `docs/memory/RULES.md`。后续相对路径与命令以该仓库为准。校验失败时使用用户明确指定的仓库；仍无法唯一定位则询问，禁止在猜测目录执行。

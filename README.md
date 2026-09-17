@@ -115,6 +115,15 @@ Windows 建立带内容血统校验的受管副本。也可以在任一平台明
 | 巡检项目记忆 | `/memory-check` | `$memory-check` | 检查记忆与当前代码是否一致 |
 | 沉淀经验 | `/memory-capture` | `$memory-capture` | 提取候选，经人确认后写入项目记忆 |
 
+表中的名字是 AEK 对外稳定的 canonical skill name。工作流报告“下一步”时，Claude Code
+在名称前加 `/`，Codex 在名称前加 `$`；Agent 能在当前任务内继续时会自动路由，不要求用户
+逐个手工调用。阶段名（如“概要设计”“编码”）不是 skill，不能据此臆造新名称。
+
+`.repo-memory-kit/bin/` 下的 `memory-recall`、`memory-build`、`doc-gate`、
+`route-eval`、`governance-eval`、`domain-check` 是 CLI 工具，不是 skill；提示中应给出完整
+命令，不能给 CLI 名添加 skill 调用前缀。`archify` 是随 kit 安装的技能包，但业务流程
+图由 `design-pipeline` 内部定位并调用其 CLI，通常不是让用户手工触发的下一步。
+
 推荐直接使用完整入口；只有在目标非常明确时才单独调用专项技能。例如已经有稳定复现的测试失败，可以直接进入 `systematic-debugging`。
 
 ## 使用示例
