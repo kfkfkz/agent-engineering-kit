@@ -102,6 +102,9 @@ for phrase in (
     "`/design-pipeline <SDD目录>`",
     "`$design-pipeline <SDD目录>`",
     "当前任务可继续时自动续跑",
+    "用户提示零 CLI 泄漏",
+    "请确认本轮业务流程设计是否通过，并提供评审人姓名；确认后我会继续当前 design-pipeline 流程并进入详细设计。",
+    "不得出现 `doc-gate`、`.repo-memory-kit/bin/`、`--stage` 或 `--by`",
 ):
     if phrase not in pipeline:
         errors.append(f"design-pipeline 缺少自动续跑约束: {phrase}")

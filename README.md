@@ -123,6 +123,8 @@ Windows 建立带内容血统校验的受管副本。也可以在任一平台明
 canonical skill 入口，例如 Claude Code 使用
 `/design-pipeline docs/03-SDD/014-识别驱动脱敏与涉敏字段发现`，Codex 使用
 `$design-pipeline docs/03-SDD/014-识别驱动脱敏与涉敏字段发现`。
+面向用户的确认问题、阶段汇报和下一步不显示底层 CLI 名称或参数；除非用户明确要求诊断，
+`doc-gate`、`.repo-memory-kit/bin/`、`--stage`、`--by` 等只存在于 Agent 内部工具调用。
 
 `.repo-memory-kit/bin/` 下的 `memory-recall`、`memory-build`、`doc-gate`、
 `route-eval`、`governance-eval`、`domain-check` 是 CLI 工具，不是 skill；提示中应给出完整
