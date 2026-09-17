@@ -31,7 +31,17 @@ jobs:
       - name: 安装 zvec（语义检索层/安装器测试依赖）
         run: pip install --user --break-system-packages zvec
       - name: 安装器生命周期测试（事务/崩溃恢复/存量迁移/--svn 治理）
-        run: sh tests/installer.test.sh
+        run: |
+          set +e
+          output="$(sh tests/installer.test.sh 2>&1)"
+          rc=$?
+          printf '%s\n' "$output"
+          if [ "$rc" -ne 0 ]; then
+            detail="$(printf '%s\n' "$output" | grep '^✗' | head -n 1)"
+            [ -n "$detail" ] || detail="$(printf '%s\n' "$output" | tail -n 1)"
+            printf '::error title=installer.test.sh::%s\n' "$detail"
+            exit "$rc"
+          fi
       - name: 生成器测试
         run: sh tests/build.test.sh
       - name: Spec Kit 迁移测试

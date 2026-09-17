@@ -6,9 +6,10 @@
     current.json                 # {"generation": "<uuid>", "docs": N}
     rebuild.lock                 # 构建方进程锁
 
-子进程模式（--rebuild-gen）只读语料快照构建索引——**只用标准库**，不 import
-installer 包（本文件会被父进程以脚本路径直接执行）；语料提取复用 kit 侧
-memory-recall 的 build_docs（单一语料口径，防漂移）。
+子进程模式（--rebuild-gen）只读语料快照构建索引；父进程始终用
+``python -m installer.zvec`` 启动它，保持包导入语义，避免 installer/platform
+遮蔽标准库 platform。语料提取复用 kit 侧 memory-recall 的 build_docs
+（单一语料口径，防漂移）。
 zvec rebuild 不取 install.lock（派生数据，有自己的 rebuild.lock，§11.3）。
 """
 from __future__ import annotations
@@ -39,21 +40,6 @@ _SCHEMA_FIELDS = (
 def _rebuild_gen_main(gen_dir: Path, snapshot: Path) -> int:
     """子进程：只读快照构建 _data.db；写 .build-metadata.json（正式
     .metadata.json 由父进程验证后首次创建）。"""
-    # 本文件名为 zvec.py——以脚本方式执行时其所在目录被加入 sys.path 首位，
-    # 会把外部 zvec 包遮蔽成本文件自身；先摘除脚本目录再 import。
-    _here = Path(__file__).resolve().parent
-    _cleaned = []
-    for _entry in sys.path:
-        try:
-            if _entry and Path(_entry).resolve() == _here:
-                continue
-            if not _entry and Path(".").resolve() == _here:
-                continue
-        except OSError:
-            pass
-        _cleaned.append(_entry)
-    sys.path = _cleaned
-
     import zvec
     from zvec import (CollectionOption, DataType, Doc, FieldSchema,
                       FtsIndexParam, CollectionSchema)
@@ -175,11 +161,17 @@ def rebuild(repo: Path) -> None:
         # 3. 子进程构建（只读快照，不读源 docs/）
         #    超时必须回收未发布的 generation——否则留下无 .metadata.json 的
         #    目录，cleanup_old_generations（只回收带 .metadata 的）永不收集
+        child_env = os.environ.copy()
+        package_root = str(Path(__file__).resolve().parent.parent)
+        inherited_pythonpath = child_env.get("PYTHONPATH")
+        child_env["PYTHONPATH"] = os.pathsep.join(
+            [package_root] + ([inherited_pythonpath] if inherited_pythonpath else [])
+        )
         try:
             proc = subprocess.run(
-                [sys.executable, __file__, "--rebuild-gen",
+                [sys.executable, "-m", "installer.zvec", "--rebuild-gen",
                  str(gen_dir), str(repo / snapshot_rel)],
-                check=False, timeout=120,
+                check=False, timeout=120, env=child_env,
             )
         except subprocess.TimeoutExpired:
             shutil.rmtree(gen_dir, ignore_errors=True)
