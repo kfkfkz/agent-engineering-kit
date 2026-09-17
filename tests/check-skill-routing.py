@@ -89,6 +89,24 @@ pipeline = (ROOT / "skills/design-pipeline/SKILL.md").read_text(encoding="utf-8"
 if "返回 `repo-delivery`" not in pipeline:
     errors.append("design-pipeline 完成后没有明确返回 repo-delivery")
 
+# Human approval is a decision gate, not a reason to delegate local CLI work.
+# Once approval and signer identity are explicit, the orchestrating Agent must
+# persist the record and run doc-gate itself. Otherwise generated responses keep
+# ending with copy/paste commands labelled as the user's next step.
+for phrase in (
+    "人工决策与机械执行分离",
+    "只询问是否通过和签核人",
+    "由 Agent 写入签核记录并执行",
+    "不得把 `doc-gate` 命令列为“你的下一步”",
+):
+    if phrase not in pipeline:
+        errors.append(f"design-pipeline 缺少自动续跑约束: {phrase}")
+if re.search(r"提醒\s*维护者运行\s*`?\.repo-memory-kit/bin/doc-gate freeze", pipeline):
+    errors.append("design-pipeline 仍要求维护者手工运行 doc-gate freeze")
+
+if "本地 CLI 的执行责任" not in delivery:
+    errors.append("repo-delivery 未声明本地 CLI 应由 Agent 自动执行")
+
 # An upstream source title previously looked exactly like an invokable skill.
 tdd = (ROOT / "skills/tdd/SKILL.md").read_text(encoding="utf-8")
 if "`improve-codebase-architecture`" in tdd:
