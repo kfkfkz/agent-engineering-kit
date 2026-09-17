@@ -119,7 +119,10 @@ Windows 建立带内容血统校验的受管副本。也可以在任一平台明
 在名称前加 `/`，Codex 在名称前加 `$`；Agent 能在当前任务内继续时会自动路由，不要求用户
 逐个手工调用。阶段名（如“概要设计”“编码”）不是 skill，不能据此臆造新名称。人工门禁
 只要求用户给出确认/评审结论与签核人；确认后由 Agent 写记录、运行本地 CLI 并继续，不把
-`doc-gate freeze` 等命令作为“你的下一步”。
+`doc-gate freeze` 等命令作为“你的下一步”。若必须在新任务或新会话继续，提示当前客户端的
+canonical skill 入口，例如 Claude Code 使用
+`/design-pipeline docs/03-SDD/014-识别驱动脱敏与涉敏字段发现`，Codex 使用
+`$design-pipeline docs/03-SDD/014-识别驱动脱敏与涉敏字段发现`。
 
 `.repo-memory-kit/bin/` 下的 `memory-recall`、`memory-build`、`doc-gate`、
 `route-eval`、`governance-eval`、`domain-check` 是 CLI 工具，不是 skill；提示中应给出完整

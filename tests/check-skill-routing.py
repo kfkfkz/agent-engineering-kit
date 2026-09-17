@@ -98,6 +98,10 @@ for phrase in (
     "只询问是否通过和签核人",
     "由 Agent 写入签核记录并执行",
     "不得把 `doc-gate` 命令列为“你的下一步”",
+    "用户可见的继续入口只能是 canonical skill",
+    "`/design-pipeline <SDD目录>`",
+    "`$design-pipeline <SDD目录>`",
+    "当前任务可继续时自动续跑",
 ):
     if phrase not in pipeline:
         errors.append(f"design-pipeline 缺少自动续跑约束: {phrase}")

@@ -24,9 +24,10 @@ description: "按任务复杂度选择最小安全路径的端到端交付编排
 能在当前任务内自动路由时直接继续，不把内部阶段交还给用户手工串联。
 
 工具名不是 skill：`memory-recall` 是 CLI，`memory-build` 是 CLI，`doc-gate` 是 CLI，
-`route-eval` 是 CLI，`governance-eval` 是 CLI，`domain-check` 是 CLI。调用它们时给出
+`route-eval` 是 CLI，`governance-eval` 是 CLI，`domain-check` 是 CLI。Agent 内部调用它们时使用
 `.repo-memory-kit/bin/<tool>` 或文中已定义的完整命令，不给工具名添加 slash/dollar
-调用前缀，也不说“使用某某 skill”。`archify` 虽随 kit 安装为技能包，但本流程按
+调用前缀，也不说“使用某某 skill”；用户可见的下一步必须给当前客户端对应的 canonical
+skill 入口，不能用 CLI 命令代替。`archify` 虽随 kit 安装为技能包，但本流程按
 `design-pipeline` 给出的
 CLI 路径内部调用；不要把它推荐成业务流程设计后的“下一步 skill”。
 

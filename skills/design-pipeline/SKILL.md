@@ -10,6 +10,14 @@ description: "设计文档工程流水线：从已冻结的需求分析出发，
 Direct/Bounded 不为满足仪式进入完整流水线；Bounded 把验收、范围、决策、风险和验证写入
 项目已有计划/issue/spec 载体即可。治理 profile 为 strict 也不会单独触发本技能。
 
+## 调用入口
+
+- Claude Code：`/design-pipeline <SDD目录>`
+- Codex：`$design-pipeline <SDD目录>`
+
+通常由 `repo-delivery` 内部路由，无需用户手工串联；只有任务已结束、跨会话恢复或客户端
+不能在原任务续跑时，才把上述当前客户端对应的 canonical skill 作为用户可见继续入口。
+
 ## 统一原则
 
 ```
@@ -42,7 +50,10 @@ docs/03-SDD/NNN-名称/     需求分析/概要/UI/详细/API/数据库/任务/�
 `.repo-memory-kit/bin/doc-gate freeze ... --by <签核人>`，检查成功后自动进入下一阶段。
 不得把 `doc-gate` 命令列为“你的下一步”，也不得要求用户手工串联 `init/check/gate/status`
 等本地 CLI。只有命令需要超出已授权范围，或本地执行在申请权限/重试后仍受阻时，才说明
-阻塞原因并给出人工补救命令。不得从沉默、模糊回复或旧评审记录推断本轮已批准。
+阻塞原因。**用户可见的继续入口只能是 canonical skill**：当前任务可继续时自动续跑；需要
+重新触发时，Claude Code 提示 `/design-pipeline <SDD目录>`，Codex 提示
+`$design-pipeline <SDD目录>`，内部 CLI 仅作为诊断信息附在后面，不能代替 skill 入口。
+不得从沉默、模糊回复或旧评审记录推断本轮已批准。
 
 ### 1. 定位与取上下文
 
