@@ -117,6 +117,19 @@ assert d["minimum_route"] == "standard"
 assert "performance-review" in d["requirements"]["required_checks"]
 PY
 
+# SQL 初查是低成本专项检查，本身不把清晰的局部改动升级到 Standard。
+write_card bounded feature local 1 1 1 '[]' '["src/query.py"]'
+python3 - "$T/card.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p, encoding="utf-8"))
+d["required_checks"] = ["sql-performance-screen"]
+json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False)
+PY
+python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"
+python3 -c "import json; d=json.load(open('$T/out.json')); assert d['minimum_route']=='bounded' and 'sql-performance-screen' in d['requirements']['required_checks']" \
+    && ok "SQL 初查不自动升径" || bad "SQL 初查被误升为深度性能审查"
+
 # 多仓库/较长多会话工作进入 Initiative；work_kind 本身不参与升级。
 write_card initiative feature local 2 2 3 '["cross_repo"]' '["service-a/**","service-b/**"]'
 python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"

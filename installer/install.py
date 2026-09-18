@@ -540,9 +540,14 @@ def run_install(target: Path, *, repair: bool = False,
                                  "min_route:standard",
                                  "required_check:migration-plan",
                                  "required_check:rollback-verification",
-                                 "required_check:performance-review"],
-                     "match": {"files": ["*migration*", "*schema*",
-                                         "*ddl*", "*.sql"]}},
+                                 "required_check:sql-performance-screen"],
+                     "match": {
+                         "paths": ["**/migration/**", "**/migrations/**",
+                                   "**/schema/**"],
+                         "files": ["*migration*", "*schema*", "*ddl*"]}},
+                    {"id": "DB-SQL-001",
+                     "require": ["required_check:sql-performance-screen"],
+                     "match": {"files": ["*.sql"]}},
                 ],
             }
             rules_bytes = (json.dumps(rules, ensure_ascii=False, indent=2)

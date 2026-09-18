@@ -906,10 +906,19 @@ if [ -f "$REPO/.repo-memory-kit/governance.json" ]; then
     else
         ok "json 只存团队规则（profile 唯一权威在 marker）"
     fi
-    grep -q '"SEC-001"' "$REPO/.repo-memory-kit/governance.json" \
-        && grep -q '"min_route:standard"' "$REPO/.repo-memory-kit/governance.json" \
-        && grep -q '"required_check:performance-review"' "$REPO/.repo-memory-kit/governance.json" \
-        && ok "缺省规则 SEC-001/DB-001、路线下限与性能审查在位" || bad "缺省规则缺失"
+    python3 - "$REPO/.repo-memory-kit/governance.json" <<'PY' \
+        && ok "缺省规则拆分数据库初查与深度性能审查" || bad "缺省数据库规则过重或缺失"
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+rules = {rule["id"]: rule for rule in d["rules"]}
+db = rules["DB-001"]
+sql = rules["DB-SQL-001"]
+assert "required_check:sql-performance-screen" in db["require"]
+assert "required_check:performance-review" not in db["require"]
+assert "*.sql" not in db["match"].get("files", [])
+assert sql["require"] == ["required_check:sql-performance-screen"]
+assert sql["match"] == {"files": ["*.sql"]}
+PY
 else
     bad "安装后无 governance.json——引擎无规则可用"
 fi

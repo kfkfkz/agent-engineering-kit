@@ -162,9 +162,9 @@ overlay、证据门槛与交付裁决均为 AEK 自身实现。
 **Upstream project:** `sbdchd/squawk`
 **License:** MIT OR Apache License 2.0
 
-AEK 的数据库迁移性能审查参考了 Squawk 对 PostgreSQL 迁移风险进行确定性、可定位规则检查
-的思路，包括锁、表重写和并发索引等风险类别。AEK 不捆绑 Squawk 的解析器、规则实现、CLI
-或 GitHub 集成，也不把 PostgreSQL 专属规则冒充跨数据库通用结论。
+AEK 的数据库低成本初查参考了 Squawk 对 PostgreSQL 迁移风险进行确定性、可定位规则检查
+的思路。AEK 不捆绑 Squawk 的解析器、规则实现、CLI 或 GitHub 集成；其 PostgreSQL 专属
+规则只作为“按目标数据库选择规则”的例子，不作为跨数据库通用检查表。
 
 ---
 

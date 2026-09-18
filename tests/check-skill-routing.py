@@ -161,6 +161,11 @@ for phrase in ("统一收口", "doc-gate closeout", "计划.closeout.json"):
         errors.append(f"delivery-gate 缺少计划收口步骤: {phrase}")
 for phrase in (
     "性能与容量风险覆盖",
+    "sql-performance-screen",
+    "数据库无关初查",
+    "初查不要求执行计划或压测",
+    "目标数据库的方言",
+    "不得把 PostgreSQL",
     "performance-review",
     "N+1",
     "EXPLAIN",
@@ -176,7 +181,13 @@ if "未命中时不增加性能专项步骤" not in delivery_gate:
 for phrase in ("执行前计划基线", "doc-gate closeout"):
     if phrase not in delivery:
         errors.append(f"repo-delivery 缺少执行期计划协议: {phrase}")
-for phrase in ("performance_capacity", "性能/容量风险", "performance-review"):
+for phrase in (
+    "sql-performance-screen",
+    "不自动升径",
+    "performance_capacity",
+    "性能/容量风险",
+    "performance-review",
+):
     if phrase not in delivery:
         errors.append(f"repo-delivery 缺少性能风险路由: {phrase}")
 if "执行前计划基线" not in pipeline:

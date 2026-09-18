@@ -487,12 +487,12 @@ Route Card 检查所选/最低路线与最终 diff 范围漂移，再复用 `gov
 验证闭环。结论枚举 `READY`、`NOT READY`、`NEEDS HUMAN REVIEW`，未运行的检查不会被写成
 通过；回执形态由项目治理 profile 决定。
 
-性能审查也是按风险叠加：SQL/ORM、schema/索引/回填、批处理与远程扇出、热点循环、
-缓存/并发争用或明确容量目标命中 `performance_capacity` 时，`route-eval` 自动要求
-`performance-review`。SQL 审查不仅看语句形状，还要求在代表性数据规模下核对实际 SQL、
-查询次数/N+1、数据库原生执行计划、索引与基数、锁/表重写和预算或变更前基线；一般代码
-则检查复杂度、IO 扇出、分配/序列化、背压和竞争。未命中时不增加性能专项步骤，保留
-Direct/Bounded 的低成本路径。
+性能审查分两级。普通 SQL/ORM 形状变化先走跨数据库的 `sql-performance-screen`：确认目标
+数据库/方言、查询次数与 N+1、结果/分页/批次边界、已知索引和明显锁风险；初查不自动升径，
+也不默认要求执行计划或压测。只有发现规模风险，或触及大表/热点、schema/索引/回填、批处理
+与远程扇出、缓存/并发争用或明确容量目标时，才命中 `performance_capacity`，由
+`route-eval` 叠加深度 `performance-review`。深度阶段才要求代表性数据、目标数据库原生计划
+工具、预算或变更前基线。未升级时保留 Direct/Bounded 的低成本路径。
 
 ### spec-migrate 与 task-handoff
 
@@ -593,10 +593,11 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 `min_route:standard`、`review_depth:thorough`、`required_check:<name>`；`route-eval` 在最终
 diff 上复用同一治理结果，因此任务复杂度与风险规则不会形成两套事实源。既有团队自持的
 governance.json 不会在升级时被覆盖，可按需增量采用这些新动作。
-新安装的缺省 `DB-001` 还会为 SQL/schema/迁移文件加入
-`required_check:performance-review`；存量项目的团队自持规则不会被升级覆盖，需要团队确认后
-自行把该动作加入原有数据库规则。即使未改团队规则，`repo-delivery` 仍会在语义命中
-`performance_capacity` 时通过 Route Card 启用同一专项检查。
+新安装把数据库规则拆为两层：`DB-SQL-001` 只为 `*.sql` 加入低成本
+`required_check:sql-performance-screen`；`DB-001` 仅对明确 migration/schema/DDL 加路线、
+迁移与回滚要求，并同样先做初查。存量项目的团队自持规则不会被升级覆盖，需要团队确认后
+自行采用。即使未改团队规则，`repo-delivery` 仍会对 SQL 语义变化启用初查，并只在有升级
+证据时标记 `performance_capacity`。
 
 `.repo-memory-kit/` 下的 `manifest.json`（Manifest v2：版本与受管资源记录）、
 `install.lock`、事务目录与 zvec 索引都是**每机状态/派生物**，不提交进版本库。
