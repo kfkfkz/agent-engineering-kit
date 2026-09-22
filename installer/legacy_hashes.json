@@ -801,6 +801,12 @@
       "skill-claude-memory-capture": "canonical_sha256:327761571b1db4249bae858ac5640fc654151394798e30e8704d36e9b5df7739",
       "skill-claude-memory-check": "canonical_sha256:aefc7b4ea607c852233da30341f21689b52663113066545c44d2d36f7d2c0b19"
     },
+    "feca74c": {
+      "bin-doc-gate": "canonical_sha256:747428a6349df17c1599d58d021be83f2bf81ae81777fbdaec6bb2d1721cee5c",
+      "req-tpl-tasks": "canonical_sha256:0e8ca58aed203ef78c6add6c3ddd955925c4741082fc22aa443227b51cc259d2",
+      "skill-agents-design-pipeline": "canonical_sha256:3cd0a952e4a276b2a7eaabbe2dab5781b2a180ba517102b6c77752f3e7b572ec",
+      "skill-claude-design-pipeline": "canonical_sha256:3cd0a952e4a276b2a7eaabbe2dab5781b2a180ba517102b6c77752f3e7b572ec"
+    },
     "fed6d47": {
       "bin-memory-recall": "canonical_sha256:568444a51e2d096884c48bd57a3e47c47b877444ccdc7893f809e3c0490caa7b"
     },
