@@ -349,6 +349,12 @@
       "skill-agents-repo-delivery": "canonical_sha256:611b1800a858176626511d9ee1440fdbd48853adcd26e6e5e51e181e515ff5e9",
       "skill-claude-repo-delivery": "canonical_sha256:611b1800a858176626511d9ee1440fdbd48853adcd26e6e5e51e181e515ff5e9"
     },
+    "4d50c29": {
+      "lib-aek-adapters-capsule-py": "canonical_sha256:cd03b50616b637f7b22b7762d01b20d3c1b01a01e8c58fce02c3ba57b9590e65",
+      "lib-aek-adapters-memory-py": "canonical_sha256:16e26dc1ca8d7a7a22811b835b46fa3a43fb837a0913dea2b01d4bc69e93d305",
+      "lib-aek-adapters-plan_transaction-py": "canonical_sha256:29bd0a976aaeaff7b242a7931584502244eafd560ad09bb09f28a90447842a2c",
+      "lib-aek-adapters-telemetry-py": "canonical_sha256:4d2c3e0f6ce0919cf3ec855fcbff1f6bd875aadb40e813abf4edd29bcaa95637"
+    },
     "4efbf7a": {
       "skill-agents-delivery-gate": "canonical_sha256:bd69bfb4e60f48d11f1bd369bbab333edb3a6903ce98199d5fe1e6bb13769103",
       "skill-agents-repo-delivery": "canonical_sha256:e98ec4a37789d054f890cb9874688b15ce309c0d7d67296d9905b644c6d8b4d1",
