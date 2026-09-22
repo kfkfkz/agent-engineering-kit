@@ -32,7 +32,7 @@ class MemoryTests(unittest.TestCase):
         self.assertNotIn("具体规则", str(ref))
         self.assertEqual(
             read_candidate(self.repo, ref, "fallback"),
-            self.doc.read_text(encoding="utf-8"),
+            self.doc.read_bytes().decode("utf-8"),
         )
         self.doc.write_text("# changed", encoding="utf-8")
         with self.assertRaises(StaleCandidate):
