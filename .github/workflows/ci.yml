@@ -157,10 +157,13 @@ jobs:
             "tests/policy-evaluator.test.py"
           )
           foreach ($test in $tests) {
-            python $test
-            if ($LASTEXITCODE -ne 0) {
-              $rc = $LASTEXITCODE
-              Write-Output "::error title=Windows behavior test failed::$test"
+            $output = & python $test 2>&1
+            $rc = $LASTEXITCODE
+            $output | ForEach-Object { Write-Output $_ }
+            if ($rc -ne 0) {
+              $detail = (($output | Select-Object -Last 12) -join " | ")
+              $detail = $detail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A").Replace("::", ":")
+              Write-Output "::error title=Windows behavior test failed::$test — $detail"
               exit $rc
             }
           }
