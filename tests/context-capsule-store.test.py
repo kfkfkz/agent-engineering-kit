@@ -44,7 +44,10 @@ class CapsuleStoreTests(unittest.TestCase):
     def test_symlinked_cache_container_is_rejected(self) -> None:
         outside = self.store.root.parent / "outside"
         outside.mkdir()
-        self.store.root.symlink_to(outside, target_is_directory=True)
+        try:
+            self.store.root.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks unavailable on this host")
         with self.assertRaises(ValueError):
             self.build("a" * 64)
 

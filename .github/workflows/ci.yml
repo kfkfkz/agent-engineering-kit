@@ -131,52 +131,39 @@ jobs:
       - name: Windows 新 package 行为测试
         shell: pwsh
         run: |
-          python tests/artifact-plan.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/artifact-plan-transaction.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/doc-gate-lock.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/doc-gate-plan.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/dispatch-service.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/mcp-dispatch.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/planning-service.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/evidence-adapter.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/change-scope.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/context-memory.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/context-capsule.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/context-capsule-store.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/cli-service-parity.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/context-telemetry.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/context-service.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/memory-recall-service.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/context-budget.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/review-judge.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/review-result.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/review-incremental.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/review-service.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/review-markdown.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/policy-evaluator.test.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tests = @(
+            "tests/artifact-plan.test.py",
+            "tests/artifact-plan-transaction.test.py",
+            "tests/doc-gate-lock.test.py",
+            "tests/doc-gate-plan.test.py",
+            "tests/dispatch-service.test.py",
+            "tests/mcp-dispatch.test.py",
+            "tests/planning-service.test.py",
+            "tests/evidence-adapter.test.py",
+            "tests/change-scope.test.py",
+            "tests/context-memory.test.py",
+            "tests/context-capsule.test.py",
+            "tests/context-capsule-store.test.py",
+            "tests/cli-service-parity.test.py",
+            "tests/context-telemetry.test.py",
+            "tests/context-service.test.py",
+            "tests/memory-recall-service.test.py",
+            "tests/context-budget.test.py",
+            "tests/review-judge.test.py",
+            "tests/review-result.test.py",
+            "tests/review-incremental.test.py",
+            "tests/review-service.test.py",
+            "tests/review-markdown.test.py",
+            "tests/policy-evaluator.test.py"
+          )
+          foreach ($test in $tests) {
+            python $test
+            if ($LASTEXITCODE -ne 0) {
+              $rc = $LASTEXITCODE
+              Write-Output "::error title=Windows behavior test failed::$test"
+              exit $rc
+            }
+          }
       - name: 原生 Windows copy 生命周期（install / update / doctor / uninstall）
         shell: pwsh
         run: |
