@@ -479,6 +479,9 @@
       "skill-claude-delivery-gate": "canonical_sha256:d808ce701237a31e9320f8776792aa2febfe6258bc7ec681eac03b7ec7464b66",
       "skill-claude-repo-delivery": "canonical_sha256:a3c8462fc16ad546cfe4ca86bb58f87a58fbcb223e79851f4eae119dc1afeaed"
     },
+    "77b184b": {
+      "lib-aek-adapters-evidence-py": "canonical_sha256:11404f92c540b69035f24abded75eac294110d9e935a26ba2e671fa0440b24bc"
+    },
     "79b8a5d": {
       "bin-validate-memory.sh": "canonical_sha256:b425c91b7396942de832ad90ee4bb5a010952a6272dade9bcd098c98cf281e9e"
     },
