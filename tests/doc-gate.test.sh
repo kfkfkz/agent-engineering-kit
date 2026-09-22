@@ -406,6 +406,7 @@ cat > "$D/任务清单.md" <<'EOF'
 
 - 对应设计：D1、D2
 - 目标：停用能力可用
+- 发布阻塞：是
 - 预计修改范围：src/**/user/**
 - 原则上不动：payment/**
 - 实施内容：
@@ -414,11 +415,24 @@ cat > "$D/任务清单.md" <<'EOF'
 - 验证方式：python -m pytest test/user/
 - 完成标准：测试通过
 
+### T2：可选导出 Beta
+
+- 对应设计：D1、TC-1
+- 目标：仅在本次明确选择时交付导出建议
+- 发布阻塞：否（Beta advisory）
+- 预计修改范围：src/**/export/**
+- 原则上不动：payment/**
+- 实施内容：
+  - [ ] Beta 导出建议
+- 验证方式：python -m pytest test/export/
+- 完成标准：选择时测试通过；未选择时记录延期及默认路径证据
+
 ## 执行记录
 
 | 任务 | 状态 | 实际改动范围 | 验证结果 | 备注 |
 | --- | --- | --- | --- | --- |
 | T1 | TODO |  |  |  |
+| T2 | 延期 | 不适用（本次未选择 Beta） | 默认路径回归 PASS | 非发布阻塞 |
 
 ## 回归范围确认
 
@@ -760,6 +774,28 @@ assert_eq "gate 计划 PASS" "$rc" "0"
 assert_grep "计划凭证保存执行前基线" 'execution_baseline_hashes' "$D/reviews/计划.gate.json"
 
 # 执行期计划协议：执行事实可变，计划定义不可变；收口后完整终态重新冻结
+D_DEFERRED="$REPO/docs/03-SDD/020-非阻塞任务延期"
+cp -r "$D" "$D_DEFERRED"
+sed -i 's/| T1 | TODO |  |  |  |/| T1 | 完成 | src\/user.py | pytest PASS |  |/' "$D_DEFERRED/任务清单.md"
+sed -i '/^### T2：/,/^## 执行记录/! s/- \[ \]/- [x]/g' "$D_DEFERRED/任务清单.md"
+sed -i 's/- \[ \]/- [x]/g' "$D_DEFERRED/测试方案.md"
+run_rc python3 "$DG" closeout "$D_DEFERRED"
+assert_eq "显式非阻塞任务可按延期事实收口" "$rc" "0"
+grep -q -- '- \[ \] Beta 导出建议' "$D_DEFERRED/任务清单.md" \
+    && ok "延期任务实现项不被伪勾选" \
+    || bad "延期任务实现项被错误改写"
+
+D_BLOCKING_DEFERRED="$REPO/docs/03-SDD/022-阻塞任务不得延期"
+cp -r "$D_DEFERRED" "$D_BLOCKING_DEFERRED"
+rm -f "$D_BLOCKING_DEFERRED/reviews/计划.closeout.json"
+sed -i 's/| T1 | 完成 |/| T1 | 延期 |/' "$D_BLOCKING_DEFERRED/任务清单.md"
+rc=0
+BLOCKING_DEFERRED_OUT="$(python3 "$DG" closeout "$D_BLOCKING_DEFERRED")" || rc=$?
+assert_eq "发布阻塞任务不得以延期绕过" "$rc" "1"
+echo "$BLOCKING_DEFERRED_OUT" | grep -q 'T1 状态不是完成' \
+    && ok "发布阻塞延期给出明确原因" \
+    || bad "发布阻塞延期原因不明确: $BLOCKING_DEFERRED_OUT"
+
 sed -i 's/| T1 | TODO |  |  |  |/| T1 | 进行中 | src\/user.py | pytest PASS |  |/' "$D/任务清单.md"
 OUT="$(python3 "$DG" status "$D")"
 echo "$OUT" | grep -q "计划.*FROZEN.*执行中" \

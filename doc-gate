@@ -165,12 +165,58 @@ def _execution_record_rows(text: str) -> dict[str, list[str]]:
     return rows
 
 
+def _task_sections(text: str) -> dict[str, tuple[str, int, int]]:
+    """Return each frozen task definition without bleeding into its siblings."""
+    matches = list(re.finditer(r"(?m)^###\s*(T\d+)：[^\n]*$", text))
+    sections: dict[str, tuple[str, int, int]] = {}
+    execution = re.search(r"(?m)^##\s+执行记录\s*$", text)
+    document_end = execution.start() if execution else len(text)
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else document_end
+        sections[match.group(1)] = (text[match.start():end], match.start(), end)
+    return sections
+
+
+def _release_blocking_tasks(
+    text: str, tasks: dict[str, dict],
+) -> tuple[dict[str, bool], list[str], dict[str, tuple[str, int, int]]]:
+    """Read the frozen opt-out marker; absence stays release-blocking."""
+    sections = _task_sections(text)
+    blocking: dict[str, bool] = {}
+    failures: list[str] = []
+    for task_id in tasks:
+        section = sections.get(task_id)
+        if section is None:
+            failures.append(f"{task_id} 缺任务定义区块")
+            blocking[task_id] = True
+            continue
+        marker_lines = re.findall(
+            r"(?m)^-\s*发布阻塞[:：]\s*([^\n]+?)\s*$", section[0])
+        if not marker_lines:
+            blocking[task_id] = True  # legacy plans remain conservative
+            continue
+        if len(marker_lines) != 1:
+            failures.append(f"{task_id} 发布阻塞标记重复")
+            blocking[task_id] = True
+            continue
+        marker = re.sub(r"\s*（[^）]*）\s*$", "", marker_lines[0]).strip()
+        if marker not in {"是", "否"}:
+            failures.append(f"{task_id} 发布阻塞标记必须为是/否")
+            blocking[task_id] = True
+            continue
+        blocking[task_id] = marker == "是"
+    return blocking, failures, sections
+
+
 def _plan_completion_failures(req_dir: Path) -> list[str]:
     task_text = _read(req_dir / "任务清单.md") or ""
     test_text = _read(req_dir / "测试方案.md") or ""
     tasks = parse_t_items(task_text)
     rows = _execution_record_rows(task_text)
     failures = []
+    blocking, marker_failures, sections = _release_blocking_tasks(task_text, tasks)
+    failures.extend(marker_failures)
+    deferred: set[str] = set()
     if not tasks:
         failures.append("任务清单没有可收口的 T-ID")
     for task_id in tasks:
@@ -181,7 +227,9 @@ def _plan_completion_failures(req_dir: Path) -> list[str]:
         state = cells[1] if len(cells) > 1 else ""
         actual_scope = cells[2] if len(cells) > 2 else ""
         verification = cells[3] if len(cells) > 3 else ""
-        if state not in ("完成", "DONE"):
+        if state in ("延期", "DEFERRED") and not blocking.get(task_id, True):
+            deferred.add(task_id)
+        elif state not in ("完成", "DONE"):
             failures.append(f"{task_id} 状态不是完成")
         if not actual_scope:
             failures.append(f"{task_id} 缺实际改动范围")
@@ -190,7 +238,14 @@ def _plan_completion_failures(req_dir: Path) -> list[str]:
     unknown_rows = sorted(set(rows) - set(tasks))
     if unknown_rows:
         failures.append("执行记录含未知任务: " + "、".join(unknown_rows))
-    unchecked = len(re.findall(r"(?m)^\s*[-*]\s*\[\s*\]", task_text + "\n" + test_text))
+    completion_text = task_text
+    ignored_spans = sorted(
+        (sections[task_id][1], sections[task_id][2])
+        for task_id in deferred if task_id in sections)
+    for start, end in reversed(ignored_spans):
+        completion_text = completion_text[:start] + completion_text[end:]
+    unchecked = len(re.findall(
+        r"(?m)^\s*[-*]\s*\[\s*\]", completion_text + "\n" + test_text))
     if unchecked:
         failures.append(f"仍有 {unchecked} 个未完成检查项")
     return failures
