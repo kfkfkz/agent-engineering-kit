@@ -1448,6 +1448,11 @@ AEK 将：
 ✓ Delivery Gate
 ✓ As-Built 收口
 ✓ 项目级统一安装和治理
+✓ 动态 ArtifactPlan 与可恢复门禁事务
+✓ 薄 Skill、分路线 ContextBudget 与两级 Memory
+✓ 来源绑定的 Context Capsule 与实际投喂计量
+✓ 安全增量 Review（证明不完整自动回退全文）
+✓ Application Service / MCP 单路径调度与提交回执
 ```
 
 ---
@@ -1459,9 +1464,9 @@ AEK 将：
 ### 更快
 
 ```text
-增量上下文恢复
-缓存
-选择性重新验证
+更广的宿主原生通道计量
+跨任务 Capsule 清理策略
+更多可证明的选择性重新验证
 并行只读分析
 ```
 

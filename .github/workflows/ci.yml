@@ -1,5 +1,7 @@
 name: ci
 on: [push, pull_request]
+env:
+  PYTHONPATH: ${{ github.workspace }}
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -10,7 +12,8 @@ jobs:
       - name: 语法检查（sh -n / py_compile）
         run: |
           sh -n install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/route-eval.test.sh tests/benchmark.test.sh
-          python3 -m py_compile memory-build spec-migrate memory-recall domain-check doc-gate governance-eval route-eval
+          python3 -m py_compile memory-build spec-migrate memory-recall domain-check doc-gate governance-eval route-eval tests/benchmark/context.py
+          python3 -m compileall -q aek
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
@@ -54,6 +57,8 @@ jobs:
         run: sh tests/doc-gate.test.sh
       - name: 自适应任务路由测试（Route Card / 治理覆盖 / 范围漂移）
         run: sh tests/route-eval.test.sh
+      - name: Git 变更范围负证据测试
+        run: python3 tests/change-scope.test.py
       - name: Benchmark 评测器回归测试
         run: sh tests/benchmark.test.sh
       - name: Windows 可导入性守卫（AST：fcntl/msvcrt/O_NOFOLLOW 隔离在 platform/）
@@ -78,12 +83,36 @@ jobs:
           python-version: "3.12"
       - name: Windows Python 源码编译
         run: |
-          python -m compileall -q installer
+          python -m compileall -q aek installer
           python -m py_compile doc-gate governance-eval route-eval domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
       - name: 全模块可导入（fcntl 已隔离在 platform/posix_fs）
         shell: pwsh
         run: |
           $modules = @(
+            "aek", "aek.core", "aek.core.context.reference_catalog",
+            "aek.core.context.budget",
+            "aek.core.context.telemetry", "aek.adapters.telemetry",
+            "aek.core.context.memory", "aek.adapters.memory",
+            "aek.core.context.capsule",
+            "aek.adapters.capsule", "aek.application.context_capsule",
+            "aek.application.context_telemetry",
+            "aek.application.memory_recall",
+            "aek.application.planning",
+            "aek.adapters.plan_transaction",
+            "aek.adapters.evidence",
+            "aek.adapters.change_scope",
+            "aek.core.review.judge",
+            "aek.core.review.result",
+            "aek.core.review.incremental",
+            "aek.core.policy.evaluator",
+            "aek.core.artifact.registry",
+            "aek.core.artifact.plan",
+            "aek.core.dispatch", "aek.application.dispatch",
+            "aek.application.document_gate", "aek.application.routing",
+            "aek.application.governance",
+            "aek.application.review", "aek.adapters.review_markdown",
+            "aek.core.planning.facts", "aek.core.planning.policy",
+            "aek.core.planning.sql_screen",
             "installer.install", "installer.transaction", "installer.uninstall",
             "installer.zvec", "installer.manifest", "installer.registry",
             "installer.doctor", "installer.legacy", "installer.preflight"
@@ -99,6 +128,55 @@ jobs:
             }
           }
           Write-Output "installer modules import OK on Windows"
+      - name: Windows 新 package 行为测试
+        shell: pwsh
+        run: |
+          python tests/artifact-plan.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/artifact-plan-transaction.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/doc-gate-lock.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/doc-gate-plan.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/dispatch-service.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/mcp-dispatch.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/planning-service.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/evidence-adapter.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/change-scope.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/context-memory.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/context-capsule.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/context-capsule-store.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/cli-service-parity.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/context-telemetry.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/context-service.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/memory-recall-service.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/context-budget.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/review-judge.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/review-result.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/review-incremental.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/review-service.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/review-markdown.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/policy-evaluator.test.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: 原生 Windows copy 生命周期（install / update / doctor / uninstall）
         shell: pwsh
         run: |
@@ -124,6 +202,31 @@ jobs:
           $codex = Join-Path $env:RUNNER_TEMP "aek-windows-workspace"
           New-Item -ItemType Directory -Force -Path $repo, $codex | Out-Null
           Invoke-InstallerPhase "install" @("--codex-root", $codex, "--link-strategy", "copy", $repo)
+          $reference = Join-Path $repo ".agents/skills/repo-delivery/references/standard.md"
+          $package = Join-Path $repo ".repo-memory-kit/lib/aek/core/artifact/registry.py"
+          if (-not (Test-Path -LiteralPath $reference -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $package -PathType Leaf)) {
+            Write-Output "::error title=Windows copy lifecycle::reference or package missing"
+            exit 1
+          }
+          $installedDocGate = Join-Path $repo ".repo-memory-kit/bin/doc-gate"
+          & python $installedDocGate --help *> $null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error title=Windows copy lifecycle::installed doc-gate cannot import package"
+            exit 1
+          }
+          $installedRouteEval = Join-Path $repo ".repo-memory-kit/bin/route-eval"
+          & python $installedRouteEval --help *> $null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error title=Windows copy lifecycle::installed route-eval cannot import package"
+            exit 1
+          }
+          $installedGovernance = Join-Path $repo ".repo-memory-kit/bin/governance-eval"
+          & python $installedGovernance --help *> $null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error title=Windows copy lifecycle::installed governance-eval cannot import package"
+            exit 1
+          }
           $copy = Join-Path $codex ".agents/skills/tdd/SKILL.md"
           if (-not (Test-Path -LiteralPath $copy -PathType Leaf)) {
             Write-Output "::error title=Windows copy lifecycle::copy strategy did not expose tdd skill"
@@ -137,6 +240,10 @@ jobs:
           Invoke-InstallerPhase "update" @("--update", "--codex-root", $codex, "--link-strategy", "copy", $repo)
           Invoke-InstallerPhase "doctor" @("--doctor", "--codex-root", $codex, $repo)
           Invoke-InstallerPhase "uninstall" @("--uninstall", "--codex-root", $codex, $repo)
+          if ((Test-Path -LiteralPath $reference) -or (Test-Path -LiteralPath $package)) {
+            Write-Output "::error title=Windows copy lifecycle::reference or package remained after uninstall"
+            exit 1
+          }
           if (Test-Path -LiteralPath $copy) {
             Write-Output "::error title=Windows copy lifecycle::uninstall left managed copy behind"
             exit 1

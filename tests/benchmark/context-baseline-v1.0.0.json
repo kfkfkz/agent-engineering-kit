@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "scope": "selected_skill_material_only",
+  "baseline_commit": "88944283eb8030b4c44363f21f5ef0110252e1fa",
+  "metric": "delivered_utf8_bytes",
+  "cases": [
+    {
+      "case_id": "direct-doc-only",
+      "route": "direct",
+      "fixture_digest": "d610bfdfdf507b23aab4f9a87906bd6177ea9825a965f9a7d46cf3d6347dc24b",
+      "diff_digest": "dc1896708398760422a3b0724a84fc2d3f63b2d4dec158793cef05862be7162b",
+      "environment_digest": "c7e2a689989be0dfc3674780d9e6b367db94303cab31a57f15d655e1bb5f4417",
+      "cold_cache": true,
+      "baseline_bytes": 27151,
+      "baseline_chars": 12328,
+      "material_set_digest": "5afc750f5939797001d5b2bcdf5abbc43316905b1a048f70c40742dae053180e",
+      "materials": [
+        {"path": "skills/repo-delivery/SKILL.md", "sha256": "42bcaf7c3b114024a0354f7c49a4ae49b3e6de12321b4b69554b6cf62deb2f67", "bytes": 27151, "chars": 12328}
+      ]
+    },
+    {
+      "case_id": "bounded-local-behavior",
+      "route": "bounded",
+      "fixture_digest": "e5c93dbaf454592fef1de2f9ca71ec0bfdb9b3b9a3d3548c4472690f6b3967ea",
+      "diff_digest": "18ab11ea11485b232c4fae2bd5399764437e03562ad51b472c7d3e32b0ac2ef4",
+      "environment_digest": "c7e2a689989be0dfc3674780d9e6b367db94303cab31a57f15d655e1bb5f4417",
+      "cold_cache": true,
+      "baseline_bytes": 44940,
+      "baseline_chars": 20959,
+      "material_set_digest": "8a92cfd62b817bfea916b6ce90aada2b998666d45788fbc057d1f6a5f9abca57",
+      "materials": [
+        {"path": "skills/repo-delivery/SKILL.md", "sha256": "42bcaf7c3b114024a0354f7c49a4ae49b3e6de12321b4b69554b6cf62deb2f67", "bytes": 27151, "chars": 12328},
+        {"path": "skills/tdd/SKILL.md", "sha256": "7985cd47e5b3810be88c60a675b89574e87bd7c44b5f76c6278d196d9b124d44", "bytes": 3939, "chars": 1749},
+        {"path": "skills/delivery-gate/SKILL.md", "sha256": "5e701f173a8a296748dcd2121849fd9c00d8808182ae887f74bc7380680c9f87", "bytes": 13850, "chars": 6882}
+      ]
+    },
+    {
+      "case_id": "standard-cross-module",
+      "route": "standard",
+      "fixture_digest": "041d294cbdde17496a0d0b8c19a3cb76628d163b97afc2e78e60e5a34ac80358",
+      "diff_digest": "34176932ae41c2522602abab33d657e0f1373cebaf76496bdcda72d82f80af85",
+      "environment_digest": "c7e2a689989be0dfc3674780d9e6b367db94303cab31a57f15d655e1bb5f4417",
+      "cold_cache": true,
+      "baseline_bytes": 63461,
+      "baseline_chars": 30810,
+      "material_set_digest": "4641c2bdb82a461b1d1eb9738128e29f535aac3e1666c2b8e8ce4b28fe3ce8f3",
+      "materials": [
+        {"path": "skills/repo-delivery/SKILL.md", "sha256": "42bcaf7c3b114024a0354f7c49a4ae49b3e6de12321b4b69554b6cf62deb2f67", "bytes": 27151, "chars": 12328},
+        {"path": "skills/design-pipeline/SKILL.md", "sha256": "956ad7e0d5569587f6974dd438dc02d0d1ac731797323a62726c535d54d1d133", "bytes": 15750, "chars": 8450},
+        {"path": "skills/delivery-gate/SKILL.md", "sha256": "5e701f173a8a296748dcd2121849fd9c00d8808182ae887f74bc7380680c9f87", "bytes": 13850, "chars": 6882},
+        {"path": "skills/tdd/SKILL.md", "sha256": "7985cd47e5b3810be88c60a675b89574e87bd7c44b5f76c6278d196d9b124d44", "bytes": 3939, "chars": 1749},
+        {"path": "skills/codebase-memory/SKILL.md", "sha256": "355e80f736d8c8b7e6c9d21ad90c8eeaacf135b92b3b4221d7748edc41f27440", "bytes": 2771, "chars": 1401}
+      ]
+    },
+    {
+      "case_id": "initiative-program",
+      "route": "initiative",
+      "fixture_digest": "863cfd82b136a27a8a0141015cbab63f3dacc91f6652502ef42bb010eaaf292e",
+      "diff_digest": "9f11e000140a14477ffee807a3d402aecd08d682dda44e88d32e2b3565c11f75",
+      "environment_digest": "c7e2a689989be0dfc3674780d9e6b367db94303cab31a57f15d655e1bb5f4417",
+      "cold_cache": true,
+      "baseline_bytes": 83231,
+      "baseline_chars": 39986,
+      "material_set_digest": "26d8594cbcbc0d91472d61daf03e93c3d6db79fe5f2c5c38ace5e4d378a2a3ec",
+      "materials": [
+        {"path": "skills/codebase-memory/SKILL.md", "sha256": "355e80f736d8c8b7e6c9d21ad90c8eeaacf135b92b3b4221d7748edc41f27440", "bytes": 2771, "chars": 1401},
+        {"path": "skills/delivery-gate/SKILL.md", "sha256": "5e701f173a8a296748dcd2121849fd9c00d8808182ae887f74bc7380680c9f87", "bytes": 13850, "chars": 6882},
+        {"path": "skills/design-pipeline/SKILL.md", "sha256": "956ad7e0d5569587f6974dd438dc02d0d1ac731797323a62726c535d54d1d133", "bytes": 15750, "chars": 8450},
+        {"path": "skills/memory-capture/SKILL.md", "sha256": "94a0520c5c72e6f2c06b9e84381ed55a07205babacbeadb2f66b277d660c9803", "bytes": 2875, "chars": 1327},
+        {"path": "skills/memory-check/SKILL.md", "sha256": "10e8aadf2e9383c5ff62753b7f1245069cf66a0792e4c94444e458a1260aff75", "bytes": 2766, "chars": 1342},
+        {"path": "skills/repo-delivery/SKILL.md", "sha256": "42bcaf7c3b114024a0354f7c49a4ae49b3e6de12321b4b69554b6cf62deb2f67", "bytes": 27151, "chars": 12328},
+        {"path": "skills/reuse-research/SKILL.md", "sha256": "ad56dd46f7c40f4c86b3bbedfe825777850e2d16ef325c46131bbc1a05489690", "bytes": 2102, "chars": 930},
+        {"path": "skills/security-review/SKILL.md", "sha256": "41faef5a501d9c4cc62bbe668dd7480dbd981fe55934245fef5afd22228411ef", "bytes": 2872, "chars": 1268},
+        {"path": "skills/spec-migrate/SKILL.md", "sha256": "558a502518bedd77cd332858f2bebefa4801360adb1ad9616156cd499fcf94b2", "bytes": 4790, "chars": 2532},
+        {"path": "skills/systematic-debugging/SKILL.md", "sha256": "c9040eb8646d1e215f36ff2be9fdf6ba78ac12e911f60b3c65ac529c0d1d9150", "bytes": 2810, "chars": 1160},
+        {"path": "skills/task-handoff/SKILL.md", "sha256": "58278059c748600fae7cb46ac9d67e2ff345982d0e00caa96cfcf1b783ce0037", "bytes": 1555, "chars": 617},
+        {"path": "skills/tdd/SKILL.md", "sha256": "7985cd47e5b3810be88c60a675b89574e87bd7c44b5f76c6278d196d9b124d44", "bytes": 3939, "chars": 1749}
+      ]
+    }
+  ]
+}

@@ -15,9 +15,11 @@ Usage:
   agent-engineering-mcp <target-repo>     # stdio JSON-RPC MCP server
 """
 import json
+import hashlib
 import os
 import subprocess
 import sys
+import uuid
 
 
 def _configure_utf8_stdio():
@@ -31,6 +33,18 @@ def _configure_utf8_stdio():
 _configure_utf8_stdio()
 
 KIT_BIN = os.path.dirname(os.path.abspath(__file__))
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+_installed_layout = (os.path.basename(_script_dir) == "bin"
+                     and os.path.basename(os.path.dirname(_script_dir)) ==
+                     ".repo-memory-kit")
+_package_root = (os.path.join(os.path.dirname(_script_dir), "lib")
+                 if _installed_layout else _script_dir)
+if not os.path.isfile(os.path.join(_package_root, "aek", "core", "dispatch.py")):
+    print("AEK dispatch package missing or installation layout invalid", file=sys.stderr)
+    raise SystemExit(3)
+sys.path.insert(0, _package_root)
+from aek.application.dispatch import DispatchService, MemoryReceiptStore
+from aek.core.dispatch import select_dispatch
 # 绑定目标仓库:MCP 服务器只能操作安装它的仓库,不允许 Agent 传任意路径
 # KIT_BIN 形如 <repo>/.repo-memory-kit/bin,向上三级即仓库根
 _BOUND_REPO = os.path.dirname(os.path.dirname(KIT_BIN))
@@ -47,7 +61,7 @@ _BOUND_REPO = os.path.dirname(os.path.dirname(KIT_BIN))
 SUPPORTED_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
 DEFAULT_PROTOCOL_VERSION = "2025-11-25"
 SERVER_NAME = "agent-engineering-kit"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.0.1"
 
 TOOLS = [
     {
@@ -221,6 +235,52 @@ TOOL_HANDLERS = {
     "kit_status": tool_kit_status,
 }
 
+# Service and legacy maps are deliberately distinct migration seams even while
+# their observable operations share the existing CLI adapters.  Dispatch is
+# selected once before execution; tests can fault-inject either path without
+# changing the public MCP tools or payloads.
+SERVICE_TOOL_HANDLERS = dict(TOOL_HANDLERS)
+LEGACY_TOOL_HANDLERS = dict(TOOL_HANDLERS)
+_SERVICE_VERSION = "1.0.1"
+_SERVICE_MINIMUM = "1.0.1"
+_SERVICE_CAPABILITIES = frozenset(SERVICE_TOOL_HANDLERS)
+_PARITY_PASSED = frozenset(SERVICE_TOOL_HANDLERS)
+_READ_ONLY_TOOLS = frozenset({"memory_recall", "domain_check", "kit_status"})
+_DISPATCH_SESSION = uuid.uuid4().hex
+_DISPATCH = DispatchService(MemoryReceiptStore())
+
+
+def _dispatch_request_key(req_id, tool_name, arguments):
+    payload = {"session": _DISPATCH_SESSION, "id": req_id,
+               "tool": tool_name, "arguments": arguments}
+    return hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _execute_tool(req_id, tool_name, arguments):
+    decision = select_dispatch(
+        service_version=_SERVICE_VERSION, minimum_version=_SERVICE_MINIMUM,
+        available_capabilities=_SERVICE_CAPABILITIES,
+        required_capability=tool_name, parity_passed=tool_name in _PARITY_PASSED)
+    outcome = _DISPATCH.execute(
+        _dispatch_request_key(req_id, tool_name, arguments), decision,
+        read_only=tool_name in _READ_ONLY_TOOLS,
+        service_ready=lambda: tool_name in SERVICE_TOOL_HANDLERS,
+        service_call=lambda: SERVICE_TOOL_HANDLERS[tool_name](arguments),
+        legacy_call=lambda: LEGACY_TOOL_HANDLERS[tool_name](arguments))
+    if outcome.committed:
+        return outcome.result
+    return {
+        "error": outcome.error or "dispatch did not commit",
+        "dispatch": {
+            "selected_path": outcome.selected_path,
+            "started": outcome.started,
+            "committed": outcome.committed,
+            "retryable": outcome.retryable,
+        },
+    }
+
 
 def handle_request(req):
     """Handle a single JSON-RPC request. Returns response dict or None (for notifications).
@@ -319,7 +379,7 @@ def handle_request(req):
             }
 
         try:
-            result = TOOL_HANDLERS[tool_name](arguments)
+            result = _execute_tool(req_id, tool_name, arguments)
             is_error = bool(result.get("error")) or result.get("returncode", 0) != 0
             return {
                 "jsonrpc": "2.0", "id": req_id,

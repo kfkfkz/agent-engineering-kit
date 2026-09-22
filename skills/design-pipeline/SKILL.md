@@ -33,12 +33,27 @@ docs/01-需求/NNN-名称/     原始需求.md + 原始材料（维护者产物�
 docs/03-SDD/NNN-名称/     需求分析/概要/UI/详细/API/数据库/任务/测试/联调/终稿 + reviews/
 ```
 
-阶段顺序（前一阶段未冻结不进入下一阶段；概要的功能点含界面三件套时插入 UI设计）：
+阶段顺序由冻结的 ArtifactPlan 决定。以下是完整拓扑，不是“每次都做”的固定清单；标记
+`skipped` 的 Artifact 不生成、不评审、不冻结，后继阶段使用计划解析出的最近参与前置：
 
 ```
 需求分析（维护者冻结）→ 概要设计 → (UI设计) → 业务流程设计（人工评审！）
                       → 详细设计(详细+API+数据库三文档) → 计划(任务清单+测试方案)
 ```
+
+### 0. 冻结本次 ArtifactPlan
+
+仅 Standard/Initiative 进入本技能。首次为该 SDD 工作且 `reviews/artifact-plan.json` 不存在时，
+Agent 使用 Route Card 已冻结的路线与任务起点 Git commit，内部依次执行 `plan-prepare` 和
+`plan-freeze`；不得让用户手工运行命令。计划必须来自当前 Git 可见范围的内置 facts producer：
+扫描不能完整证明 false 时保持 unknown 并增加产物，禁止由 LLM 口头声明 false 来减少文档。
+
+读取机器返回的 plan items，建立本轮唯一产物集合：`required` 需要生成；`skipped` 只保留
+计划中的 reason/evidence，不把模板占位文件当成待完成产物。阶段全部 skipped 时直接越过；
+部分 skipped（例如 API/数据库设计）时，硬校验、评审输入和冻结只覆盖参与文档。每个阶段
+PASS 后原有门禁入口会自动建立 plan binding；状态必须为 `FROZEN/BOUND` 才能进入真实后继。
+残缺 plan、credential、binding、事务日志或 STALE/INVALID 一律停止并修复/显式回滚，绝不
+回退 legacy-static 猜测。已有且无动态 sidecar 的 1.0 文档继续走 legacy-static，不强制迁移。
 
 ## 流程
 
@@ -72,9 +87,11 @@ Agent 的工具调用中；仅当用户明确要求诊断底层命令时才展�
    原始需求在同号 `docs/01-需求/NNN-名称/`——生成需求分析前先读它，不脱离原始需求加戏。
    需求已指派但 SDD 目录不存在（或索引行缺失）→ Agent 运行
    `doc-gate init NNN-名称 --repo <仓库根>`（登记单一入口：两处目录+模板骨架+索引行，幂等）。
-3. 生成前先取证：`memory-recall` 检索相关坑/决定/playbook；读业务域地图确认模块口径；
+3. 生成前先取证：使用 `memory-recall --context-json` 并绑定当前 Route、subject digest、稳定
+   session ID 检索相关坑/决定/playbook，只读取返回的 expanded 正文；读业务域地图确认模块口径；
    `codebase-memory` 定位既有能力与调用链——**禁止凭记忆编造现状**。
-4. 运行 `.repo-memory-kit/bin/doc-gate status <SDD目录>` 了解各阶段当前状态。
+4. 运行 `.repo-memory-kit/bin/doc-gate status <SDD目录>` 了解参与阶段的当前状态；`SKIPPED`
+   是冻结计划授权的正常终态，不补模板、不伪造 gate。
    需求分析若已签写冻结记录但无凭证（status 显示 未冻结/未过 freeze），Agent 从记录读取
    签核人并运行 `.repo-memory-kit/bin/doc-gate freeze <SDD目录> --by <名>` 落哈希凭证——
    文本"已冻结"不构成冻结凭证，冻结后改动会被哈希检出。若当前文档在既有凭证后有改动，
@@ -112,8 +129,21 @@ Agent 的工具调用中；仅当用户明确要求诊断底层命令时才展�
 用**未参与生成的独立子 Agent**（可用时）做评审；不可用时清空假设做第二遍，
 并在 issues.json 中写 `"reviewer": "same-context"`（披露）。
 
-评审输入：阶段文档全文 + `reviews/hard-checks.json` + 上游冻结文档 + **分层取证**——**已验证事实直接采信**（业务域地图口径、已确认记忆条目、上游阶段评审已核实的声明与取证），**只对新增/未覆盖/可疑的声明做代码查证**（`codebase-memory`）。**评审不是文档对文档，是文档对事实**：内部自洽但现状失实的设计必须被打回。不从零核查——已有结论引用来源即可，重复推导是浪费且引入新噪声。
-评审输出**仅** `reviews/<阶段>.issues.json`（无总分、无 PASS/FAIL、不改文档正文）：
+硬校验通过后，Agent 内部运行
+`.repo-memory-kit/bin/doc-gate review-input <SDD目录> --stage <阶段> --json`。
+由 ReviewService 决定 `request.mode=full|incremental`：只把 `request.full_documents`
+或 `request.section_documents`（二者恰有一个非空）和 `request.supporting_context` 送给 reviewer，
+不得自行扩缩章节。解析缺口、标题/引用/依赖变化或旧证明不可用会自动选择 full；receipt
+失配时重新生成输入并按工具结论全文重送，不能继续沿用旧评审。
+
+Reviewer 在这份受控输入上做**分层取证**：已验证事实直接采信（业务域地图口径、已确认
+记忆条目、上游阶段已核实的声明与取证），只对新增/未覆盖/可疑声明做代码查证
+（`codebase-memory`）。评审不是文档对文档，而是文档对事实；内部自洽但现状失实的设计
+必须被打回。不从零重复核查已有结论。
+
+评审输出 `reviews/<阶段>.issues.json`，并把 review-input 返回的 `receipt` 原样写入
+`reviews/<阶段>.review-receipt.json`。receipt 只证明实际送审输入，不代表 PASS；不得手工改
+request/receipt digest。issues 无总分、无 PASS/FAIL、不改文档正文：
 
 ```json
 {
@@ -164,6 +194,9 @@ rubric 五维：
   建议的人工裁决点。**不得通过反复重试碰运气**。
 
 ### 6. 业务流程设计（人工评审关口）
+
+仅当 ArtifactPlan 中 `business-flow` 为 required 时执行本节；若为 skipped，不生成流程图、
+不询问人工评审，直接沿解析后的真实前置进入后继阶段。
 
 概要设计 PASS 后生成 `业务流程设计.md`——**给人读的文档**：通俗、无代码/
 表结构/接口字段（细节在 数据库设计/API设计）；按功能五件套展开（界面[嵌 UI
@@ -237,7 +270,8 @@ continue_to(stage="详细设计")
 
 ### 8. 完成与交接
 
-全部阶段冻结后：`doc-gate status` 确认 → 返回 `repo-delivery`，由总编排按 Route Card
+全部参与阶段为 FROZEN、计划跳过阶段为 SKIPPED 后：`doc-gate status` 确认 →
+返回 `repo-delivery`，由总编排按 Route Card
 进入 ⑥；需要编码时由它调用 `tdd` 按任务清单做纵向切片，最后由它调用
 `delivery-gate` 收口。若本技能是被单独显式调用的，只向用户建议当前客户端对应的
 canonical 入口（Claude Code：`/repo-delivery`；Codex：`$repo-delivery`），不要把 `tdd`、

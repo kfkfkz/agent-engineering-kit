@@ -10,9 +10,14 @@
   doc-gate init <NNN-名称> [--repo 仓库根]       需求登记：两处目录+模板骨架+索引行（幂等）
   doc-gate freeze <SDD目录> [--by 维护者]        维护者签写冻结记录后落哈希凭证
   doc-gate check <需求目录> --stage <阶段> [--json]
+  doc-gate review-input <需求目录> --stage <阶段> [--json]
   doc-gate gate  <需求目录> --stage <阶段> [--no-review] [--json]
   doc-gate closeout <需求目录> [--json]          执行完成后冻结计划终态
   doc-gate status <需求目录> [--json]
+  doc-gate plan-prepare <需求目录> --base <commit> --route <route>
+  doc-gate plan-freeze|plan-status <需求目录> --base <commit>
+  doc-gate plan-bind <需求目录> --base <commit> --stage <阶段>
+  doc-gate plan-rollback <需求目录>
 
 阶段: 需求分析 / 概要设计 / 业务流程设计 / UI设计 /
       详细设计(三文档) / 计划。
@@ -30,8 +35,47 @@ import os
 import re
 import stat
 import sys
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+
+
+# Source checkout and installed target use different package roots. Resolve from
+# this executable, never from the caller's current directory or PYTHONPATH.
+_script_dir = Path(__file__).resolve().parent
+_installed_layout = (
+    _script_dir.name == "bin" and _script_dir.parent.name == ".repo-memory-kit"
+)
+_package_root = _script_dir.parent / "lib" if _installed_layout else _script_dir
+if not (_package_root / "aek/core/artifact/registry.py").is_file():
+    print("✗ AEK package 缺失或安装布局无效", file=sys.stderr)
+    raise SystemExit(3)
+sys.path.insert(0, str(_package_root))
+from aek.core.artifact.plan import load_credential_bytes, load_plan_bytes
+from aek.core.artifact.registry import ARTIFACT_REGISTRY
+from aek.core.context.budget import resolve_context_budget
+from aek.adapters.change_scope import resolve_base_commit, scan_negative_risks
+from aek.adapters.telemetry import ContextLedger
+from aek.adapters.review_markdown import extract_trace_ids, parse_review_documents
+from aek.adapters.plan_transaction import PlanInvalid, PlanStore
+from aek.application.document_gate import (
+    effective_stage_states, participating_documents,
+    participating_prerequisites,
+)
+from aek.application.context_telemetry import (
+    record_context_delivery, report_for_budget,
+)
+from aek.application.planning import (
+    DynamicPlanState, bind_frozen_stage, evaluate_stage_states, freeze_git_current_plan,
+    git_plan_input_digest, prepare_git_current_plan,
+    read_frozen_dynamic_state, rollback_dynamic_state,
+)
+from aek.application.review import (
+    load_review_request, load_review_snapshot, plan_review, review_request_bytes,
+    review_snapshot_bytes, reviewer_receipt, validate_review_result,
+)
+from aek.core.review.judge import JudgeInput, judge_gate
+from aek.core.review.result import validate_review_payload
 
 
 def _configure_utf8_stdio() -> None:
@@ -52,58 +96,7 @@ class PolicyError(ValueError):
 
 # ══════════════════════════ 阶段定义 ══════════════════════════
 
-STAGES = {
-    "需求分析": {
-        "docs": ["需求分析.md"],
-        "upstream": [],
-        "review": False,  # 人工产物（维护者签写冻结记录 + freeze 落哈希凭证）
-        "sections": {"需求分析.md": ["背景", "目标", "非目标", "场景与验收依据",
-                                      "验收项", "非功能要求", "待确认事项", "冻结记录"]},
-    },
-    "概要设计": {
-        "docs": ["概要设计.md"],
-        "upstream": ["需求分析"],
-        "review": "optional",
-        "sections": {"概要设计.md": ["设计目标", "现状分析", "总体方案",
-                                     "功能点设计", "方案取舍", "数据与接口影响", "风险"]},
-    },
-    "业务流程设计": {
-        "docs": ["业务流程设计.md"],
-        "upstream": ["概要设计"],
-        "review": False,  # 人工评审是门禁（评审记录 + freeze）
-        "sections": {"业务流程设计.md": ["修订记录", "简介", "业务流程总览",
-                                        "功能设计", "数据与接口概览", "评审记录"]},
-    },
-    "UI设计": {
-        "docs": ["UI设计.md"],
-        "upstream": ["概要设计"],
-        "review": True,
-        "sections": {"UI设计.md": ["界面目标", "用户核心任务", "信息架构", "页面清单",
-                                   "设计系统落地", "交互规则", "响应式与兼容",
-                                   "可访问性", "验证清单"]},
-    },
-    "详细设计": {
-        "docs": ["详细设计.md", "API设计.md", "数据库设计.md"],
-        "upstream": ["业务流程设计"],
-        "review": True,
-        "sections": {
-            "详细设计.md": ["设计范围", "业务逻辑", "异常处理", "安全设计",
-                           "可观测性与配置", "发布与回滚"],
-            "API设计.md": ["接口清单", "接口详细设计"],
-            "数据库设计.md": ["表变更清单", "详细变更"],
-        },
-    },
-    "计划": {
-        "docs": ["任务清单.md", "测试方案.md"],
-        "upstream": ["详细设计"],
-        "review": "optional",
-        "sections": {
-            "任务清单.md": ["任务", "执行记录", "回归范围确认", "完成标准"],
-            "测试方案.md": ["测试接缝", "用例清单", "边界与异常覆盖",
-                            "环境与数据", "回归范围", "通过标准"],
-        },
-    },
-}
+STAGES = ARTIFACT_REGISTRY.legacy_stage_view()
 
 UI_STATES = ["加载中", "空态", "错误", "禁用", "成功"]
 
@@ -440,10 +433,17 @@ def req_freeze_state(text: str) -> str:
 
 # ══════════════════════════ 冻结状态 ══════════════════════════
 
-def _stage_fingerprint(req_dir: Path, stage: str) -> str | None:
+def _stage_fingerprint(req_dir: Path, stage: str, dynamic_state=None) -> str | None:
     """上游阶段的指纹 = digest(status + doc_hashes + 其上游指纹)——
     任何上游重冻结（内容或其上游变化）都会改变指纹，驱动下游递归失效
     （第八轮审计 P1：此前只校验本阶段哈希，上游 v2 重冻结后旧下游仍 FROZEN）。"""
+    if dynamic_state is not None:
+        if (dynamic_state.state != "FROZEN" or dynamic_state.plan is None
+                or not participating_documents(dynamic_state.plan, stage)):
+            return None
+        fingerprint = _dynamic_stage_fingerprint(req_dir, dynamic_state, stage)
+        return None if fingerprint == "0" * 64 else fingerprint
+
     # A gate record is not a current credential by itself. Validate the stage
     # first so an edited-but-not-refrozen upstream invalidates descendants too.
     state, _detail = stage_frozen(req_dir, stage)
@@ -472,12 +472,50 @@ def _stage_fingerprint(req_dir: Path, stage: str) -> str | None:
         json.dumps(ident, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
-def stage_frozen(req_dir: Path, stage: str) -> tuple[str, str]:
-    """返回 (状态, 说明)。状态: FROZEN / DRAFT / BLOCKED / NOT_GATED / MISSING。
+def _dynamic_sidecar_present(req_dir: Path) -> bool:
+    """A partial dynamic publication must never be guessed as legacy-static.
+
+    T5 activation will replace this transitional guard with validated plan,
+    credential and binding state evaluation. Until then all dynamic sidecars
+    fail closed, including a damaged journal or publish temporary file.
+    """
+    reviews = req_dir / "reviews"
+    if reviews.is_symlink():
+        return True
+    if not reviews.is_dir():
+        return False
+    return any(
+        item.name in {"artifact-plan.json", "artifact-plan.gate.json",
+                      "artifact-plan.tx.json"}
+        or item.name.endswith(".plan-binding.json")
+        or item.name.startswith(".artifact-plan-write-")
+        for item in reviews.iterdir()
+    )
+
+
+def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, str]:
+    """返回 (状态, 说明)。状态: FROZEN / DRAFT / BLOCKED / NOT_GATED / MISSING / INVALID。
 
     FROZEN = gate.json PASS 且文档哈希一致 且 上游指纹与冻结时一致；
     上游重冻结/本阶段改动 → DRAFT（下游需重过门禁——递归失效）。
     """
+    if dynamic_state is not None:
+        if dynamic_state.state != "FROZEN" or dynamic_state.plan is None:
+            return "INVALID", f"动态计划不可用：{dynamic_state.reason}"
+        if not participating_documents(dynamic_state.plan, stage):
+            return "SKIPPED", "ArtifactPlan 已证明本阶段无需产物"
+        states = evaluate_stage_states(
+            dynamic_state, _dynamic_snapshots(req_dir, dynamic_state))
+        current = states.get(stage, "INVALID")
+        if current == "BOUND":
+            return "FROZEN", "ArtifactPlan binding 与当前门禁、文档及前置指纹一致"
+        if current == "UNBOUND":
+            return "NOT_GATED", "阶段尚未绑定到冻结 ArtifactPlan"
+        if current == "STALE":
+            return "DRAFT", "ArtifactPlan binding 已过期，需重新门禁"
+        return "INVALID", "ArtifactPlan binding 无效"
+    if _dynamic_sidecar_present(req_dir):
+        return "INVALID", "动态计划存在但未能建立同锁快照"
     if stage in HUMAN_SIGNOFF:
         # 人工签核阶段（需求分析/业务流程设计）：文本签核不是凭证——必须有
         # gate.json 绑定内容哈希，签核后改动会被哈希检出
@@ -503,7 +541,7 @@ def stage_frozen(req_dir: Path, stage: str) -> tuple[str, str]:
             return "DRAFT", f"{doc} 签核后有改动（哈希失配）——需人工重审并重新 freeze"
         recorded = g.get("upstream_fingerprints") or {}
         for up in STAGES[stage]["upstream"]:
-            cur_fp = _stage_fingerprint(req_dir, up)
+            cur_fp = _stage_fingerprint(req_dir, up, dynamic_state)
             if cur_fp is None or recorded.get(up) != cur_fp:
                 return "DRAFT", f"上游 {up} 已重新冻结（指纹失配）——需重新签核"
         return "FROZEN", f"gate.json 通过（{g.get('approved_by', '未知')} 签核）"
@@ -570,7 +608,7 @@ def stage_frozen(req_dir: Path, stage: str) -> tuple[str, str]:
     # 上游指纹核验（第八轮审计 P1）：任一上游重冻结 → 本阶段失效，需重过门禁
     recorded = gate.get("upstream_fingerprints") or {}
     for up in STAGES[stage]["upstream"]:
-        cur_fp = _stage_fingerprint(req_dir, up)
+        cur_fp = _stage_fingerprint(req_dir, up, dynamic_state)
         if cur_fp is None:
             return "DRAFT", f"上游 {up} 的 gate 凭证缺失"
         if recorded.get(up) != cur_fp:
@@ -619,14 +657,32 @@ def _check_placeholders(c: Checks, doc: str, text: str) -> None:
           f"残留 {len(ph)} 处: {'、'.join(ph[:3])}…" if ph else "")
 
 
-def run_checks(req_dir: Path, stage: str) -> Checks:
+def _effective_stage_spec(stage: str, dynamic_state=None) -> dict:
+    spec = STAGES[stage]
+    if dynamic_state is None or dynamic_state.plan is None:
+        return spec
+    documents = list(participating_documents(dynamic_state.plan, stage))
+    return {
+        "docs": documents,
+        "upstream": list(participating_prerequisites(dynamic_state.plan, stage)),
+        "review": spec["review"],
+        "sections": {doc: spec["sections"][doc] for doc in documents},
+    }
+
+
+def run_checks(req_dir: Path, stage: str, dynamic_state=None) -> Checks:
     """对一个阶段跑全部硬校验（含上游冻结与需求意图检查）。"""
     c = Checks(stage)
-    spec = STAGES[stage]
+    spec = _effective_stage_spec(stage, dynamic_state)
+
+    if dynamic_state is not None and not spec["docs"]:
+        c.add("plan", "阶段由 ArtifactPlan 跳过", True,
+              "无需生成、评审或冻结本阶段产物")
+        return c
 
     # ── 上游冻结 ──
     for up in spec["upstream"]:
-        st, why = stage_frozen(req_dir, up)
+        st, why = stage_frozen(req_dir, up, dynamic_state)
         c.add("upstream", f"上游已冻结：{up}", st == "FROZEN", why)
 
     # ── 需求意图（薄输入拒绝——任何阶段都校验最上游，需求分析阶段本身也检查）──
@@ -686,7 +742,7 @@ def run_checks(req_dir: Path, stage: str) -> Checks:
 
     if stage == "详细设计":
         d_items: dict = {}
-        for doc in ("详细设计.md", "API设计.md", "数据库设计.md"):
+        for doc in spec["docs"]:
             text = _read(req_dir / doc)
             d_items.update(parse_d_items(text) if text is not None else {})
         f_all = parse_f_items(_read(req_dir / "概要设计.md") or "")
@@ -706,7 +762,10 @@ def run_checks(req_dir: Path, stage: str) -> Checks:
         t_items = parse_t_items(task_text)
         tc_items = parse_tc_items(test_text)
         d_all: dict = {}
+        detail_docs = set(_effective_stage_spec("详细设计", dynamic_state)["docs"])
         for doc in ("详细设计.md", "API设计.md", "数据库设计.md"):
+            if doc not in detail_docs:
+                continue
             text = _read(req_dir / doc)
             d_all.update(parse_d_items(text) if text is not None else {})
 
@@ -733,57 +792,295 @@ def run_checks(req_dir: Path, stage: str) -> Checks:
 
 # ══════════════════════════ gate 判定 ══════════════════════════
 
-VALID_SEVERITIES = ("blocker", "major", "minor")
-ISSUE_FIELDS = ("id", "severity", "location", "problem", "required_change")
-
-
 def _validate_issues(req_dir: Path, stage: str, spec: dict,
-                     text: str) -> tuple[list[dict] | None, str]:
-    """解析并严格校验 issues.json 内容。返回 (issues 或 None=不可用, 错误说明)。
+                     text: str, dynamic_state=None) -> tuple[list[dict] | None, str]:
+    """Compatibility adapter: hash files here, validate immutable input in core."""
+    expected = {
+        doc: _sha256(req_dir / doc) if (req_dir / doc).is_file() else None
+        for doc in spec["docs"]
+    }
+    reviews = req_dir / "reviews"
+    request_path = reviews / f"{stage}.review-request.json"
+    if request_path.exists() or request_path.is_symlink():
+        try:
+            request = load_review_request(_read_review_bytes(request_path))
+            if request.stage != stage or dict(request.doc_hashes) != expected:
+                return None, "review request 与当前阶段文档不一致，需重新生成评审输入"
+            current_path = reviews / f"{stage}.review-current.json"
+            current = load_review_snapshot(_read_review_bytes(current_path))
+            dependency = _review_dependency_fingerprint(req_dir, stage, dynamic_state)
+            documents = {doc: _read(req_dir / doc) for doc in spec["docs"]}
+            if (current.stage != stage or current.doc_hashes != request.doc_hashes
+                    or current.dependency_fingerprint != dependency
+                    or any(value is None for value in documents.values())):
+                return None, "review snapshot 已过期，需重新生成评审输入"
+            material = parse_review_documents(
+                stage, {key: value for key, value in documents.items()
+                        if value is not None}, dependency)
+            if (material.snapshot != current
+                    or dict(request.supporting_context) !=
+                    _review_supporting_context(req_dir, stage, dynamic_state)):
+                return None, "当前 Markdown 章节快照已变化，需重新生成评审输入"
+            if request.mode == "incremental":
+                expected_request, _expected_material = _build_review_request(
+                    req_dir, stage, dynamic_state)
+                if request != expected_request:
+                    return None, "增量依赖闭包无法从当前证明重算，需全文重新评审"
+            try:
+                receipt_text = _read_review_bytes(
+                    reviews / f"{stage}.review-receipt.json").decode("utf-8")
+            except (FileNotFoundError, UnicodeDecodeError):
+                return None, "缺少 reviewer receipt，不能证明实际送审输入"
+            checked = validate_review_result(request, text, receipt_text)
+            if checked.state != "VALID" or checked.result is None:
+                return None, ("增量评审证明失效，需重新生成全文评审输入"
+                              if checked.state == "FULL_REQUIRED" else checked.reason)
+            baseline_path = reviews / f"{stage}.review-baseline.json"
+            if request.mode == "full" and not checked.result.issues:
+                _atomic_review_write(baseline_path, review_snapshot_bytes(current))
+            elif checked.result.issues:
+                _atomic_review_unlink(baseline_path)
+            return list(checked.result.issues), ""
+        except (OSError, TypeError, ValueError) as exc:
+            return None, f"review proof 无效: {exc}"
+    result, error = validate_review_payload(text, stage, expected)
+    return (list(result.issues) if result is not None else None), error
 
-    P1 完整性修复：绑定被评审文档的 SHA——评审后文档再改动即过期（旧 clean
-    review 不能冻结新版本）；stage 必须匹配；severity/schema 非法直接拒绝。
-    """
+
+def _atomic_review_write(path: Path, content: bytes) -> None:
+    """Publish non-authoritative review evidence without torn files."""
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        return None, "issues.json 不是合法 JSON"
-    if not isinstance(data, dict):
-        return None, "issues.json 顶层必须是对象"
-    if data.get("stage") != stage:
-        return None, f"issues.json 的 stage={data.get('stage')!r} 与门禁阶段 {stage!r} 不符"
-    # 评审绑定：记录的 doc_hashes 必须覆盖本阶段全部文档且与当前一致
-    recorded = data.get("doc_hashes")
-    if not isinstance(recorded, dict) or not recorded:
-        return None, ("issues.json 缺 doc_hashes（评审必须记录被评审文档的 "
-                      "sha256——防旧评审冻结新版本）")
-    for doc in spec["docs"]:
-        want = recorded.get(doc)
-        cur = _sha256(req_dir / doc) if (req_dir / doc).is_file() else None
-        if want is None:
-            return None, f"issues.json 的 doc_hashes 未覆盖 {doc}"
-        if want != cur:
-            return None, (f"{doc} 在评审后有改动（哈希失配）——评审已过期，"
-                          f"需对当前版本重新评审")
-    issues = data.get("issues")
-    if not isinstance(issues, list):
-        return None, "issues 必须是数组"
-    seen_ids: set[str] = set()
-    for i, issue in enumerate(issues):
-        if not isinstance(issue, dict):
-            return None, f"issues[{i}] 不是对象"
-        for field in ISSUE_FIELDS:
-            if not str(issue.get(field, "")).strip():
-                return None, f"issues[{i}] 缺必填字段 {field}（id/severity/location/problem/required_change）"
-        sev = str(issue.get("severity", "")).strip().lower()
-        if sev not in VALID_SEVERITIES:
-            return None, (f"issues[{i}].severity={sev!r} 非法"
-                          f"（只允许 blocker/major/minor）")
-        issue["severity"] = sev
-        if issue.get("id") in seen_ids:
-            return None, f"issues[{i}].id 重复: {issue.get('id')}"
-        seen_ids.add(issue.get("id"))
-    return issues, ""
+        remaining = content
+        while remaining:
+            written = os.write(fd, remaining)
+            if written <= 0:
+                raise OSError("short review evidence write")
+            remaining = remaining[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(temporary, path)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _read_review_bytes(path: Path) -> bytes:
+    """Read one bounded regular evidence file without following replacements."""
+    if path.is_symlink():
+        raise ValueError(f"review evidence is a symlink: {path.name}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > 2_000_000:
+            raise ValueError(f"review evidence is not a bounded regular file: {path.name}")
+        current = os.stat(path, follow_symlinks=False)
+        if (not stat.S_ISREG(current.st_mode)
+                or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)):
+            raise ValueError(f"review evidence changed while opening: {path.name}")
+        chunks: list[bytes] = []
+        remaining = opened.st_size
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                raise ValueError(f"review evidence changed while reading: {path.name}")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.fstat(fd).st_size != opened.st_size:
+            raise ValueError(f"review evidence changed while reading: {path.name}")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def _atomic_review_unlink(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def _review_dependency_fingerprint(req_dir: Path, stage: str,
+                                   dynamic_state=None) -> str:
+    root = _repo_root(req_dir)
+    policy = _load_policy(root)
+    reviews = req_dir / "reviews"
+    hard_checks = _sha256(reviews / "hard-checks.json")
+    dynamic = {}
+    for name in ("artifact-plan.json", "artifact-plan.gate.json"):
+        path = reviews / name
+        if path.is_file() and not path.is_symlink():
+            dynamic[name] = _sha256(path)
+    payload = {
+        "schema_version": 1,
+        "stage": stage,
+        "registry_version": ARTIFACT_REGISTRY.schema_version,
+        "stage_spec": _effective_stage_spec(stage, dynamic_state),
+        "policy": policy,
+        "hard_checks": hard_checks,
+        "upstream": {up: _stage_fingerprint(req_dir, up, dynamic_state)
+                     for up in _effective_stage_spec(
+                         stage, dynamic_state)["upstream"]},
+        "dynamic": dynamic,
+        "rubric": "design-pipeline-review-v1",
+    }
+    return hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _build_review_request(req_dir: Path, stage: str, dynamic_state=None):
+    spec = _effective_stage_spec(stage, dynamic_state)
+    documents = {doc: _read(req_dir / doc) for doc in spec["docs"]}
+    missing = [doc for doc, text in documents.items() if text is None]
+    if missing:
+        raise ValueError("阶段文档不可读: " + "、".join(missing))
+    dependency = _review_dependency_fingerprint(req_dir, stage, dynamic_state)
+    material = parse_review_documents(
+        stage, {doc: text for doc, text in documents.items() if text is not None},
+        dependency)
+    reviews = req_dir / "reviews"
+    baseline_path = reviews / f"{stage}.review-baseline.json"
+    previous = material.snapshot
+    prior_full = False
+    if baseline_path.is_file() and not baseline_path.is_symlink():
+        try:
+            previous = load_review_snapshot(_read_review_bytes(baseline_path))
+            prior_full = previous.stage == stage
+        except (OSError, ValueError):
+            previous = material.snapshot
+            prior_full = False
+    external_ids: set[str] = set()
+    current_docs = set(spec["docs"])
+    for other_stage in STAGES:
+        for doc in _effective_stage_spec(other_stage, dynamic_state)["docs"]:
+            if doc in current_docs:
+                continue
+            path = req_dir / doc
+            if path.is_symlink():
+                continue
+            other = _read(path)
+            if other is not None:
+                external_ids.update(extract_trace_ids(other))
+    supporting_context = _review_supporting_context(req_dir, stage, dynamic_state)
+    request = plan_review(
+        previous, material.snapshot, prior_review_was_full=prior_full,
+        reviewed_doc_hashes=previous.doc_hashes if prior_full else (),
+        documents=material.document_map(), section_texts=material.section_map(),
+        supporting_context=supporting_context,
+        external_ids=tuple(sorted(external_ids)))
+    return request, material
+
+
+def _review_supporting_context(req_dir: Path, stage: str,
+                               dynamic_state=None) -> dict[str, str]:
+    context: dict[str, str] = {}
+    hard_checks = _read(req_dir / "reviews" / "hard-checks.json")
+    if hard_checks is not None:
+        context["reviews/hard-checks.json"] = hard_checks
+    for upstream in _effective_stage_spec(stage, dynamic_state)["upstream"]:
+        for doc in _effective_stage_spec(upstream, dynamic_state)["docs"]:
+            text = _read(req_dir / doc)
+            if text is not None:
+                context[f"upstream/{upstream}/{doc}"] = text
+    return context
+
+
+def _record_review_delivery(reviews: Path, stage: str, request,
+                            dynamic_state=None) -> None:
+    """Account for the exact JSON payload emitted to the reviewer caller.
+
+    This is intentionally a partial report: doc-gate can observe its own
+    review payload, not host-native code/search/tool reads performed later by
+    the reviewer.  Persisted events contain only digests and sizes.
+    """
+    route = (dynamic_state.plan.route if dynamic_state is not None
+             and dynamic_state.plan is not None else "standard")
+    subject = (dynamic_state.plan.subject_digest if dynamic_state is not None
+               and dynamic_state.plan is not None
+               else hashlib.sha256(json.dumps(
+                   request.doc_hashes, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":")).encode("utf-8")).hexdigest())
+    suffix = hashlib.sha256(stage.encode("utf-8")).hexdigest()[:12]
+    ledger = ContextLedger(
+        reviews / f"{stage}.context-events-{subject[:12]}.jsonl")
+    budget = resolve_context_budget(
+        route, "design", "thorough" if route in {"standard", "initiative"}
+        else "quick")
+    payload = review_request_bytes(request).decode("utf-8")
+    record_context_delivery(
+        ledger, budget, payload, source="review", source_kind="document",
+        channel="review_loader", event_purpose="review_required",
+        expansion_purpose="review_required", session_id=f"review-{suffix}",
+        subject_digest=subject,
+        logical_path=f"generated/review-input-{suffix}.json")
+    expected = (
+        "capsule_loader", "host_native", "memory_candidate", "memory_open",
+        "reference_loader", "review_loader", "skill_loader",
+    )
+    report = report_for_budget(
+        ledger, budget, coverage="partial", expected_channels=expected,
+        observed_channels=("review_loader",), bypass_detected=False)
+    _atomic_review_write(
+        reviews / f"{stage}.context-report.json",
+        json.dumps(asdict(report), ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":")).encode("utf-8"))
+
+
+def cmd_review_input(req_dir: Path, stage: str, as_json: bool) -> int:
+    try:
+        reviews = req_dir / "reviews"
+        reviews.mkdir(parents=True, exist_ok=True)
+        with PlanStore(reviews).gate_snapshot() as snapshot:
+            dynamic_state = _dynamic_state_from_snapshot(snapshot)
+            if dynamic_state is not None and dynamic_state.state != "FROZEN":
+                print(f"✗ 动态计划不可用于评审：{dynamic_state.reason}")
+                return 3
+            spec = _effective_stage_spec(stage, dynamic_state)
+            if not spec["docs"]:
+                print(f"✓ {stage} 已由 ArtifactPlan 跳过，无需评审")
+                return 0
+            checks = run_checks(req_dir, stage, dynamic_state)
+            (reviews / "hard-checks.json").write_text(
+                json.dumps(checks.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8")
+            if checks.fails:
+                print(f"✗ {stage} 硬校验未过，不能生成评审输入")
+                return 1
+            request, material = _build_review_request(req_dir, stage, dynamic_state)
+            _atomic_review_write(
+                reviews / f"{stage}.review-request.json",
+                review_request_bytes(request))
+            _atomic_review_write(
+                reviews / f"{stage}.review-current.json",
+                review_snapshot_bytes(material.snapshot))
+            if as_json:
+                _record_review_delivery(
+                    reviews, stage, request, dynamic_state)
+            output = {
+                "request": json.loads(review_request_bytes(request)),
+                "receipt": json.loads(reviewer_receipt(request)),
+                "receipt_path": f"reviews/{stage}.review-receipt.json",
+                "issues_path": f"reviews/{stage}.issues.json",
+            }
+            if as_json:
+                print(json.dumps(output, ensure_ascii=False, indent=2))
+            else:
+                print(f"✓ {stage} 评审输入已生成（mode={request.mode}）")
+            return 0
+    except (OSError, PlanInvalid, PolicyError, TypeError, ValueError) as exc:
+        print(f"✗ 无法生成评审输入: {exc}")
+        return 3
 
 
 def _consecutive_failures(log_file: Path) -> int:
@@ -822,10 +1119,39 @@ def _was_blocked(log_file: Path) -> bool:
 
 
 def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
+    try:
+        reviews = req_dir / "reviews"
+        reviews.mkdir(parents=True, exist_ok=True)
+        store = PlanStore(reviews)
+        dynamic_state = None
+        with store.gate_snapshot() as snapshot:
+            dynamic_state = _dynamic_state_from_snapshot(snapshot)
+            result = _cmd_gate_locked(
+                req_dir, stage, no_review, as_json, dynamic_state)
+        if result == 0 and dynamic_state is not None:
+            return _bind_dynamic_gate(req_dir, dynamic_state, stage)
+        return result
+    except (OSError, PlanInvalid, TypeError, ValueError) as exc:
+        print(f"✗ 文档门禁锁不可用: {exc}")
+        return 3
+
+
+def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
+                     dynamic_state=None) -> int:
+    if dynamic_state is not None:
+        if dynamic_state.state != "FROZEN" or dynamic_state.plan is None:
+            print(f"✗ 动态计划不可用于门禁：{dynamic_state.reason}")
+            return 3
+        if not participating_documents(dynamic_state.plan, stage):
+            print(f"✓ {stage} 已由 ArtifactPlan 跳过，无需门禁")
+            return 0
+    elif _dynamic_sidecar_present(req_dir):
+        print("✗ 动态计划 sidecar 无法验证，拒绝门禁")
+        return 3
     if stage in HUMAN_SIGNOFF:
         print(f"✗ {stage} 是人工签核阶段：评审权在人（签写评审记录后由 freeze 落哈希凭证）")
         return 3
-    spec = STAGES[stage]
+    spec = _effective_stage_spec(stage, dynamic_state)
 
     try:
         policy = _load_policy(_repo_root(req_dir))
@@ -833,7 +1159,7 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
         print(f"✗ 文档策略非法: {e}")
         return 3
 
-    checks = run_checks(req_dir, stage)
+    checks = run_checks(req_dir, stage, dynamic_state)
     reviews_dir = req_dir / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
     (reviews_dir / "hard-checks.json").write_text(
@@ -854,7 +1180,8 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
                 print(f"✗ 阶段 {stage} 需要先跑 AI 评审（reviews/{stage}.issues.json 缺失或损坏）")
                 return 3
         else:
-            issues, err = _validate_issues(req_dir, stage, spec, text)
+            issues, err = _validate_issues(
+                req_dir, stage, spec, text, dynamic_state)
             if issues is None:
                 if not checks.fails:
                     print(f"✗ 评审不可用: {err}")
@@ -872,21 +1199,13 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
     was_blocked = _was_blocked(log_file)
 
     hard_fail = checks.fails
-    over = (n_blocker > policy["max_blocker"] or n_major > policy["max_major"]
-            or n_minor > policy["max_minor"])
-    current_attempt = consecutive + 1        # 本次是第几次失败尝试
-    if not hard_fail and not over and not upstream_issues:
-        status = "PASS"          # BLOCKED 后人工修复 → PASS 才解冻
-    elif upstream_issues and not hard_fail and not over:
-        # P1：上游打回未决 → 不得冻结（下游建立在被质疑的上游上）
-        status = "BLOCKED"
-    elif was_blocked:
-        status = "BLOCKED"       # 此前已 BLOCKED：只有 PASS 能解冻（人工介入后重评审）
-    elif current_attempt >= policy["max_iterations"]:
-        # 第七轮审计 P2：第 max_iterations 次失败本身即 BLOCKED（此前晚一轮）
-        status = "BLOCKED"
-    else:
-        status = "NEEDS_REVISION"
+    decision = judge_gate(JudgeInput(
+        len(hard_fail), n_blocker, n_major, n_minor, len(upstream_issues),
+        consecutive, was_blocked, policy["max_blocker"], policy["max_major"],
+        policy["max_minor"], policy["max_iterations"]))
+    status = decision.status
+    over = decision.over_threshold
+    current_attempt = decision.current_attempt
 
     doc_hashes = {doc: _sha256(req_dir / doc) for doc in spec["docs"]
                   if (req_dir / doc).is_file()}
@@ -901,8 +1220,8 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
                    "fix_targets": fix_targets},
         "policy": policy, "iteration": consecutive + 1, "doc_hashes": doc_hashes,
         "upstream_fingerprints": {
-            up: _stage_fingerprint(req_dir, up)
-            for up in STAGES[stage]["upstream"]},
+            up: _stage_fingerprint(req_dir, up, dynamic_state)
+            for up in spec["upstream"]},
         "failed_because": (
             ["hard checks FAIL: " + "；".join(c["name"] for c in hard_fail[:5])] if hard_fail else [])
             + ([f"severity 超阈值: blocker={n_blocker}/{policy['max_blocker']}, "
@@ -940,15 +1259,44 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool) -> int:
 
 
 def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool) -> int:
+    try:
+        reviews = req_dir / "reviews"
+        reviews.mkdir(parents=True, exist_ok=True)
+        store = PlanStore(reviews)
+        dynamic_state = None
+        with store.gate_snapshot() as snapshot:
+            dynamic_state = _dynamic_state_from_snapshot(snapshot)
+            result = _cmd_freeze_locked(
+                req_dir, stage, approved_by, as_json, dynamic_state)
+        if result == 0 and dynamic_state is not None:
+            return _bind_dynamic_gate(req_dir, dynamic_state, stage)
+        return result
+    except (OSError, PlanInvalid, TypeError, ValueError) as exc:
+        print(f"✗ 文档门禁锁不可用: {exc}")
+        return 3
+
+
+def _cmd_freeze_locked(req_dir: Path, stage: str, approved_by: str, as_json: bool,
+                       dynamic_state=None) -> int:
     """人工签核阶段的冻结凭证（需求分析/业务流程设计）：hard checks 全过 +
     人工签核已写（评审权在人，本工具只落哈希凭证），写 reviews/<阶段>.gate.json
     绑定该阶段文档的 sha256。签核后任何改动 = 哈希失配。"""
+    if dynamic_state is not None:
+        if dynamic_state.state != "FROZEN" or dynamic_state.plan is None:
+            print(f"✗ 动态计划不可用于冻结：{dynamic_state.reason}")
+            return 3
+        if not participating_documents(dynamic_state.plan, stage):
+            print(f"✓ {stage} 已由 ArtifactPlan 跳过，无需冻结")
+            return 0
+    elif _dynamic_sidecar_present(req_dir):
+        print("✗ 动态计划 sidecar 无法验证，拒绝冻结")
+        return 3
     if stage not in HUMAN_SIGNOFF:
         print(f"✗ 阶段 {stage} 不是人工签核阶段（用 gate 子命令走机器门禁）")
         return 3
     doc = STAGES[stage]["docs"][0]
     sign_re, want_state = HUMAN_SIGNOFF[stage]
-    checks = run_checks(req_dir, stage)
+    checks = run_checks(req_dir, stage, dynamic_state)
     doc_text = _read(req_dir / doc)
     if doc_text is None:
         print(f"✗ {doc} 不存在")
@@ -974,8 +1322,8 @@ def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool) -> in
         "approved_by": approved_by or "维护者",
         "doc_hashes": {doc: _sha256(req_dir / doc)},
         "upstream_fingerprints": {
-            up: _stage_fingerprint(req_dir, up)
-            for up in STAGES[stage]["upstream"]},
+            up: _stage_fingerprint(req_dir, up, dynamic_state)
+            for up in _effective_stage_spec(stage, dynamic_state)["upstream"]},
         "frozen_by": "doc-gate freeze（人工签核 + 哈希凭证）",
     }
     (reviews_dir / f"{stage}.gate.json").write_text(
@@ -993,12 +1341,39 @@ def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool) -> in
 
 
 def cmd_closeout(req_dir: Path, as_json: bool) -> int:
+    try:
+        reviews = req_dir / "reviews"
+        reviews.mkdir(parents=True, exist_ok=True)
+        store = PlanStore(reviews)
+        dynamic_state = None
+        with store.gate_snapshot() as snapshot:
+            dynamic_state = _dynamic_state_from_snapshot(snapshot)
+            result = _cmd_closeout_locked(req_dir, as_json, dynamic_state)
+        if result == 0 and dynamic_state is not None:
+            return _bind_dynamic_gate(req_dir, dynamic_state, "计划")
+        return result
+    except (OSError, PlanInvalid, TypeError, ValueError) as exc:
+        print(f"✗ 文档门禁锁不可用: {exc}")
+        return 3
+
+
+def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None) -> int:
     """Validate execution facts and bind the complete final plan documents.
 
     The initial plan gate remains the immutable execution baseline.  This
     separate credential closes the intentionally mutable execution window and
     makes every later document edit invalidate the final state again.
     """
+    if dynamic_state is not None:
+        if dynamic_state.state != "FROZEN" or dynamic_state.plan is None:
+            print(f"✗ 动态计划不可用于收口：{dynamic_state.reason}")
+            return 3
+        if not participating_documents(dynamic_state.plan, "计划"):
+            print("✓ 计划阶段已由 ArtifactPlan 跳过，无需执行收口")
+            return 0
+    elif _dynamic_sidecar_present(req_dir):
+        print("✗ 动态计划 sidecar 无法验证，拒绝收口")
+        return 3
     reviews_dir = req_dir / "reviews"
     gate_file = reviews_dir / "计划.gate.json"
     gate_text = _read(gate_file)
@@ -1014,7 +1389,8 @@ def cmd_closeout(req_dir: Path, as_json: bool) -> int:
         print(f"✗ 计划最近判定 {gate.get('status')}，不能执行收口")
         return 3
 
-    checks = run_checks(req_dir, "计划")
+    spec = _effective_stage_spec("计划", dynamic_state)
+    checks = run_checks(req_dir, "计划", dynamic_state)
     failures = [
         f"硬校验失败: {item['name']}"
         for item in checks.fails
@@ -1022,7 +1398,7 @@ def cmd_closeout(req_dir: Path, as_json: bool) -> int:
     expected_baseline = gate.get("execution_baseline_hashes")
     if expected_baseline:
         current_baseline = _plan_baseline_hashes(req_dir)
-        if set(expected_baseline) != set(STAGES["计划"]["docs"]):
+        if set(expected_baseline) != set(spec["docs"]):
             failures.append("执行前计划基线未完整覆盖阶段文档")
         else:
             for doc, want in expected_baseline.items():
@@ -1053,11 +1429,11 @@ def cmd_closeout(req_dir: Path, as_json: bool) -> int:
         "baseline_mode": "projected" if expected_baseline else "legacy_unavailable",
         "doc_hashes": {
             doc: _sha256(req_dir / doc)
-            for doc in STAGES["计划"]["docs"]
+            for doc in spec["docs"]
         },
         "upstream_fingerprints": {
-            up: _stage_fingerprint(req_dir, up)
-            for up in STAGES["计划"]["upstream"]
+            up: _stage_fingerprint(req_dir, up, dynamic_state)
+            for up in spec["upstream"]
         },
     }
     (reviews_dir / "计划.closeout.json").write_text(
@@ -1568,10 +1944,26 @@ def _cmd_init_locked(repo: Path, name: str, as_json: bool) -> int:
 # ══════════════════════════ 子命令 ══════════════════════════
 
 def cmd_check(req_dir: Path, stage: str, as_json: bool) -> int:
+    try:
+        reviews = req_dir / "reviews"
+        reviews.mkdir(parents=True, exist_ok=True)
+        with PlanStore(reviews).gate_snapshot() as snapshot:
+            return _cmd_check_locked(
+                req_dir, stage, as_json, _dynamic_state_from_snapshot(snapshot))
+    except (OSError, PlanInvalid, TypeError, ValueError) as exc:
+        print(f"✗ 文档门禁锁不可用: {exc}")
+        return 3
+
+
+def _cmd_check_locked(req_dir: Path, stage: str, as_json: bool,
+                      dynamic_state=None) -> int:
     if stage not in STAGES:
         print(f"✗ 未知阶段: {stage}（可选: {'、'.join(STAGES)}）")
         return 3
-    checks = run_checks(req_dir, stage)
+    if dynamic_state is not None and dynamic_state.state != "FROZEN":
+        print(f"✗ 动态计划不可用于校验：{dynamic_state.reason}")
+        return 3
+    checks = run_checks(req_dir, stage, dynamic_state)
     reviews_dir = req_dir / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
     (reviews_dir / "hard-checks.json").write_text(
@@ -1587,10 +1979,22 @@ def cmd_check(req_dir: Path, stage: str, as_json: bool) -> int:
 
 
 def cmd_status(req_dir: Path, as_json: bool) -> int:
+    try:
+        reviews = req_dir / "reviews"
+        reviews.mkdir(parents=True, exist_ok=True)
+        with PlanStore(reviews).gate_snapshot() as snapshot:
+            return _cmd_status_locked(
+                req_dir, as_json, _dynamic_state_from_snapshot(snapshot))
+    except (OSError, PlanInvalid, TypeError, ValueError) as exc:
+        print(f"✗ 文档门禁锁不可用: {exc}")
+        return 3
+
+
+def _cmd_status_locked(req_dir: Path, as_json: bool, dynamic_state=None) -> int:
     report = {}
     lines = [f"需求目录: {req_dir.name}"]
     for stage in STAGES:
-        st, why = stage_frozen(req_dir, stage)
+        st, why = stage_frozen(req_dir, stage, dynamic_state)
         report[stage] = {"state": st, "detail": why}
         lines.append(f"  {stage:<6s} {st:<10s} {why}")
     for extra in ("线上联调功能验证清单.md", "终稿.md"):
@@ -1606,10 +2010,335 @@ def cmd_status(req_dir: Path, as_json: bool) -> int:
     return 0
 
 
+def _dynamic_runtime(req_dir: Path, base_ref: str):
+    root = _repo_root(req_dir)
+    if root is None:
+        raise ValueError("无法定位 Git 仓库根")
+    base_commit = resolve_base_commit(root, base_ref)
+    store = PlanStore(req_dir / "reviews")
+    snapshot = store.snapshot()
+    raw_plan = snapshot.get("artifact-plan.json")
+    if raw_plan is None:
+        return root, base_commit, store, None, None
+    plan = load_plan_bytes(raw_plan)
+    input_digest = git_plan_input_digest(plan, base_commit)
+    state = read_frozen_dynamic_state(store, input_digest)
+    return root, base_commit, store, plan, state
+
+
+def _dynamic_state_from_snapshot(snapshot: dict[str, bytes]):
+    """Validate the dynamic state captured by PlanStore.gate_snapshot()."""
+    if not snapshot:
+        return None
+    try:
+        raw_plan = snapshot.get("artifact-plan.json")
+        raw_credential = snapshot.get("artifact-plan.gate.json")
+        if raw_plan is None:
+            return DynamicPlanState("INVALID", "orphan credential or binding")
+        plan = load_plan_bytes(raw_plan)
+        if raw_credential is None:
+            if any(name.endswith(".plan-binding.json") for name in snapshot):
+                return DynamicPlanState("INVALID", "binding without credential", plan)
+            return DynamicPlanState("PREPARED", "plan has no freeze credential", plan)
+        credential = load_credential_bytes(raw_credential)
+    except (KeyError, TypeError, ValueError) as exc:
+        return DynamicPlanState("INVALID", str(exc))
+
+    class CapturedSnapshot:
+        def snapshot(self) -> dict[str, bytes]:
+            return dict(snapshot)
+
+    return read_frozen_dynamic_state(CapturedSnapshot(), credential.input_digest)
+
+
+def _bind_dynamic_gate(req_dir: Path, prior_state, stage: str) -> int:
+    """Bind a just-published compatible gate to the frozen plan."""
+    if (prior_state.state != "FROZEN" or prior_state.plan is None
+            or prior_state.credential is None):
+        print("✗ gate 已写入，但 ArtifactPlan 状态不可绑定")
+        return 3
+    if not participating_documents(prior_state.plan, stage):
+        return 0
+    current_states = evaluate_stage_states(
+        prior_state, _dynamic_snapshots(req_dir, prior_state))
+    parents = participating_prerequisites(prior_state.plan, stage)
+    if any(current_states[parent] != "BOUND" for parent in parents):
+        print("✗ gate 已写入，但真实前置 stage 尚未全部 BOUND")
+        return 3
+    try:
+        gate_digest, doc_hashes, parent_fingerprints = _current_plan_gate_inputs(
+            req_dir, prior_state, stage)
+        if gate_digest is None:
+            return 0
+        rebound = bind_frozen_stage(
+            PlanStore(req_dir / "reviews"), prior_state.credential.input_digest,
+            stage, gate_digest=gate_digest, doc_hashes=doc_hashes,
+            prerequisite_fingerprints=parent_fingerprints)
+        states = evaluate_stage_states(
+            rebound, _dynamic_snapshots(req_dir, rebound))
+    except (OSError, PlanInvalid, TypeError, ValueError, RuntimeError) as exc:
+        print(f"✗ gate 已写入，但 ArtifactPlan binding 失败: {exc}")
+        return 3
+    if states.get(stage) != "BOUND":
+        print(f"✗ gate 已写入，但 ArtifactPlan binding 未生效: {rebound.reason}")
+        return 3
+    return 0
+
+
+def _current_plan_gate_inputs(req_dir: Path, state, stage: str):
+    if state.plan is None:
+        raise ValueError("动态计划不可用")
+    documents = participating_documents(state.plan, stage)
+    if not documents:
+        return None, {}, {}
+    gate_digest, current_docs = _current_plan_gate_inputs_no_parents(
+        req_dir, state, stage)
+    parent_fingerprints = {
+        parent: _dynamic_stage_fingerprint(req_dir, state, parent)
+        for parent in participating_prerequisites(state.plan, stage)
+    }
+    return gate_digest, current_docs, parent_fingerprints
+
+
+def _dynamic_stage_fingerprint(req_dir: Path, state, stage: str) -> str:
+    if state.plan is None or state.credential is None:
+        return "0" * 64
+    matching = [binding for binding in state.bindings if binding.stage == stage]
+    if len(matching) != 1:
+        return "0" * 64
+    try:
+        gate_digest, documents, _parents = _current_plan_gate_inputs_no_parents(
+            req_dir, state, stage)
+    except (OSError, ValueError):
+        return "0" * 64
+    payload = {
+        "stage": stage,
+        "gate_digest": gate_digest,
+        "doc_hashes": documents,
+        "binding_digest": matching[0].binding_digest,
+        "credential_digest": state.credential.credential_digest,
+    }
+    return hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _current_plan_gate_inputs_no_parents(req_dir: Path, state, stage: str):
+    if state.plan is None:
+        raise ValueError("动态计划不可用")
+    documents = participating_documents(state.plan, stage)
+    if not documents:
+        return None, {}
+    gate_path = req_dir / "reviews" / f"{stage}.gate.json"
+    raw_gate = _read_review_bytes(gate_path)
+    try:
+        gate = json.loads(raw_gate.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{stage} gate 不可读") from exc
+    recorded = gate.get("doc_hashes") if isinstance(gate, dict) else None
+    if (not isinstance(gate, dict) or gate.get("status") != "PASS"
+            or not isinstance(recorded, dict)):
+        raise ValueError(f"{stage} gate 不是有效 PASS")
+    identity_parts = [raw_gate]
+    if stage == "计划":
+        closeout_path = req_dir / "reviews" / "计划.closeout.json"
+        if closeout_path.exists() or closeout_path.is_symlink():
+            raw_closeout = _read_review_bytes(closeout_path)
+            try:
+                closeout = json.loads(raw_closeout.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError("计划 closeout 不可读") from exc
+            final_hashes = closeout.get("doc_hashes") if isinstance(
+                closeout, dict) else None
+            if (not isinstance(closeout, dict)
+                    or closeout.get("status") != "PASS"
+                    or closeout.get("plan_gate_sha256") != hashlib.sha256(
+                        raw_gate).hexdigest()
+                    or not isinstance(final_hashes, dict)
+                    or set(final_hashes) != set(documents)):
+                raise ValueError("计划 closeout 不是有效 PASS")
+            current_docs = {
+                document: hashlib.sha256(
+                    _read_review_bytes(req_dir / document)).hexdigest()
+                for document in documents
+            }
+            if current_docs != final_hashes:
+                raise ValueError("计划收口后文档哈希失配")
+            identity_parts.append(raw_closeout)
+        elif gate.get("execution_baseline_hashes") is not None:
+            baseline = gate.get("execution_baseline_hashes")
+            if not isinstance(baseline, dict) or set(baseline) != set(documents):
+                raise ValueError("计划执行基线未覆盖参与文档")
+            current_docs = {
+                document: _plan_baseline_hashes(req_dir).get(document)
+                for document in documents
+            }
+            if current_docs != baseline or any(
+                    not isinstance(value, str) for value in current_docs.values()):
+                raise ValueError("计划执行基线哈希失配")
+        else:
+            current_docs = {}
+    else:
+        current_docs = {}
+    if not current_docs:
+        for document in documents:
+            digest = hashlib.sha256(
+                _read_review_bytes(req_dir / document)).hexdigest()
+            if recorded.get(document) != digest:
+                raise ValueError(f"{document} 与 gate 哈希失配")
+            current_docs[document] = digest
+    identity = hashlib.sha256(b"\x00".join(identity_parts)).hexdigest()
+    return identity, current_docs
+
+
+def _dynamic_snapshots(req_dir: Path, state) -> dict[str, dict[str, object]]:
+    if state.plan is None:
+        return {}
+    snapshots = {}
+    bound = {binding.stage for binding in state.bindings}
+    for stage in ARTIFACT_REGISTRY.groups:
+        if stage not in bound:
+            continue
+        try:
+            gate_digest, documents, parents = _current_plan_gate_inputs(
+                req_dir, state, stage)
+            if gate_digest is None:
+                continue
+            snapshots[stage] = {
+                "gate_digest": gate_digest,
+                "doc_hashes": documents,
+                "prerequisite_fingerprints": parents,
+            }
+        except (OSError, ValueError):
+            snapshots[stage] = {
+                "gate_digest": "0" * 64,
+                "doc_hashes": {doc: "0" * 64 for doc in
+                               participating_documents(state.plan, stage)},
+                "prerequisite_fingerprints": {
+                    parent: "0" * 64 for parent in
+                    participating_prerequisites(state.plan, stage)},
+            }
+    return snapshots
+
+
+def _dynamic_payload(req_dir: Path, state) -> dict[str, object]:
+    payload: dict[str, object] = {"state": state.state, "reason": state.reason}
+    if state.plan is not None:
+        payload["plan"] = asdict(state.plan)
+    if state.credential is not None:
+        payload["credential"] = asdict(state.credential)
+    if state.plan is not None and state.state == "FROZEN":
+        binding_states = evaluate_stage_states(
+            state, _dynamic_snapshots(req_dir, state))
+        payload["binding_states"] = binding_states
+        payload["effective_stage_states"] = effective_stage_states(
+            state.plan, binding_states)
+    return payload
+
+
+def _print_dynamic(payload: dict[str, object], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"ArtifactPlan: {payload['state']} — {payload['reason']}")
+        for stage, value in payload.get("effective_stage_states", {}).items():
+            print(f"  {stage}: {value}")
+
+
+def cmd_plan_prepare(req_dir: Path, base_ref: str, route: str,
+                     overlays: tuple[str, ...], as_json: bool) -> int:
+    try:
+        root = _repo_root(req_dir)
+        if root is None:
+            raise ValueError("无法定位 Git 仓库根")
+        base = resolve_base_commit(root, base_ref)
+        state = prepare_git_current_plan(
+            PlanStore(req_dir / "reviews"), root, base, route,
+            scan_scope=scan_negative_risks, required_overlays=overlays)
+        _print_dynamic(_dynamic_payload(req_dir, state), as_json)
+        return 0 if state.state == "PREPARED" else 3
+    except (OSError, PlanInvalid, TypeError, ValueError, RuntimeError) as exc:
+        print(f"✗ ArtifactPlan prepare 失败: {exc}")
+        return 3
+
+
+def cmd_plan_freeze(req_dir: Path, base_ref: str, as_json: bool) -> int:
+    try:
+        root, base, store, plan, _state = _dynamic_runtime(req_dir, base_ref)
+        if plan is None:
+            raise ValueError("没有 PREPARED ArtifactPlan")
+        state = freeze_git_current_plan(
+            store, root, base, git_plan_input_digest(plan, base),
+            scan_scope=scan_negative_risks,
+            frozen_at=datetime.now().isoformat(timespec="seconds"))
+        _print_dynamic(_dynamic_payload(req_dir, state), as_json)
+        return 0 if state.state == "FROZEN" else 3
+    except (OSError, PlanInvalid, TypeError, ValueError, RuntimeError) as exc:
+        print(f"✗ ArtifactPlan freeze 失败: {exc}")
+        return 3
+
+
+def cmd_plan_bind(req_dir: Path, base_ref: str, stage: str, as_json: bool) -> int:
+    try:
+        root, base, store, plan, state = _dynamic_runtime(req_dir, base_ref)
+        if plan is None or state is None or state.state != "FROZEN":
+            raise ValueError("ArtifactPlan 未冻结或已失效")
+        documents = participating_documents(plan, stage)
+        if not documents:
+            payload = _dynamic_payload(req_dir, state)
+            _print_dynamic(payload, as_json)
+            return 0
+        current_states = evaluate_stage_states(
+            state, _dynamic_snapshots(req_dir, state))
+        parents = participating_prerequisites(plan, stage)
+        if any(current_states[parent] != "BOUND" for parent in parents):
+            raise ValueError("真实前置 stage 尚未全部 BOUND")
+        gate_digest, doc_hashes, parent_fingerprints = _current_plan_gate_inputs(
+            req_dir, state, stage)
+        if gate_digest is None:
+            raise ValueError("跳过 stage 不应建立 binding")
+        rebound = bind_frozen_stage(
+            store, git_plan_input_digest(plan, base), stage,
+            gate_digest=gate_digest, doc_hashes=doc_hashes,
+            prerequisite_fingerprints=parent_fingerprints)
+        _print_dynamic(_dynamic_payload(req_dir, rebound), as_json)
+        binding_states = _dynamic_payload(req_dir, rebound).get("binding_states", {})
+        return 0 if binding_states.get(stage) == "BOUND" else 3
+    except (OSError, PlanInvalid, TypeError, ValueError, RuntimeError) as exc:
+        print(f"✗ ArtifactPlan bind 失败: {exc}")
+        return 3
+
+
+def cmd_plan_status(req_dir: Path, base_ref: str, as_json: bool) -> int:
+    try:
+        _root, _base, _store, plan, state = _dynamic_runtime(req_dir, base_ref)
+        if plan is None or state is None:
+            payload = {"state": "ABSENT", "reason": "no dynamic sidecars"}
+        else:
+            payload = _dynamic_payload(req_dir, state)
+        _print_dynamic(payload, as_json)
+        return 0 if payload["state"] != "INVALID" else 3
+    except (OSError, PlanInvalid, TypeError, ValueError, RuntimeError) as exc:
+        print(f"✗ ArtifactPlan status 失败: {exc}")
+        return 3
+
+
+def cmd_plan_rollback(req_dir: Path, as_json: bool) -> int:
+    try:
+        store = PlanStore(req_dir / "reviews")
+        rollback_dynamic_state(store)
+        payload = {"state": "ABSENT", "reason": "dynamic state rolled back"}
+        _print_dynamic(payload, as_json)
+        return 0
+    except (OSError, PlanInvalid, TypeError, ValueError, RuntimeError) as exc:
+        print(f"✗ ArtifactPlan rollback 失败: {exc}")
+        return 3
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="doc-gate", description="需求文档流水线确定性门禁")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("check", "gate"):
+    for name in ("check", "review-input", "gate"):
         p = sub.add_parser(name)
         p.add_argument("dir", help="需求目录（docs/01-需求/NNN-名称/）")
         p.add_argument("--stage", required=True, help=f"阶段: {'、'.join(STAGES)}")
@@ -1633,6 +2362,27 @@ def main() -> int:
     sp = sub.add_parser("status")
     sp.add_argument("dir")
     sp.add_argument("--json", action="store_true")
+    pp = sub.add_parser("plan-prepare", help="准备动态 ArtifactPlan")
+    pp.add_argument("dir")
+    pp.add_argument("--base", required=True, help="精确 Git 基线 commit/ref")
+    pp.add_argument("--route", required=True,
+                    choices=("direct", "bounded", "standard", "initiative"))
+    pp.add_argument("--require", action="append", default=[], dest="overlays",
+                    help="治理强制 required 的 artifact ID（可重复）")
+    pp.add_argument("--json", action="store_true")
+    for name in ("plan-freeze", "plan-status"):
+        plan_parser = sub.add_parser(name)
+        plan_parser.add_argument("dir")
+        plan_parser.add_argument("--base", required=True)
+        plan_parser.add_argument("--json", action="store_true")
+    pb = sub.add_parser("plan-bind")
+    pb.add_argument("dir")
+    pb.add_argument("--base", required=True)
+    pb.add_argument("--stage", required=True, choices=tuple(STAGES))
+    pb.add_argument("--json", action="store_true")
+    pr = sub.add_parser("plan-rollback")
+    pr.add_argument("dir")
+    pr.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     if args.cmd == "init":
@@ -1644,6 +2394,8 @@ def main() -> int:
         return 3
     if args.cmd == "check":
         return cmd_check(req_dir, args.stage, args.json)
+    if args.cmd == "review-input":
+        return cmd_review_input(req_dir, args.stage, args.json)
     if args.cmd == "gate":
         return cmd_gate(req_dir, args.stage, args.no_review, args.json)
     if args.cmd == "freeze":
@@ -1651,6 +2403,17 @@ def main() -> int:
                           getattr(args, "by", ""), getattr(args, "json", False))
     if args.cmd == "closeout":
         return cmd_closeout(req_dir, args.json)
+    if args.cmd == "plan-prepare":
+        return cmd_plan_prepare(req_dir, args.base, args.route,
+                                tuple(args.overlays), args.json)
+    if args.cmd == "plan-freeze":
+        return cmd_plan_freeze(req_dir, args.base, args.json)
+    if args.cmd == "plan-bind":
+        return cmd_plan_bind(req_dir, args.base, args.stage, args.json)
+    if args.cmd == "plan-status":
+        return cmd_plan_status(req_dir, args.base, args.json)
+    if args.cmd == "plan-rollback":
+        return cmd_plan_rollback(req_dir, args.json)
     return cmd_status(req_dir, args.json)
 
 

@@ -31,7 +31,11 @@ import shutil
 import sys
 import time
 import uuid
-from pathlib import Path
+import pathlib
+
+# Select from the real interpreter platform, not mutable ``os.name``. This is
+# equivalent on native Windows/POSIX and keeps import-only platform probes safe.
+Path = pathlib.WindowsPath if sys.platform == "win32" else pathlib.PosixPath
 
 
 def _configure_utf8_stdio():
@@ -43,6 +47,22 @@ def _configure_utf8_stdio():
 
 
 _configure_utf8_stdio()
+
+_script_dir = Path(__file__).resolve().parent
+_installed_layout = (
+    _script_dir.name == "bin" and _script_dir.parent.name == ".repo-memory-kit"
+)
+_package_root = _script_dir.parent / "lib" if _installed_layout else _script_dir
+if not (_package_root / "aek/application/memory_recall.py").is_file():
+    print("✗ AEK Memory package 缺失或安装布局无效", file=sys.stderr)
+    raise SystemExit(3)
+sys.path.insert(0, str(_package_root))
+from dataclasses import asdict
+from aek.adapters.capsule import CapsuleStore
+from aek.adapters.memory import read_candidate, search_candidates
+from aek.adapters.telemetry import ContextLedger
+from aek.application.memory_recall import recall_context
+from aek.core.context.budget import resolve_context_budget
 
 O_BINARY = getattr(os, "O_BINARY", 0)
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -616,6 +636,14 @@ def main():
     ap.add_argument("--type", help="按类型过滤（逗号分隔：pitfall,decision,playbook,domain,sdd,receipt）")
     ap.add_argument("--status", help="按状态过滤（如 confirmed）")
     ap.add_argument("--module", help="按模块过滤（子串匹配）")
+    ap.add_argument("--context-json", action="store_true",
+                    help="内部：按 Route 预算返回候选/展开正文和 partial report")
+    ap.add_argument("--route", choices=("direct", "bounded", "standard", "initiative"))
+    ap.add_argument("--stage", choices=("routing", "design", "execution", "closeout"),
+                    default="routing")
+    ap.add_argument("--subject", help="当前任务 subject SHA-256")
+    ap.add_argument("--session", help="当前任务稳定 session ID")
+    ap.add_argument("--risk-required", action="store_true")
     args = ap.parse_args(argv)
 
     # --rebuild/--check/--list 模式下，单个位置参数视为目标仓库而非查询文本。
@@ -645,6 +673,25 @@ def main():
         return 0
     if not args.query:
         ap.error("提供检索文本，或 --rebuild/--check/--list")
+    if args.context_json:
+        if not args.route or not args.subject or not args.session:
+            ap.error("--context-json 需要 --route、--subject 和 --session")
+        budget = resolve_context_budget(
+            args.route, args.stage,
+            "thorough" if args.route in {"standard", "initiative"} else "quick")
+        ledger = ContextLedger(
+            repo / ".repo-memory-kit/context" /
+            f"{args.session}-{args.subject[:12]}.jsonl")
+        result = recall_context(
+            repo, args.query, budget, ledger, session_id=args.session,
+            subject_digest=args.subject, risk_required=args.risk_required,
+            candidate_search=lambda root, query: search_candidates(
+                root, query, limit=budget.memory_candidate_limit),
+            candidate_read=read_candidate,
+            capsule_store=CapsuleStore(
+                repo / ".repo-memory-kit/context/capsules"))
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        return 0
     types = [t.strip() for t in args.type.split(",")] if args.type else None
     cmd_query(repo, args.query, args.top, types, args.status, args.module)
     return 0

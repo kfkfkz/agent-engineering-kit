@@ -47,6 +47,7 @@ if frontmatter_name(archify) != "archify":
 
 # Explicit /foo or $foo examples are user-facing invocations, not prose labels.
 documents = [ROOT / "README.md", *sorted((ROOT / "skills").glob("*/SKILL.md")),
+             *sorted((ROOT / "skills").glob("*/references/*.md")),
              *sorted((ROOT / "templates").rglob("*.md"))]
 for path in documents:
     text = path.read_text(encoding="utf-8")
@@ -65,10 +66,15 @@ if "`/memory-check <符号>`" not in memory_rules or "`$memory-check <符号>`" 
 # These are CLI tools. Calling them "skills" is what made generated next-step
 # prompts invent aliases, so the routing contract must classify them explicitly.
 delivery = (ROOT / "skills/repo-delivery/SKILL.md").read_text(encoding="utf-8")
-if "下游 skill 的 canonical name" not in delivery:
+delivery_references = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in sorted((ROOT / "skills/repo-delivery/references").glob("*.md"))
+)
+delivery_bundle = delivery + "\n" + delivery_references
+if "canonical skill" not in delivery:
     errors.append("repo-delivery 缺少 canonical skill 路由约束")
 else:
-    routing_section = delivery.split("### 路由名称约束", 1)[1].split("\n## ", 1)[0]
+    routing_section = delivery.split("## 入口与名称", 1)[1].split("\n## ", 1)[0]
     routing_names = set(re.findall(r"`([a-z][a-z0-9-]*)`", routing_section))
     missing_routes = (registered - {"repo-delivery"}) - routing_names
     unknown_routes = routing_names - invokable - set(KIT_TOOLS)
@@ -79,7 +85,7 @@ else:
 for tool in ("memory-recall", "memory-build", "doc-gate", "route-eval", "governance-eval", "domain-check"):
     if tool not in KIT_TOOLS:
         errors.append(f"测试配置错误：{tool} 不在 KIT_TOOLS")
-    if f"`{tool}` 是 CLI" not in delivery:
+    if not re.search(rf"`{re.escape(tool)}`[^\n]*是 CLI|是 CLI[^\n]*`{re.escape(tool)}`", delivery):
         errors.append(f"repo-delivery 未把 {tool} 明确标为 CLI")
 
 # design-pipeline is a specialist inside repo-delivery. After design it must
@@ -143,8 +149,8 @@ if "完成内部冻结" not in freeze_note:
 
 if "本地 CLI 的执行责任" not in delivery:
     errors.append("repo-delivery 未声明本地 CLI 应由 Agent 自动执行")
-human_gate_section = delivery.split("**本地 CLI 的执行责任在 Agent**", 1)[-1]
-human_gate_section = human_gate_section.split("## 定位目标仓库", 1)[0]
+human_gate_section = delivery.split("本地 CLI 的执行责任在 Agent", 1)[-1]
+human_gate_section = human_gate_section.split("\n## ", 1)[0]
 if "doc-gate freeze" in human_gate_section:
     errors.append("repo-delivery 的人工门禁说明仍把确认与 freeze CLI 相邻")
 if "完成内部冻结" not in human_gate_section:
@@ -179,7 +185,7 @@ for phrase in (
 if "未命中时不增加性能专项步骤" not in delivery_gate:
     errors.append("delivery-gate 没有保持性能审查的风险触发式预算")
 for phrase in ("执行前计划基线", "doc-gate closeout"):
-    if phrase not in delivery:
+    if phrase not in delivery_bundle:
         errors.append(f"repo-delivery 缺少执行期计划协议: {phrase}")
 for phrase in (
     "sql-performance-screen",
@@ -188,7 +194,7 @@ for phrase in (
     "性能/容量风险",
     "performance-review",
 ):
-    if phrase not in delivery:
+    if phrase not in delivery_bundle:
         errors.append(f"repo-delivery 缺少性能风险路由: {phrase}")
 if "执行前计划基线" not in pipeline:
     errors.append("design-pipeline 未说明计划门禁建立执行前基线")

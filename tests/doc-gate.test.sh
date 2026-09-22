@@ -17,6 +17,107 @@ assert_exists() { if [ -e "$2" ]; then ok "$1"; else bad "$1: $2 不存在"; fi;
 
 run_rc() { rc=0; "$@" >/dev/null 2>&1 || rc=$?; }
 
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/artifact-plan.test.py" \
+    && ok "ArtifactPlan/凭证/绑定纯计算契约" \
+    || bad "ArtifactPlan/凭证/绑定契约失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/artifact-plan-transaction.test.py" \
+    && ok "ArtifactPlan sidecar 发布/恢复事务" \
+    || bad "ArtifactPlan sidecar 事务失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/doc-gate-lock.test.py" \
+    && ok "旧文档门禁与 ArtifactPlan sidecar 共锁" \
+    || bad "旧文档门禁共锁失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/planning-service.test.py" \
+    && ok "动态 Plan 状态恢复与严格解码" \
+    || bad "动态 Plan 状态验证失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/doc-gate-plan.test.py" \
+    && ok "动态 Plan CLI 生命周期与 SKIP 失效传播" \
+    || bad "动态 Plan CLI 生命周期失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/review-judge.test.py" \
+    && ok "Review Judge 纯计算阈值和连续失败语义" \
+    || bad "Review Judge 契约失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/review-result.test.py" \
+    && ok "ReviewResult 全文哈希绑定和 schema 校验" \
+    || bad "ReviewResult 契约失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/review-incremental.test.py" \
+    && ok "增量 Review 依赖闭包与全文回退" \
+    || bad "增量 Review 计划失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/review-service.test.py" \
+    && ok "ReviewService 实际输入与 receipt 绑定" \
+    || bad "ReviewService 输入/receipt 验证失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/review-markdown.test.py" \
+    && ok "Review Markdown 快照与 fail-closed 解析" \
+    || bad "Review Markdown 快照解析失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/policy-evaluator.test.py" \
+    && ok "PolicyEvaluator 规范化 diff 纯裁决" \
+    || bad "PolicyEvaluator 契约失败"
+
+# 1.0.1 T3：Registry 的外部阶段视图必须精确保持 v1.0.0 的形状与顺序。
+python3 - "$KIT" <<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from aek.core.artifact.registry import ARTIFACT_REGISTRY, ArtifactGroup, ArtifactRegistry, ArtifactSpec
+
+expected = {
+    "需求分析": (["需求分析.md"], [], False),
+    "概要设计": (["概要设计.md"], ["需求分析"], "optional"),
+    "业务流程设计": (["业务流程设计.md"], ["概要设计"], False),
+    "UI设计": (["UI设计.md"], ["概要设计"], True),
+    "详细设计": (["详细设计.md", "API设计.md", "数据库设计.md"], ["业务流程设计"], True),
+    "计划": (["任务清单.md", "测试方案.md"], ["详细设计"], "optional"),
+}
+expected_sections = {
+    "需求分析.md": ["背景", "目标", "非目标", "场景与验收依据", "验收项", "非功能要求", "待确认事项", "冻结记录"],
+    "概要设计.md": ["设计目标", "现状分析", "总体方案", "功能点设计", "方案取舍", "数据与接口影响", "风险"],
+    "业务流程设计.md": ["修订记录", "简介", "业务流程总览", "功能设计", "数据与接口概览", "评审记录"],
+    "UI设计.md": ["界面目标", "用户核心任务", "信息架构", "页面清单", "设计系统落地", "交互规则", "响应式与兼容", "可访问性", "验证清单"],
+    "详细设计.md": ["设计范围", "业务逻辑", "异常处理", "安全设计", "可观测性与配置", "发布与回滚"],
+    "API设计.md": ["接口清单", "接口详细设计"],
+    "数据库设计.md": ["表变更清单", "详细变更"],
+    "任务清单.md": ["任务", "执行记录", "回归范围确认", "完成标准"],
+    "测试方案.md": ["测试接缝", "用例清单", "边界与异常覆盖", "环境与数据", "回归范围", "通过标准"],
+}
+view = ARTIFACT_REGISTRY.legacy_stage_view()
+assert list(view) == list(expected)
+for stage, (docs, upstream, review) in expected.items():
+    assert view[stage]["docs"] == docs
+    assert view[stage]["upstream"] == upstream
+    assert view[stage]["review"] == review
+    assert set(view[stage]["sections"]) == set(docs)
+    assert view[stage]["sections"] == {doc: expected_sections[doc] for doc in docs}
+assert len(ARTIFACT_REGISTRY.artifacts) == 9
+assert ARTIFACT_REGISTRY.resolve_prerequisites("计划") == (
+    "需求分析", "概要设计", "业务流程设计", "详细设计")
+view["需求分析"]["docs"].clear()
+assert ARTIFACT_REGISTRY.legacy_stage_view()["需求分析"]["docs"] == ["需求分析.md"]
+
+def reject(artifacts, groups):
+    try:
+        ArtifactRegistry(artifacts, groups)
+    except ValueError:
+        return
+    raise AssertionError("invalid registry accepted")
+
+base = ArtifactSpec("a", "a.md", "one", ("section",))
+reject((base, ArtifactSpec("a", "b.md", "one", ("section",))),
+       (ArtifactGroup("one", ("a",), (), False),))
+reject((base, ArtifactSpec("b", "a.md", "one", ("section",))),
+       (ArtifactGroup("one", ("a",), (), False),))
+reject((base, ArtifactSpec("b", "A.md", "one", ("section",))),
+       (ArtifactGroup("one", ("a",), (), False),))
+reject((base,), (ArtifactGroup("one", ("a",), ("two",), False),
+                 ArtifactGroup("two", (), ("one",), False)))
+reject((base,), (ArtifactGroup("one", ("a",), (), "sometimes"),))
+try:
+    ArtifactRegistry((base,), (ArtifactGroup("one", ("a",), (), False),), schema_version=2)
+except ValueError:
+    pass
+else:
+    raise AssertionError("unknown schema version accepted")
+print("artifact registry contract: PASS")
+PY
+
 # ════════════════ 夹具：完整合法需求链 ════════════════
 REPO="$T/repo"
 D="$REPO/docs/03-SDD/010-用户状态管理"
@@ -555,9 +656,69 @@ assert_eq "check 详细设计 通过（业务流程设计已签核冻结）" "$r
 run_rc python3 "$DG" gate "$D" --stage 详细设计
 assert_eq "gate 详细设计 缺 issues.json 被拒" "$rc" "3"
 
+python3 "$DG" review-input "$D" --stage 详细设计 --json > "$T/review-input.json"
+python3 - "$T/review-input.json" "$D/reviews/详细设计.review-receipt.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+assert data["request"]["mode"] == "full"
+json.dump(data["receipt"], open(sys.argv[2], "w", encoding="utf-8"),
+          ensure_ascii=False)
+PY
+ok "ReviewService 首轮生成全文输入与 receipt 模板"
+python3 - "$D/reviews/详细设计.context-report.json" <<'PY' \
+    && ok "实际 reviewer payload 产生 partial Context Report" \
+    || bad "reviewer payload 缺 Context Telemetry"
+import json, sys
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+assert report["coverage"] == "partial"
+assert report["delivered_bytes"] > 0
+assert report["observed_channels"] == ["review_loader"]
+assert "host_native" in report["unobserved_channels"]
+PY
 write_issues "$D" 详细设计
 run_rc python3 "$DG" gate "$D" --stage 详细设计
 assert_eq "gate 详细设计 干净 issues → PASS" "$rc" "0"
+assert_exists "全文 Review 建立增量基线" "$D/reviews/详细设计.review-baseline.json"
+
+D_INCREMENTAL="$REPO/docs/03-SDD/021-增量评审"
+cp -r "$D" "$D_INCREMENTAL"
+sed -i 's/版本号控制/版本号控制并记录审计/' "$D_INCREMENTAL/详细设计.md"
+python3 "$DG" review-input "$D_INCREMENTAL" --stage 详细设计 --json \
+    > "$T/review-incremental.json"
+python3 - "$T/review-incremental.json" <<'PY' \
+    && ok "安全变化只生成增量 reviewer payload" \
+    || bad "ReviewService 未选择安全增量输入"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+request = data["request"]
+assert request["mode"] == "incremental"
+assert request["section_documents"]
+assert request["full_documents"] == []
+PY
+write_issues "$D_INCREMENTAL" 详细设计
+printf '{}\n' > "$D_INCREMENTAL/reviews/详细设计.review-receipt.json"
+run_rc python3 "$DG" gate "$D_INCREMENTAL" --stage 详细设计
+assert_eq "增量 receipt 失配时拒绝门禁" "$rc" "3"
+python3 - "$T/review-incremental.json" \
+    "$D_INCREMENTAL/reviews/详细设计.review-receipt.json" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+json.dump(data["receipt"], open(sys.argv[2], "w", encoding="utf-8"),
+          ensure_ascii=False)
+PY
+run_rc python3 "$DG" gate "$D_INCREMENTAL" --stage 详细设计
+assert_eq "有效增量输入/receipt 仍绑定全文并通过" "$rc" "0"
+
+D_REVIEW_LINK="$REPO/docs/03-SDD/022-评审证据链接"
+cp -r "$D" "$D_REVIEW_LINK"
+OUTSIDE_REVIEW="$T/outside-review-request.json"
+printf '{"outside":"must-not-be-consumed"}\n' > "$OUTSIDE_REVIEW"
+rm "$D_REVIEW_LINK/reviews/详细设计.review-request.json"
+ln -s "$OUTSIDE_REVIEW" "$D_REVIEW_LINK/reviews/详细设计.review-request.json"
+run_rc python3 "$DG" gate "$D_REVIEW_LINK" --stage 详细设计
+assert_eq "评审 request 符号链接被 fail-closed 拒绝" "$rc" "3"
+assert_eq "评审证据链接拒绝不改仓库外文件" \
+    "$(cat "$OUTSIDE_REVIEW")" '{"outside":"must-not-be-consumed"}'
 
 # P1 负向：必审阶段拒绝 --no-review
 run_rc python3 "$DG" gate "$D" --stage 详细设计 --no-review
@@ -1183,6 +1344,37 @@ assert_eq "S9x fallback 写入失败受控返回" "$rc" "3"
     && ok "S9aa fallback 清理临时文件" || bad "S9aa fallback 残留临时文件"
 [ "$(sha256sum "$D_INIT/docs/01-需求/README.md" | cut -d' ' -f1)" = "$FALLBACK_INDEX_BEFORE" ] \
     && ok "S9ab fallback 失败不改索引" || bad "S9ab fallback 污染索引"
+
+# 已有 SDD 不迁移：升级安装后的 CLI 从任意 cwd 读取同一冻结状态。
+OLD_DOC_HASH="$(sha256sum "$D/需求分析.md" | cut -d' ' -f1)"
+"$KIT/install.sh" "$REPO" >/dev/null
+python3 "$DG" status "$D" --json > "$T/source-status.json"
+(
+    cd "$T"
+    python3 "$REPO/.repo-memory-kit/bin/doc-gate" status "$D" --json
+) > "$T/installed-status.json"
+if cmp -s "$T/source-status.json" "$T/installed-status.json"; then
+    ok "既有 SDD 安装升级后 status JSON 与源码 CLI 等价"
+else
+    bad "既有 SDD 安装升级后 status JSON 漂移"
+fi
+assert_eq "安装升级不改既有需求正文" \
+    "$(sha256sum "$D/需求分析.md" | cut -d' ' -f1)" "$OLD_DOC_HASH"
+
+# 动态计划尚未激活时，任何残缺 sidecar 都不能回退到 legacy-static 放行。
+printf '{broken' > "$D/reviews/artifact-plan.json"
+python3 "$DG" status "$D" --json > "$T/dynamic-invalid.json"
+python3 - "$T/dynamic-invalid.json" <<'PY' \
+    && ok "残缺动态计划 fail-closed，不误判旧冻结态" \
+    || bad "残缺动态计划回退 legacy-static"
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert all(row["state"] == "INVALID" for row in state.values()
+           if isinstance(row, dict) and "state" in row)
+PY
+run_rc python3 "$DG" gate "$D" --stage 概要设计 --no-review
+assert_eq "动态 sidecar 残缺时拒绝机器门禁" "$rc" "3"
+assert_eq "拒绝后 sidecar 现场保留" "$(cat "$D/reviews/artifact-plan.json")" "{broken"
 
 echo
 echo "doc-gate 测试: $pass 通过, $fail 失败"

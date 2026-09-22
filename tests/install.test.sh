@@ -43,6 +43,12 @@ assert_exists "Claude 技能（check）"     "$P/.claude/skills/memory-check/SKI
 assert_exists "Codex 技能（capture）"    "$P/.agents/skills/memory-capture/SKILL.md"
 assert_exists "Claude 技能（delivery）"  "$P/.claude/skills/repo-delivery/SKILL.md"
 assert_exists "Codex 技能（delivery）"   "$P/.agents/skills/repo-delivery/SKILL.md"
+assert_exists "repo-delivery Direct reference" "$P/.agents/skills/repo-delivery/references/direct.md"
+assert_exists "repo-delivery 收口 reference" "$P/.claude/skills/repo-delivery/references/evidence-closeout.md"
+assert_exists "aek package 安装" "$P/.repo-memory-kit/lib/aek/__init__.py"
+assert_exists "ReferenceCatalog 安装" "$P/.repo-memory-kit/lib/aek/core/context/reference_catalog.py"
+assert_exists "ContextLedger 安装" "$P/.repo-memory-kit/lib/aek/adapters/telemetry.py"
+assert_exists "两级 Memory 安装" "$P/.repo-memory-kit/lib/aek/adapters/memory.py"
 assert_exists "Claude 技能（graph）"     "$P/.claude/skills/codebase-memory/SKILL.md"
 assert_exists "Codex 技能（debugging）"  "$P/.agents/skills/systematic-debugging/SKILL.md"
 assert_exists "Codex 技能（tdd）"        "$P/.agents/skills/tdd/SKILL.md"
@@ -51,6 +57,11 @@ for tool in reuse-research security-review delivery-gate spec-migrate task-hando
 done
 assert_exists "Spec Kit 迁移器随仓库安装" "$P/.repo-memory-kit/bin/spec-migrate"
 assert_exists "任务路由评估器随仓库安装" "$P/.repo-memory-kit/bin/route-eval"
+if (cd "$T" && PYTHONPATH='' python3 "$P/.repo-memory-kit/bin/governance-eval" --help >/dev/null 2>&1); then
+    ok "已安装 governance-eval 可从任意 cwd 加载 Core"
+else
+    bad "已安装 governance-eval 无法加载 Core"
+fi
 assert_exists "CLAUDE.md 托管区块"       "$P/CLAUDE.md"
 assert_eq "cbmignore 托管区块数=1" "$(grep -c 'repo-memory-kit:start' "$P/.cbmignore")" "1"
 assert_eq "CLAUDE.md 区块标记=1"  "$(grep -cF '<!-- repo-memory-kit:start -->' "$P/CLAUDE.md")" "1"
@@ -147,6 +158,7 @@ rm -f "$P4/docs/memory/pitfalls/2099-01-01-not-in-index.md"
 assert_gone     "卸载：RULES.md 移除"      "$P4/docs/memory/RULES.md"
 assert_gone     "卸载：技能移除"           "$P4/.claude/skills/memory-check"
 assert_gone     "卸载：delivery 技能移除"  "$P4/.agents/skills/repo-delivery"
+assert_gone     "卸载：aek package 移除"   "$P4/.repo-memory-kit/lib/aek"
 assert_gone     "卸载：graph 技能移除"     "$P4/.agents/skills/codebase-memory"
 assert_gone     "卸载：debugging 技能移除" "$P4/.agents/skills/systematic-debugging"
 assert_gone     "卸载：tdd 技能移除"       "$P4/.agents/skills/tdd"
@@ -166,9 +178,12 @@ assert_exists   "卸载：用户条目目录保留"   "$P4/docs/memory/pitfalls"
 P7="$T/proj7"; mkdir -p "$P7"; printf '# P\n' > "$P7/CLAUDE.md"
 "$KIT/install.sh" "$P7" >/dev/null
 echo "# 手工修改" >> "$P7/docs/memory/RULES.md"
+printf 'user owned\n' > "$P7/.repo-memory-kit/lib/aek/user-note.txt"
 "$KIT/install.sh" --uninstall "$P7" >/dev/null
 assert_exists "卸载漂移保护：修改过的 RULES.md 保留" "$P7/docs/memory/RULES.md"
 assert_gone     "卸载：未修改的技能正常移除" "$P7/.claude/skills/memory-check"
+assert_exists   "卸载保留 package 目录中的未知用户文件" "$P7/.repo-memory-kit/lib/aek/user-note.txt"
+assert_gone     "卸载只移除受管 package 文件" "$P7/.repo-memory-kit/lib/aek/__init__.py"
 
 # ── T16 卸载路径安全：伪造的 v1 清单（越界路径）不被采纳清理，标记文件不删 ──
 P8="$T/proj8"; mkdir -p "$P8"; printf '# P\n' > "$P8/CLAUDE.md"
@@ -278,6 +293,16 @@ if "$KIT/install.sh" --doctor "$P15" >/dev/null 2>&1; then bad "doctor 未发现
 "$KIT/install.sh" --repair "$P15" >/dev/null
 assert_exists "repair 恢复缺失文件" "$P15/.agents/skills/tdd/SKILL.md"
 if "$KIT/install.sh" --doctor "$P15" >/dev/null 2>&1; then ok "repair 后 doctor 通过"; else bad "repair 后 doctor 仍失败"; fi
+rm "$P15/.agents/skills/repo-delivery/references/bounded.md"
+rm "$P15/.repo-memory-kit/lib/aek/core/context/reference_catalog.py"
+if "$KIT/install.sh" --doctor "$P15" >/dev/null 2>&1; then
+    bad "doctor 未发现 reference/package 缺失"
+else
+    ok "doctor 发现 reference/package 缺失"
+fi
+"$KIT/install.sh" --repair "$P15" >/dev/null
+assert_exists "repair 恢复 reference" "$P15/.agents/skills/repo-delivery/references/bounded.md"
+assert_exists "repair 恢复 package" "$P15/.repo-memory-kit/lib/aek/core/context/reference_catalog.py"
 
 # ── T24 普通安装只发现 Spec Kit；显式迁移才写入 ──
 P16="$T/proj16"; F16="$P16/.specify/specs/001-demo"

@@ -605,7 +605,9 @@ def _cleanup_empty_dirs(target: Path, groups: list[list[ResourceSpec]]) -> None:
             if spec.resource_type == "owned_file":
                 from pathlib import PurePosixPath
                 parent = str(PurePosixPath(spec.destination_path).parent)
-                if parent.startswith((".claude/skills/", ".agents/skills/")):
+                if parent.startswith((
+                        ".claude/skills/", ".agents/skills/",
+                        ".repo-memory-kit/lib/")):
                     candidates.add(parent)
     # 祖先链纳入（archify 集成：嵌套目录树——文件全在深层时中间层从不在
     # 任何文件的 parent 集合里，必须显式扩展才能逐层清空；.claude/skills 本身保留）
@@ -613,7 +615,10 @@ def _cleanup_empty_dirs(target: Path, groups: list[list[ResourceSpec]]) -> None:
         parts = rel.split("/")
         for i in range(3, len(parts)):
             candidates.add("/".join(parts[:i]))
-    candidates.update({".repo-memory-kit/bin", ".repo-memory-kit/tx", ".repo-memory-kit"})
+    candidates.update({
+        ".repo-memory-kit/bin", ".repo-memory-kit/lib",
+        ".repo-memory-kit/tx", ".repo-memory-kit",
+    })
     # 深度优先：先删子目录再尝试父目录
     for rel in sorted(candidates, key=lambda r: -r.count("/")):
         try:

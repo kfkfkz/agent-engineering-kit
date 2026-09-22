@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "scope": "complete_delivered_context",
+  "baseline_commit": "88944283eb8030b4c44363f21f5ef0110252e1fa",
+  "cases": [
+    {
+      "case_id": "direct-doc-only",
+      "fixture_digest": "27905d8182e8a9e78d5e5dbb6ed651922872cf30f97a9d22152124d3159efd49",
+      "baseline_stream_digest": "87f0ea99813c3a2358e9da0282fb3d3144af780c6807ef112df90c4a7ca299df",
+      "baseline_bytes": 31004,
+      "baseline_chars": 15859,
+      "baseline_events": 3
+    },
+    {
+      "case_id": "bounded-local-behavior",
+      "fixture_digest": "98530df46b1cadd28e907854ed856e9714a44873908ea5ff1d975783d4997d5d",
+      "baseline_stream_digest": "34ea18cf65332c9f75912f2be60668444eb5e1704ce94a38cd78b24b63fcfa28",
+      "baseline_bytes": 53541,
+      "baseline_chars": 29234,
+      "baseline_events": 8
+    },
+    {
+      "case_id": "standard-cross-module",
+      "fixture_digest": "16ce5b6288b0a9c9b43e847ec9ca45fdfd1782c8b4567325b9f87ec6b7cb9d2c",
+      "baseline_stream_digest": "29c29f313b9c418346748514aa329d39ac3dcc76dc5b196732e8038c770f0c41",
+      "baseline_bytes": 72062,
+      "baseline_chars": 39085,
+      "baseline_events": 10
+    },
+    {
+      "case_id": "initiative-program",
+      "fixture_digest": "33e1c3624b6085725d8e9c50546f38f01e2eca7c2e672112a7d2ad3f55800e0a",
+      "baseline_stream_digest": "03418952418c878ae870bc9b22f692d309144732d8e3464e2a8aa4bf23222701",
+      "baseline_bytes": 91832,
+      "baseline_chars": 48261,
+      "baseline_events": 17
+    }
+  ]
+}

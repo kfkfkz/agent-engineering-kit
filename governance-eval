@@ -20,14 +20,11 @@ Skill 可以建议风险等级，但本引擎是**唯一裁决者**——只认 
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import re
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 
 def _configure_utf8_stdio() -> None:
     """Keep CLI output independent from the host's narrow code page."""
@@ -39,78 +36,17 @@ def _configure_utf8_stdio() -> None:
 
 _configure_utf8_stdio()
 
-
-class PolicyError(Exception):
-    """策略文件非法（fail-closed：阻断评估而非静默跳过）。"""
-
-
-@dataclass
-class RuleMatch:
-    """一条规则的命中详情。"""
-    rule_id: str
-    matched_files: list[str] = field(default_factory=list)
-    matched_lines: list[tuple[str, int, str]] = field(default_factory=list)  # (file, line_no, line_text)
-    required_actions: list[str] = field(default_factory=list)
-
-
-@dataclass
-class GovernanceResult:
-    """治理评估结果。"""
-    profile: str                        # "strict" | "lightweight"
-    matched: list[RuleMatch] = field(default_factory=list)
-    default_actions: list[str] = field(default_factory=list)
-    required_actions: list[str] = field(default_factory=list)  # 合并（matched ∪ default 中的非 inline）
-    all_actions: list[str] = field(default_factory=list)       # 全部（含 inline_review）
-    changed_files: list[str] = field(default_factory=list)     # 最终 diff 的规范化路径
-
-    @property
-    def is_inline_only(self) -> bool:
-        """True = 只需要 inline_review（commit message 内嵌验证结论）。"""
-        non_inline = [a for a in self.required_actions if a != "inline_review"]
-        return not non_inline and "inline_review" in self.all_actions
-
-    @property
-    def needs_formal_receipt(self) -> bool:
-        """True = 需要正式回执文件（matched 规则或 default 要求均计入——
-        P1 修复：default require=receipt 时此前误报 false）。"""
-        merged = set(self.required_actions) | set(self.default_actions)
-        return "receipt" in merged or "independent_review" in merged
-
-    @property
-    def needs_independent_review(self) -> bool:
-        """True = 需要独立审查（对抗复核）。"""
-        return "independent_review" in self.required_actions
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "profile": self.profile,
-            "matched_rules": [
-                {"rule_id": m.rule_id, "files": m.matched_files, "required": m.required_actions}
-                for m in self.matched],
-            "required_actions": self.required_actions,
-            "all_actions": self.all_actions,
-            "changed_files": self.changed_files,
-            "is_inline_only": self.is_inline_only,
-            "needs_formal_receipt": self.needs_formal_receipt,
-            "needs_independent_review": self.needs_independent_review,
-        }
-
-    def summary(self) -> str:
-        """人类可读的治理摘要（delivery-gate 收口输出）。"""
-        if not self.matched:
-            return (f"Governance: {self.profile} | "
-                    f"无规则命中 | 默认动作: {', '.join(self.default_actions) or 'none'}")
-        lines = [f"Governance: {self.profile}"]
-        for m in self.matched:
-            lines.append(f"  命中规则: {m.rule_id}")
-            lines.append(f"    required: {', '.join(m.required_actions)}")
-            for f in m.matched_files[:5]:
-                lines.append(f"    file: {f}")
-            for fname, lineno, text in m.matched_lines[:3]:
-                lines.append(f"    {fname}:{lineno}: {text[:80]}")
-        if self.required_actions:
-            lines.append(f"  总需: {', '.join(self.required_actions)}")
-        return "\n".join(lines)
+_script_dir = Path(__file__).resolve().parent
+_installed_layout = (
+    _script_dir.name == "bin" and _script_dir.parent.name == ".repo-memory-kit"
+)
+_package_root = _script_dir.parent / "lib" if _installed_layout else _script_dir
+if not (_package_root / "aek/core/policy/evaluator.py").is_file():
+    print("✗ AEK package 缺失或安装布局无效", file=sys.stderr)
+    raise SystemExit(3)
+sys.path.insert(0, str(_package_root))
+from aek.application.governance import evaluate_governance
+from aek.core.policy.evaluator import GovernanceResult, PolicyError, evaluate_policy
 
 
 PROFILE_DEFAULTS: dict[str, list[str]] = {
@@ -167,24 +103,6 @@ def load_policy(governance_path: Path) -> dict[str, Any]:
                     raise PolicyError(f"{rid}: match.{key} 必须是字符串数组")
     return {"version": 1, "profile": profile, "rules": rules,
             "default": {"require": list(PROFILE_DEFAULTS[profile])}}
-
-
-def _glob_to_regex(pattern: str) -> str:
-    """glob → regex（** 跨目录，* 单层，? 单字符）。
-    先 re.escape 全部，再按优先级替换 token（防 * 干扰已替换的 .*）。"""
-    escaped = re.escape(pattern)
-    escaped = escaped.replace(r"\*\*/", "(?:[^/]*/)*")   # **/ → 任意层目录
-    escaped = escaped.replace(r"\*\*", ".*")              # **  → 任意
-    escaped = escaped.replace(r"\*", "[^/]*")              # *   → 单层
-    escaped = escaped.replace(r"\?", "[^/]")                # ?   → 单字符
-    return escaped
-
-
-def _file_matches_pattern(filepath: str, pattern: str) -> bool:
-    """glob 模式匹配（** 支持跨目录）。"""
-    if "**" in pattern:
-        return re.fullmatch(_glob_to_regex(pattern), filepath) is not None
-    return fnmatch.fnmatch(filepath, pattern)
 
 
 def _unquote_git_path(path: str) -> str:
@@ -303,63 +221,16 @@ def evaluate_diff(diff_text: str, policy: dict[str, Any]) -> GovernanceResult:
 
     返回 GovernanceResult，包含命中的规则和需要的动作。
     """
-    result = GovernanceResult(profile=policy.get("profile", "strict"))
-    default = policy.get("default", {})
-    result.default_actions = list(default.get("require", []))
-    result.all_actions = list(result.default_actions)
+    return evaluate_governance(
+        diff_text, policy, changed_files=_diff_files,
+        added_lines=_added_lines, deleted_files=_deleted_files)
 
-    changed_files = _diff_files(diff_text)
-    result.changed_files = sorted(changed_files)
-    added = _added_lines(diff_text)
-    deleted = _deleted_files(diff_text)
 
-    for rule in policy.get("rules", []):
-        match = RuleMatch(
-            rule_id=rule.get("id", "unknown"),
-            required_actions=rule.get("require", []))
-        match_spec = rule.get("match", {})
-
-        # 路径匹配（新增/修改/删除的文件）
-        for pattern in match_spec.get("paths", []):
-            for f in changed_files | deleted:
-                if _file_matches_pattern(f, pattern):
-                    match.matched_files.append(f)
-
-        # 文件名匹配（精确文件名，非路径 glob）
-        for pattern in match_spec.get("files", []):
-            for f in changed_files | deleted:
-                if fnmatch.fnmatch(Path(f).name, pattern):
-                    match.matched_files.append(f)
-
-        # 新增行内容匹配（正则，只扫描 diff 新增行）
-        for regex_str in match_spec.get("added_lines_regex", []):
-            try:
-                regex = re.compile(regex_str)
-            except re.error as e:
-                # fail-closed：策略文件里的非法正则必须阻断评估——静默跳过
-                # 会让该规则的 required_actions 全部失效（P1 修复）
-                raise PolicyError(
-                    f"规则 {rule.get('id', 'unknown')} 的正则非法: {regex_str!r}: {e}")
-            for fname, lineno, text in added:
-                if regex.search(text):
-                    match.matched_lines.append((fname, lineno, text.strip()))
-
-        if match.matched_files or match.matched_lines:
-            match.matched_files = sorted(set(match.matched_files))
-            result.matched.append(match)
-            # 合并 required_actions（去重）
-            for action in match.required_actions:
-                if action not in result.required_actions:
-                    result.required_actions.append(action)
-                if action not in result.all_actions:
-                    result.all_actions.append(action)
-
-    # default 的动作加入 all_actions 但不加入 required_actions
-    for action in result.default_actions:
-        if action not in result.all_actions:
-            result.all_actions.append(action)
-
-    return result
+def _legacy_evaluate_diff(diff_text: str, policy: dict[str, Any]) -> GovernanceResult:
+    """Pre-1.0.1 parity oracle; production dispatch uses Application."""
+    return evaluate_policy(
+        _diff_files(diff_text), _added_lines(diff_text),
+        _deleted_files(diff_text), policy)
 
 
 # ══════════════════════════ CLI ══════════════════════════

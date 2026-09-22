@@ -10,6 +10,15 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "✓ $1"; }
 bad() { fail=$((fail+1)); echo "✗ $1"; }
 
+PYTHONPATH="$(cd "$(dirname "$0")/.." && pwd)${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 "$(dirname "$0")/dispatch-service.test.py" \
+    && ok "DispatchService 单路径与 receipt 契约" \
+    || bad "DispatchService 契约失败"
+PYTHONPATH="$(cd "$(dirname "$0")/.." && pwd)${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 "$(dirname "$0")/mcp-dispatch.test.py" \
+    && ok "MCP started 后不 fallback 且 receipt 去重" \
+    || bad "MCP dispatch 故障注入失败"
+
 # 准备：安装到临时目录（提供 MCP 服务器绑定的目标仓库）
 P="$T/repo"; mkdir -p "$P"
 python3 -m installer "$P" >/dev/null 2>&1
@@ -58,7 +67,7 @@ RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVe
 printf '%s\n' "$RESP" | python3 -c "
 import json,sys; r=json.load(sys.stdin)
 assert r['result']['protocolVersion']=='2025-06-18'  # 回显
-assert r['result']['serverInfo']=={'name':'agent-engineering-kit','version':'1.0.0'}
+assert r['result']['serverInfo']=={'name':'agent-engineering-kit','version':'1.0.1'}
 " && ok "T1b 版本协商：回显客户端版本" || bad "T1b: $RESP"
 
 # T1c: 客户端发送未知版本 → 默认版本

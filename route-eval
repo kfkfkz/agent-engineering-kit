@@ -20,6 +20,19 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 
+_script_dir = Path(__file__).resolve().parent
+_installed_layout = (
+    _script_dir.name == "bin" and _script_dir.parent.name == ".repo-memory-kit"
+)
+_package_root = _script_dir.parent / "lib" if _installed_layout else _script_dir
+if not (_package_root / "aek/core/context/budget.py").is_file():
+    print("✗ AEK package 缺失或安装布局无效", file=sys.stderr)
+    raise SystemExit(3)
+sys.path.insert(0, str(_package_root))
+from aek.application.routing import RoutingError, evaluate_route
+from aek.core.context.budget import resolve_context_budget
+
+
 def _configure_utf8_stdio() -> None:
     """Keep CLI output independent from the host's narrow code page."""
     for stream in (sys.stdout, sys.stderr):
@@ -405,6 +418,15 @@ def _path_matches(path: str, patterns: list[str]) -> bool:
 
 
 def evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]:
+    """Compatibility wrapper; production decisions live in Application."""
+    try:
+        return evaluate_route(card, governance)
+    except RoutingError as exc:
+        raise RouteError(str(exc)) from exc
+
+
+def _legacy_evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]:
+    """Pre-1.0.1 implementation retained as a parity oracle, never dispatched."""
     minimum, reasons = card_minimum(card)
     policy_min, review_depth, receipt_mode, policy_checks = _policy_requirements(governance)
     if policy_min is not None:
@@ -487,6 +509,9 @@ def evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]
         "work_kind": card["work_kind"],
         "risk_overlays": card["risk_overlays"],
         "execution_profile": dict(ROUTE_EXECUTION_PROFILES[effective]),
+        "context_budget": resolve_context_budget(
+            effective, "routing", review_depth,
+            tuple(card["risk_overlays"])).as_dict(),
         "requirements": {
             "review_depth": review_depth,
             "receipt_mode": receipt_mode,

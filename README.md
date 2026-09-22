@@ -10,6 +10,21 @@
 减少“不同 Agent 各写一套设计、各走一套流程”的偏差。AI 负责提出候选和评审问题，
 脚本负责可重复判定，维护者保留需求确认、业务流程签核和高风险决策权。
 
+## 1.0.1 架构升级
+
+1.0.1 把“按任务复杂度少读、少产出、少评审”从 Skill 建议升级为可验证的产品行为：
+
+- Route Card 同时裁决最低安全路线与无理由过重路线，Direct/Bounded 不再被功能类型自动拖入完整 SDD；
+- ArtifactPlan 根据可信变更事实动态决定 required/optional/skipped，跳过项不生成空文档或伪 gate；
+- `repo-delivery` 主 Skill 收敛为薄入口，阶段细则按路线从 references 加载；Memory 先返回候选元数据，再在预算内展开正文；
+- Standard/Initiative 使用来源摘要绑定的 Context Capsule；来源变化或缓存损坏时自动重建，Capsule 永远不能代替证据；
+- 文档评审在依赖闭包可证明完整时增量投喂，否则自动回退全文；全部 verdict 仍由确定性 Core 裁决；
+- Context Ledger/Report 只记录摘要、字节和通道覆盖，不落提示正文；固定 complete benchmark 证明四条路线在功能、安全、覆盖、退出码和诊断等价后达到材料成本门槛；
+- CLI 与 MCP 经 Application Service 单路径调度；请求一旦开始执行，超时或响应丢失也不会切换后端造成双写。
+
+旧 CLI 名称、参数、退出码、gate 文件、Markdown 文件名和安装生命周期保持兼容。动态 sidecar
+一旦存在但残缺会 fail-closed，不会猜测成旧模式；Windows 继续默认 copy，不要求 symlink 权限。
+
 需要先理解设计目标、完整工作模型与适用边界，可阅读 [AEK Overview](overview.md)。
 
 ## 当前架构
@@ -385,6 +400,12 @@ Agent 统一 closeout，写入任务清单与测试方案的完整终态哈希�
 旧版计划凭证可在首次 closeout 时迁移，并会显式标记缺少历史执行前基线；这类迁移仍必须
 依赖 Route Card 与最终 diff 做范围真实性对照。
 
+Standard/Initiative 会在计划冻结后生成动态 ArtifactPlan。Plan 只允许由完整、可重验的事实生产者
+授权跳过阶段；事实为 unknown 或凭证不完整时保持 required 并阻断猜测。参与阶段按真实前置闭包
+绑定 gate，跳过阶段在状态中明确显示 `SKIPPED`，不会生成空白 Markdown 或伪造冻结凭证。计划、
+凭证与 binding 通过同一事务锁发布；中断后可恢复或整体回滚，旧项目没有动态 sidecar 时继续使用
+原有静态六阶段视图。
+
 门禁阈值可通过 `.repo-memory-kit/doc-policy.json` 配置：`max_blocker`、`max_major`、
 `max_minor` 必须是非负整数，`max_iterations` 必须大于等于 1。文件一旦存在，JSON 损坏、
 字段类型错误或出现未知字段都会在写 gate 前阻断，不会静默回退到默认策略。上游文档只要被
@@ -514,7 +535,9 @@ Route Card 检查所选/最低路线与最终 diff 范围漂移，再复用 `gov
 
 MCP 实现完整的 initialize 生命周期与 JSON-RPC envelope/参数校验；非法
 请求返回结构化错误，notification 不回包，单个工具异常不会终止 stdio 服务。
-它委托现有 CLI 实现，不另复制一套业务逻辑。
+1.0.1 会在请求执行前根据 capability 与 parity 选择 Application Service 或兼容 CLI，整个请求
+只走一条路径；开始执行后的超时/响应丢失不会 fallback，已提交结果可由请求 receipt 去重返回。
+工具名、schema 与成功响应保持不变。
 
 ## 项目记忆（按模块分目录）
 

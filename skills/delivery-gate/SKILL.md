@@ -54,6 +54,11 @@ description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移�
 SQL/ORM 查询形状或访问模式变化时启用 `sql-performance-screen`，但它**不自动升径**。先识别
 目标数据库的方言、版本、schema/索引事实和调用场景，再做低成本静态检查：
 
+初查结构化证据采用 `aek.core.planning.sql_screen.SqlPerformanceScreenResult`：记录目标数据库
+`dialect`、`query_kind`、实际检查的 `screened_dimensions`、候选 `risk_indicators`、
+`scope_complete` 与证据 digest，不把 SQL 原文写进 Context Ledger。该结构只产生
+`performance_capacity=true|false|unknown` 候选事实；缺证据保持 unknown，不能假称性能通过。
+
 - 是否出现 N+1、循环查询、重复往返或不合理的事务跨度；
 - 结果集、扫描、分页和批次是否有界，过滤/连接/排序列是否能对应已声明索引；
 - 参数分布、空值、隐式转换、函数谓词或通配模式是否可能破坏访问路径；

@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal, TypeVar
 
+from aek.core.context.reference_catalog import REFERENCE_CATALOG
+
 # ── kit 仓库根（installer/ 的父目录；安装器代码的一部分，目标仓库不可篡改）──
 KIT_DIR = Path(__file__).resolve().parent.parent
 
@@ -221,6 +223,79 @@ def _skill_specs() -> list[ResourceSpec]:
     return out
 
 
+def _skill_reference_specs() -> list[ResourceSpec]:
+    """Derive managed files from the fixed Catalog, never scan a directory."""
+    out: list[ResourceSpec] = []
+    for reference in REFERENCE_CATALOG.references.values():
+        name = reference.id
+        for tree in ("claude", "agents"):
+            out.append(ResourceSpec(
+                id=f"skill-{tree}-repo-delivery-reference-{name}",
+                source_path=reference.source_path,
+                destination_path=(
+                    f".{tree}/skills/repo-delivery/references/{name}.md"),
+                resource_type="owned_file", locator=None,
+                merge_policy="replace", expected_mode=0o644))
+    return out
+
+
+AEK_PACKAGE_FILES = (
+    "__init__.py",
+    "core/__init__.py",
+    "core/context/__init__.py",
+    "core/context/reference_catalog.py",
+    "core/context/budget.py",
+    "core/context/telemetry.py",
+    "core/context/memory.py",
+    "core/context/capsule.py",
+    "core/artifact/__init__.py",
+    "core/artifact/registry.py",
+    "core/artifact/plan.py",
+    "core/review/__init__.py",
+    "core/review/judge.py",
+    "core/review/result.py",
+    "core/review/incremental.py",
+    "core/policy/__init__.py",
+    "core/policy/evaluator.py",
+    "core/dispatch.py",
+    "core/planning/__init__.py",
+    "core/planning/facts.py",
+    "core/planning/policy.py",
+    "core/planning/sql_screen.py",
+    "application/__init__.py",
+    "application/planning.py",
+    "application/document_gate.py",
+    "application/review.py",
+    "application/context_telemetry.py",
+    "application/context_capsule.py",
+    "application/memory_recall.py",
+    "application/dispatch.py",
+    "application/routing.py",
+    "application/governance.py",
+    "adapters/__init__.py",
+    "adapters/capsule.py",
+    "adapters/telemetry.py",
+    "adapters/memory.py",
+    "adapters/plan_transaction.py",
+    "adapters/evidence.py",
+    "adapters/change_scope.py",
+    "adapters/review_markdown.py",
+)
+
+
+def _package_specs() -> list[ResourceSpec]:
+    """Explicit managed package files for source/install dual layout."""
+    return [
+        ResourceSpec(
+            id=f"lib-aek-{relative.replace('/', '-').replace('.', '-')}",
+            source_path=f"aek/{relative}",
+            destination_path=f".repo-memory-kit/lib/aek/{relative}",
+            resource_type="owned_file", locator=None,
+            merge_policy="replace", expected_mode=0o644)
+        for relative in AEK_PACKAGE_FILES
+    ]
+
+
 def _bin_specs() -> list[ResourceSpec]:
     return [
         ResourceSpec(
@@ -332,7 +407,8 @@ def _archify_specs() -> list[ResourceSpec]:
 
 REGISTRY: list[ResourceSpec] = (
     _root_specs() + _memory_specs() + _requirement_specs() + _skill_specs()
-    + _bin_specs() + _codex_link_specs() + _archify_specs()
+    + _skill_reference_specs() + _package_specs() + _bin_specs()
+    + _codex_link_specs() + _archify_specs()
 )
 
 # kit 内部状态文件（同级信任、同约束）

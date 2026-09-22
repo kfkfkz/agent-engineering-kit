@@ -17,6 +17,234 @@ mkdir -p "$REPO/.repo-memory-kit"
 printf 'strict\n' > "$REPO/.repo-memory-kit/governance"
 printf '{"version":1,"rules":[]}\n' > "$REPO/.repo-memory-kit/governance.json"
 
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/evidence-adapter.test.py" \
+    && ok "EvidenceRef 仓库边界、当前主体与源摘要校验" \
+    || bad "EvidenceRef 来源验证失败"
+
+python3 - "$KIT" <<'PY' \
+    && ok "ContextBudget 四路线默认值与输入校验" \
+    || bad "ContextBudget 默认值或输入校验失败"
+import sys
+sys.path.insert(0, sys.argv[1])
+from aek.core.context.budget import resolve_context_budget
+
+expected = {
+    "direct": (0, 0, "target_and_tests", 6, 96 * 1024, 128 * 1024),
+    "bounded": (5, 2, "target_module_and_tests", 20, 256 * 1024, 384 * 1024),
+    "standard": (8, 3, "impact_closure", 60, 768 * 1024, 1024 * 1024),
+    "initiative": (12, 5, "work_unit_closure", 100, 1536 * 1024, 2 * 1024 * 1024),
+}
+for route, (candidates, expanded, scope, files, code_bytes, stage_bytes) in expected.items():
+    budget = resolve_context_budget(route, "routing", "quick")
+    assert (budget.memory_candidate_limit, budget.memory_expand_limit,
+            budget.code_scope) == (candidates, expanded, scope)
+    assert budget.mandatory_sources == (
+        "user_request", "root_instructions", "governance", "safety_required")
+    assert (budget.code_file_limit, budget.code_byte_limit,
+            budget.stage_byte_limit) == (files, code_bytes, stage_bytes)
+    assert budget.required_reference_ids
+    assert budget.as_dict() == resolve_context_budget(route, "routing", "quick").as_dict()
+overlay = resolve_context_budget("bounded", "execution", "thorough",
+    ("security_privacy", "public_contract"))
+assert overlay.risk_overlays == ("public_contract", "security_privacy")
+assert "risk_overlay:public_contract" in overlay.mandatory_sources
+assert "RISK_OVERLAY" in overlay.reason_codes
+assert resolve_context_budget("bounded", "closeout", "quick").required_reference_ids == (
+    "evidence-closeout",)
+for args in (("unknown", "routing", "quick"),
+             ("bounded", "unknown", "quick"),
+             ("bounded", "routing", "shallow")):
+    try:
+        resolve_context_budget(*args)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"invalid budget input accepted: {args}")
+PY
+
+python3 - "$KIT" <<'PY' \
+    && ok "ImpactFact 三态归并单调且与输入顺序无关" \
+    || bad "ImpactFact 三态归并失败"
+import sys
+sys.path.insert(0, sys.argv[1])
+from aek.core.planning.facts import (
+    FACT_CATALOG, FactObservation, merge_fact_observations, normalize_fact_id)
+
+subject = "a" * 64
+assert len(FACT_CATALOG) == 8
+assert normalize_fact_id("api_change") == ("public_api_change", True)
+assert normalize_fact_id("public_api_change") == ("public_api_change", False)
+
+def observation(producer, value, complete=True, fact="public_api_change"):
+    return FactObservation(fact, producer, value, subject, producer[0] * 64, complete)
+
+diff_false = observation("diff_scanner", "false")
+surface_false = observation("api_surface_parser", "false")
+assert merge_fact_observations("public_api_change", subject, ()).state == "unknown"
+assert merge_fact_observations("public_api_change", subject, (diff_false,)).state == "unknown"
+assert merge_fact_observations("public_api_change", subject, (
+    diff_false, surface_false)).state == "false"
+assert merge_fact_observations("public_api_change", subject, (
+    diff_false, observation("api_surface_parser", "false", False))).state == "unknown"
+positive = observation("api_surface_parser", "true")
+left = merge_fact_observations("public_api_change", subject, (diff_false, positive))
+right = merge_fact_observations("api_change", subject, (positive, diff_false))
+assert left.state == right.state == "true"
+assert "TRUE_FALSE_CONFLICT" in left.diagnostics
+assert left.evidence_digests == right.evidence_digests
+assert left.digest == right.digest
+assert "DEPRECATED_ALIAS" in right.diagnostics
+# A cheap, complete applicability scan is enough to rule out a risk. An
+# incomplete scan, absent declaration, or contrary positive never is.
+irreversible = FactObservation(
+    "irreversible_change", "migration_operation_scanner", "false",
+    subject, "d" * 64, True)
+assert merge_fact_observations(
+    "irreversible_change", subject, (irreversible,)).state == "false"
+assert merge_fact_observations("irreversible_change", subject, (
+    FactObservation("irreversible_change", "migration_operation_scanner",
+                    "false", subject, "d" * 64, False),)).state == "unknown"
+assert merge_fact_observations("irreversible_change", subject, (
+    FactObservation("irreversible_change", "migration_operation_scanner",
+                    "unknown", subject, "d" * 64, False),
+    FactObservation("irreversible_change", "human_credential", "false",
+                    subject, "e" * 64, True))).state == "false"
+assert merge_fact_observations("irreversible_change", subject, (
+    irreversible, FactObservation("irreversible_change", "human_credential",
+                                  "true", subject, "e" * 64, True))).state == "true"
+capacity_clear = FactObservation(
+    "performance_capacity", "access_change_scanner", "false",
+    subject, "f" * 64, True)
+assert merge_fact_observations(
+    "performance_capacity", subject, (capacity_clear,)).state == "false"
+assert merge_fact_observations("performance_capacity", subject, (
+    FactObservation("performance_capacity", "access_change_scanner",
+                    "false", subject, "f" * 64, False),)).state == "unknown"
+assert merge_fact_observations("performance_capacity", subject, (
+    capacity_clear, FactObservation("performance_capacity",
+                                    "sql_performance_screen", "true",
+                                    subject, "1" * 64, True))).state == "true"
+try:
+    merge_fact_observations("unregistered", subject, ())
+except ValueError:
+    pass
+else:
+    raise AssertionError("unknown fact accepted")
+try:
+    merge_fact_observations("public_api_change", subject, (
+        FactObservation("public_api_change", "diff_scanner", "true",
+                        "b" * 64, "c" * 64, True),))
+except ValueError:
+    pass
+else:
+    raise AssertionError("stale subject accepted")
+for bad_observation in (
+    ("public_api_change", "diff_scanner", "true", subject, 42, True),
+    ("public_api_change", "diff_scanner", 1, subject, "c" * 64, True),
+):
+    try:
+        FactObservation(*bad_observation)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid fact observation accepted")
+PY
+
+python3 - "$KIT" <<'PY' \
+    && ok "PlanningPolicy 四路线与 Fact 风险映射" \
+    || bad "PlanningPolicy 分类或升径规则失败"
+import hashlib
+import sys
+sys.path.insert(0, sys.argv[1])
+from aek.core.planning.facts import FACT_CATALOG, FactObservation, merge_fact_observations
+from aek.core.planning.policy import preview_plan
+
+subject = "a" * 64
+def facts_with(changes=None):
+    changes = changes or {}
+    facts = {}
+    for fact_id, spec in FACT_CATALOG.items():
+        observations = tuple(FactObservation(
+            fact_id, producer, changes.get(fact_id, "false"), subject,
+            hashlib.sha256(f"{fact_id}:{producer}".encode()).hexdigest(), True)
+            for producer in spec.required_producers)
+        facts[fact_id] = merge_fact_observations(fact_id, subject, observations)
+    return facts
+
+all_false = facts_with()
+direct = preview_plan("direct", subject, all_false)
+assert direct.policy_version == 2
+assert direct.minimum_route == "direct"
+assert all(item.classification == "skipped" for item in direct.items)
+bounded = preview_plan("bounded", subject, all_false)
+assert bounded.minimum_route == "bounded"
+assert all(item.classification == "skipped" for item in bounded.items)
+standard = preview_plan("standard", subject, all_false)
+required = {item.artifact_id for item in standard.items if item.classification == "required"}
+assert required == {"requirements-analysis", "outline-design", "detail-design", "tasks", "test-plan"}
+
+api = preview_plan("bounded", subject, facts_with({"public_api_change": "true"}))
+assert api.minimum_route == "standard"
+assert api.by_id("api-design").classification == "required"
+db = preview_plan("bounded", subject, facts_with({"database_change": "true"}))
+assert db.minimum_route == "bounded"
+assert db.by_id("database-design").classification == "required"
+assert "sql-performance-screen" in db.required_checks
+assert "performance-review" not in db.required_checks
+perf = preview_plan("bounded", subject, facts_with({"performance_capacity": "true"}))
+assert perf.minimum_route == "standard"
+assert "performance-review" in perf.required_checks
+assert preview_plan("standard", subject, facts_with({"ui_behavior_change": "true"})).by_id(
+    "ui-design").classification == "required"
+assert preview_plan("standard", subject, facts_with({"business_flow_change": "true"})).by_id(
+    "business-flow").classification == "required"
+unknown = dict(all_false)
+unknown["performance_capacity"] = merge_fact_observations("performance_capacity", subject, ())
+assert preview_plan("bounded", subject, unknown).minimum_route == "standard"
+assert "performance-review" in preview_plan("bounded", subject, unknown).required_checks
+assert preview_plan("standard", subject, all_false, required_overlays=("ui-design",)).by_id(
+    "ui-design").classification == "required"
+assert preview_plan("direct", subject, all_false, required_overlays=("ui-design",)).minimum_route == "standard"
+PY
+
+python3 - "$KIT" <<'PY' \
+    && ok "SQL 初查结构跨方言且不强制深查" \
+    || bad "SQL 初查结构或深查触发失败"
+import sys
+sys.path.insert(0, sys.argv[1])
+from aek.core.planning.sql_screen import SqlPerformanceScreenResult
+
+for dialect in ("PostgreSQL", "MySQL", "SQL Server", "SQLite", "Oracle"):
+    result = SqlPerformanceScreenResult(
+        subject_digest="a" * 64, dialect=dialect, query_kind="orm",
+        screened_dimensions=("access_shape", "result_bounds"),
+        risk_indicators=(), scope_complete=True, evidence_digest="b" * 64)
+    assert result.capacity_state == "false"
+    assert result.to_fact_observation().state == "false"
+    assert result.to_fact_observation().producer_id == "sql_performance_screen"
+risky = SqlPerformanceScreenResult(
+    subject_digest="a" * 64, dialect="PostgreSQL", query_kind="raw_sql",
+    screened_dimensions=("access_shape",),
+    risk_indicators=("unbounded_scan",), scope_complete=False,
+    evidence_digest="b" * 64)
+assert risky.capacity_state == "true"
+assert "performance-review" not in risky.screened_dimensions
+incomplete = SqlPerformanceScreenResult(
+    subject_digest="a" * 64, dialect="MySQL", query_kind="orm",
+    screened_dimensions=("access_shape",),
+    risk_indicators=(), scope_complete=False, evidence_digest="b" * 64)
+assert incomplete.capacity_state == "unknown"
+try:
+    SqlPerformanceScreenResult(
+        subject_digest="a" * 64, dialect="MySQL", query_kind="orm",
+        screened_dimensions=(), risk_indicators=(), scope_complete=True,
+        evidence_digest="b" * 64)
+except ValueError:
+    pass
+else:
+    raise AssertionError("unsubstantiated clean screen accepted")
+PY
+
 write_card() {
     route="$1"; kind="$2"; behavior="$3"; modules="$4"; repos="$5"; sessions="$6"
     risks="$7"; planned="$8"
@@ -77,6 +305,12 @@ assert d["execution_profile"] == {
     "verification_depth": "targeted",
     "receipt_detail": "compact",
 }
+assert d["context_budget"]["schema_version"] == 1
+assert d["context_budget"]["route"] == "bounded"
+assert d["context_budget"]["stage"] == "routing"
+assert d["context_budget"]["memory_candidate_limit"] == 5
+assert d["context_budget"]["memory_expand_limit"] == 2
+assert d["context_budget"]["over_budget_action"] == "require_purpose_or_reroute"
 PY
 
 # 选得过轻时必须用专用退出码 2 阻断，并给出最低路线。

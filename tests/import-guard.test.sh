@@ -79,7 +79,7 @@ else
 fi
 
 # PowerShell 不会为原生命令可靠展开 *.py；CI 必须使用 Python 自己递归编译。
-if grep -q 'python -m compileall -q installer' .github/workflows/ci.yml \
+if grep -Eq 'python -m compileall -q (aek )?installer' .github/workflows/ci.yml \
    && ! grep -q 'python -m py_compile installer/\*\.py' .github/workflows/ci.yml; then
     ok "Windows CI 由 compileall 展开 installer 源文件"
 else
@@ -249,6 +249,36 @@ then
     ok "安装器直接字节读取统一使用 O_BINARY"
 else
     bad "仍有 Windows 文本模式读取会改变 CAS/HMAC 字节"
+fi
+
+if python3 - <<'EOF'
+import ast
+from pathlib import Path
+
+violations = []
+for path in Path("aek").rglob("*.py"):
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    layer = path.parts[1] if len(path.parts) > 1 else "root"
+    for node in ast.walk(tree):
+        names = []
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names = [node.module]
+        for name in names:
+            if layer == "core" and name.startswith(("aek.application", "aek.adapters")):
+                violations.append(f"{path}:{node.lineno} core reverse import {name}")
+            if layer == "application" and name.startswith("aek.adapters"):
+                violations.append(f"{path}:{node.lineno} application reverse import {name}")
+            if layer == "core" and name.split(".")[0] in {
+                    "os", "pathlib", "subprocess", "socket", "urllib"}:
+                violations.append(f"{path}:{node.lineno} core I/O import {name}")
+assert not violations, "\n".join(violations)
+EOF
+then
+    ok "aek Core/Application 依赖方向与纯计算边界"
+else
+    bad "aek 分层或 Core I/O 守卫失败"
 fi
 
 echo
