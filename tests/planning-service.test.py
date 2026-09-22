@@ -273,6 +273,7 @@ class PlanningServiceTests(unittest.TestCase):
             gate_digest="e" * 64, doc_hashes=docs,
             prerequisite_fingerprints=parents,
             scan_scope=scan_negative_risks)
+        self.assertEqual(bound.state, "FROZEN", bound.reason)
         self.assertEqual(evaluate_stage_snapshot(
             bound, "详细设计", gate_digest="e" * 64,
             doc_hashes=docs, prerequisite_fingerprints=parents), "BOUND")
