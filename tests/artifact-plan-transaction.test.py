@@ -152,12 +152,14 @@ class TransactionTests(unittest.TestCase):
         gate = self.reviews / "需求分析.gate.json"
         gate.write_bytes(b'{\r\n  "status": "PASS"\r\n}\r\n')
         original_open = plan_transaction.os.open
+        platform_binary = getattr(plan_transaction.os, "O_BINARY", 0)
         fake_binary = 1 << 29
         observed: list[tuple[str, int]] = []
 
         def recording_open(path, flags, *args, **kwargs):
             observed.append((str(path), flags))
-            return original_open(path, flags & ~fake_binary, *args, **kwargs)
+            native_flags = (flags & ~fake_binary) | platform_binary
+            return original_open(path, native_flags, *args, **kwargs)
 
         with mock.patch.object(plan_transaction, "_BINARY", fake_binary), \
                 mock.patch.object(plan_transaction.os, "open", recording_open):
