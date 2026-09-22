@@ -25,7 +25,7 @@ class DynamicPlanCliTests(unittest.TestCase):
         self.git("init", "-q")
         self.git("config", "user.email", "test@example.invalid")
         self.git("config", "user.name", "Test")
-        (self.repo / "README.md").write_text("base\n")
+        (self.repo / "README.md").write_text("base\n", encoding="utf-8")
         self.git("add", "README.md")
         self.git("commit", "-qm", "base")
         self.base = self.git("rev-parse", "HEAD").strip()
@@ -39,7 +39,7 @@ class DynamicPlanCliTests(unittest.TestCase):
             "测试方案.md": "# tests\n",
         }
         for name, text in self.docs.items():
-            (self.req / name).write_text(text)
+            (self.req / name).write_text(text, encoding="utf-8")
 
     def write_valid_requirements(self) -> None:
         (self.req / "需求分析.md").write_text("""# requirements
@@ -81,17 +81,17 @@ class DynamicPlanCliTests(unittest.TestCase):
 
 - 冻结状态：已冻结
 - 确认人：ll
-""")
+""", encoding="utf-8")
 
     def git(self, *args: str) -> str:
         return subprocess.run(
             ["git", "-C", str(self.repo), *args], check=True,
-            capture_output=True, text=True).stdout
+            capture_output=True, text=True, encoding="utf-8").stdout
 
     def run_gate(self, *args: str, expected: int = 0) -> subprocess.CompletedProcess:
         proc = subprocess.run(
             [sys.executable, str(DOC_GATE), *args], cwd=self.repo,
-            capture_output=True, text=True)
+            capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(proc.returncode, expected, proc.stdout + proc.stderr)
         return proc
 
@@ -102,7 +102,7 @@ class DynamicPlanCliTests(unittest.TestCase):
         if stage == "计划":
             baseline = {}
             for name in documents:
-                text = (self.req / name).read_text()
+                text = (self.req / name).read_text(encoding="utf-8")
                 projected = re.sub(
                     r"(?m)^(\s*[-*]\s*)\[[ xX]\]", r"\1[ ]", text)
                 if name == "任务清单.md":
@@ -112,7 +112,7 @@ class DynamicPlanCliTests(unittest.TestCase):
                 baseline[name] = hashlib.sha256(projected.encode()).hexdigest()
             gate["execution_baseline_hashes"] = baseline
         (self.req / "reviews" / f"{stage}.gate.json").write_text(json.dumps(
-            gate, ensure_ascii=False))
+            gate, ensure_ascii=False), encoding="utf-8")
 
     def status(self) -> dict:
         proc = self.run_gate(
@@ -129,7 +129,7 @@ class DynamicPlanCliTests(unittest.TestCase):
 - [ ] regression
 ## 完成标准
 - [ ] done
-""")
+""", encoding="utf-8")
         self.run_gate(
             "plan-prepare", str(self.req), "--base", self.base,
             "--route", "standard", "--json")
@@ -158,12 +158,13 @@ class DynamicPlanCliTests(unittest.TestCase):
         self.assertEqual(current["计划"], "BOUND")
 
         tasks = self.req / "任务清单.md"
-        tasks.write_text(tasks.read_text().replace(
+        tasks.write_text(tasks.read_text(encoding="utf-8").replace(
             "| T1 | 进行中 |", "| T1 | 完成 | actual | tests green |").replace(
-            "- [ ] T1", "- [x] T1"))
+            "- [ ] T1", "- [x] T1"), encoding="utf-8")
         self.assertEqual(self.status()["effective_stage_states"]["计划"], "BOUND")
 
-        (self.req / "需求分析.md").write_text("# changed requirements\n")
+        (self.req / "需求分析.md").write_text(
+            "# changed requirements\n", encoding="utf-8")
         stale = self.status()["effective_stage_states"]
         self.assertEqual(stale["需求分析"], "STALE")
         self.assertEqual(stale["概要设计"], "STALE")
