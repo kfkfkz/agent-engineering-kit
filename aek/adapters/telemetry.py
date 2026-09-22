@@ -19,12 +19,15 @@ class LedgerInvalid(ValueError):
     """The committed part of the ledger is malformed; do not append."""
 
 
+_BINARY = getattr(os, "O_BINARY", 0)
+
+
 @contextmanager
 def _exclusive_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_symlink():
         raise LedgerInvalid("lock cannot be a symlink")
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDWR | os.O_CREAT | _BINARY | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, 0o600)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -68,7 +71,7 @@ class ContextLedger:
     def _open(self) -> int:
         if self.path.is_symlink():
             raise LedgerInvalid("ledger cannot be a symlink")
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDWR | os.O_CREAT | _BINARY | getattr(os, "O_NOFOLLOW", 0)
         fd = os.open(self.path, flags, 0o600)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             os.close(fd)

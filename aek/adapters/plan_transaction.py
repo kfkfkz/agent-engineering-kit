@@ -37,6 +37,7 @@ _MUTABLE = frozenset({_PLAN, _CREDENTIAL} | {
     f"{group_id}.plan-binding.json" for group_id in ARTIFACT_REGISTRY.groups
 })
 _MAX_FILE = 2_000_000
+_BINARY = getattr(os, "O_BINARY", 0)
 
 
 def _sha(data: bytes) -> str:
@@ -61,7 +62,8 @@ def _fsync_dir(path: Path) -> None:
 def _lock_file(path: Path) -> Iterator[None]:
     if path.is_symlink():
         raise PlanInvalid("plan lock is a symlink")
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | _BINARY
+                 | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise PlanInvalid("plan lock is not a regular file")
@@ -134,7 +136,8 @@ class PlanStore:
         if path.is_symlink():
             raise PlanInvalid(f"sidecar is a symlink: {name}")
         try:
-            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            fd = os.open(path, os.O_RDONLY | _BINARY
+                         | getattr(os, "O_NOFOLLOW", 0))
         except FileNotFoundError:
             return None
         try:

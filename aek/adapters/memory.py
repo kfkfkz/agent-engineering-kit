@@ -50,7 +50,7 @@ def _read_source(repo: Path, rel: str) -> bytes:
     else:
         # Windows compatible mode: reparse-point precheck, not a hostile
         # concurrent-process TOCTOU guarantee. Never describe it as strict.
-        fd = os.open(path, os.O_RDONLY)
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
     try:
         status = os.fstat(fd)
         if not stat.S_ISREG(status.st_mode) or status.st_size > 1_000_000:

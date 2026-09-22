@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
+import aek.adapters.plan_transaction as plan_transaction
 from aek.adapters.plan_transaction import PlanStore, PlanConflict, PlanInvalid
 
 
@@ -144,6 +146,27 @@ class TransactionTests(unittest.TestCase):
             self.store.publish({"artifact-plan.json": b'new'},
                                expected_consumers=digest)
         self.assertFalse(self.plan.exists())
+
+    def test_sidecar_and_lock_descriptors_always_request_binary_mode(self) -> None:
+        """Windows text descriptors translate CRLF and invalidate size checks."""
+        gate = self.reviews / "需求分析.gate.json"
+        gate.write_bytes(b'{\r\n  "status": "PASS"\r\n}\r\n')
+        original_open = plan_transaction.os.open
+        fake_binary = 1 << 29
+        observed: list[tuple[str, int]] = []
+
+        def recording_open(path, flags, *args, **kwargs):
+            observed.append((str(path), flags))
+            return original_open(path, flags & ~fake_binary, *args, **kwargs)
+
+        with mock.patch.object(plan_transaction, "_BINARY", fake_binary), \
+                mock.patch.object(plan_transaction.os, "open", recording_open):
+            snapshot = self.store.snapshot()
+        self.assertEqual(snapshot, {})  # legacy gates affect CAS but stay internal
+        relevant = [(path, flags) for path, flags in observed
+                    if path.endswith((".artifact-plan.lock", gate.name))]
+        self.assertTrue(relevant)
+        self.assertTrue(all(flags & fake_binary for _path, flags in relevant))
 
     def test_rollback_retry_recovers_even_when_all_targets_are_absent(self) -> None:
         self.store.publish({"artifact-plan.json": b'{"schema_version":1}',

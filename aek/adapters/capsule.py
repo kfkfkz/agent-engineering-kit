@@ -128,7 +128,8 @@ class CapsuleStore:
         payload = json.dumps(capsule_as_dict(capsule), ensure_ascii=False,
                              sort_keys=True, separators=(",", ":")).encode("utf-8")
         temp = self.root / f".{capsule.capsule_id}.{uuid.uuid4().hex}.tmp"
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_BINARY", 0), 0o600)
         try:
             offset = 0
             while offset < len(payload):
