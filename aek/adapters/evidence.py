@@ -91,36 +91,65 @@ def _open_posix(root: Path, parts: tuple[str, ...]) -> int:
 
 def _open_windows(root: Path, parts: tuple[str, ...], *, require_exact: bool = False) -> int:
     # The handle's resolved final path, not a pre-open Path.resolve(), is the
-    # authority. Intermediate reparse points cannot take the read outside root.
+    # authority. Resolve the root through a directory handle as well: Windows
+    # temp paths commonly mix 8.3 aliases (RUNNER~1) and long names, so string
+    # comparison against Path.resolve() rejects safe files. Comparing two
+    # handle-derived paths keeps the reparse-point boundary without that alias
+    # false positive.
     import ctypes
     import msvcrt
     import ntpath
 
+    kernel32 = ctypes.windll.kernel32
+    get_final_path = kernel32.GetFinalPathNameByHandleW
+    get_final_path.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                               ctypes.c_uint32, ctypes.c_uint32]
+    get_final_path.restype = ctypes.c_uint32
+
+    def canonical_handle_path(handle: int) -> str:
+        buffer = ctypes.create_unicode_buffer(32768)
+        size = get_final_path(handle, buffer, len(buffer), 0)
+        if not size or size >= len(buffer):
+            raise EvidenceInvalid("cannot verify Windows evidence handle path")
+        value = buffer.value
+        if value.startswith("\\\\?\\UNC\\"):
+            value = "\\\\" + value[8:]
+        elif value.startswith("\\\\?\\"):
+            value = value[4:]
+        return ntpath.normcase(ntpath.normpath(value))
+
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                            ctypes.c_void_p]
+    create_file.restype = ctypes.c_void_p
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+    # FILE_READ_ATTRIBUTES, share read/write/delete, OPEN_EXISTING and
+    # FILE_FLAG_BACKUP_SEMANTICS (required for directory handles).
+    root_handle = create_file(str(root.resolve()), 0x80, 0x7, None, 3,
+                              0x02000000, None)
+    if root_handle == ctypes.c_void_p(-1).value:
+        raise EvidenceInvalid("cannot open Windows repository root handle")
+    try:
+        canonical_root = canonical_handle_path(root_handle)
+    finally:
+        close_handle(root_handle)
+
     path = root.joinpath(*parts)
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
     try:
-        api = ctypes.windll.kernel32.GetFinalPathNameByHandleW
-        api.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
-                        ctypes.c_uint32, ctypes.c_uint32]
-        api.restype = ctypes.c_uint32
-        buffer = ctypes.create_unicode_buffer(32768)
-        size = api(msvcrt.get_osfhandle(fd), buffer, len(buffer), 0)
-        if not size or size >= len(buffer):
-            raise EvidenceInvalid("cannot verify Windows evidence handle path")
-        final = buffer.value
-        if final.startswith("\\\\?\\UNC\\"):
-            final = "\\\\" + final[8:]
-        elif final.startswith("\\\\?\\"):
-            final = final[4:]
-        canonical_root = ntpath.normcase(ntpath.normpath(str(root.resolve())))
-        canonical_final = ntpath.normcase(ntpath.normpath(final))
+        canonical_final = canonical_handle_path(msvcrt.get_osfhandle(fd))
         try:
             inside = ntpath.commonpath((canonical_root, canonical_final)) == canonical_root
         except ValueError:
             inside = False
         if not inside:
             raise EvidenceInvalid("evidence handle escaped the repository")
-        if require_exact and canonical_final != ntpath.normcase(ntpath.normpath(str(path))):
+        expected = ntpath.normcase(ntpath.normpath(
+            ntpath.join(canonical_root, *parts)))
+        if require_exact and canonical_final != expected:
             raise EvidenceInvalid("evidence handle traversed a reparse point")
         return fd
     except BaseException:
