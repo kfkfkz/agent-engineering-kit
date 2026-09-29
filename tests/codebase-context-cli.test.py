@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 class CodebaseContextCliTests(unittest.TestCase):
     def call(self, action: str, repo: Path, value: dict):
         result = subprocess.run(
-            [str(ROOT / "codebase-context"), action, str(repo),
+            [sys.executable, str(ROOT / "codebase-context"), action, str(repo),
              "--context-json", json.dumps(value)], text=True,
             capture_output=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
