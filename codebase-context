@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Deterministic local planner for host-executed codebase-memory barriers."""
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+_script_dir = Path(__file__).resolve().parent
+_installed = _script_dir.name == "bin" and _script_dir.parent.name == ".repo-memory-kit"
+_package_root = _script_dir.parent / "lib" if _installed else _script_dir
+sys.path.insert(0, str(_package_root))
+
+from aek.adapters.codebase_state import CodebaseStateStore
+from aek.core.codebase_context import (
+    CapabilityState, CodebaseBarrierPlan, CodebaseObservation, DirtyState,
+    classify_query, mark_dirty, plan_barrier, verify_observation,
+)
+
+
+def _context(raw: str) -> dict[str, object]:
+    if raw == "-":
+        raw = sys.stdin.read()
+    elif raw.startswith("@"):
+        raw = Path(raw[1:]).read_text(encoding="utf-8")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("context JSON must be an object")
+    return value
+
+
+def _scope(repo: Path, value: dict[str, object]) -> CodebaseStateStore:
+    return CodebaseStateStore(
+        repo / ".repo-memory-kit/codebase-freshness",
+        value["worktree_id"], value["work_unit_id"])
+
+
+def _plan_from(value: dict[str, object]) -> CodebaseBarrierPlan:
+    return CodebaseBarrierPlan(
+        value["required_action"], value["reason_code"],
+        tuple(value["required_tools"]), tuple(value["required_paths"]),
+        value["dirty_epoch"], value["confidence"], value["primary_tool"])
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="codebase-context")
+    parser.add_argument("action", choices=("mark-dirty", "plan", "observe", "status"))
+    parser.add_argument("repo", nargs="?", default=".")
+    parser.add_argument("--context-json", required=True,
+                        help="JSON object, @file, or - for stdin")
+    args = parser.parse_args()
+    try:
+        repo = Path(args.repo).resolve()
+        value = _context(args.context_json)
+        store = _scope(repo, value)
+        state = store.load_state()
+        if args.action == "mark-dirty":
+            if state is None:
+                state = DirtyState.clean(value["previous_identity_digest"])
+            state = mark_dirty(
+                state, batch_id=value["batch_id"],
+                identity_digest=value["identity_digest"],
+                paths=tuple(value["paths"]), reason=value["reason"])
+            store.write_state(state)
+            output: object = asdict(state)
+        elif args.action == "plan":
+            if state is None:
+                state = DirtyState.clean(value["identity_digest"])
+            capabilities = value["capabilities"]
+            output = asdict(plan_barrier(
+                classify_query(value["query"]),
+                CapabilityState(
+                    capabilities["configured"], capabilities["visible"],
+                    capabilities["indexed"], capabilities["fresh"]),
+                state, candidate_paths=tuple(value.get("candidate_paths", []))))
+        elif args.action == "observe":
+            if state is None:
+                raise ValueError("no dirty state exists for this scope")
+            observation = value["observation"]
+            result = verify_observation(
+                _plan_from(value["plan"]), state,
+                CodebaseObservation(
+                    observation["canonical_root"], observation["expected_root"],
+                    observation["generation"], observation["identity_digest"],
+                    tuple(observation["covered_paths"]),
+                    tuple(observation["metadata_match_paths"])))
+            if result.required_action == "REFRESH_ONCE":
+                state = state.with_refresh_started()
+                store.write_state(state)
+            output = asdict(result)
+            observation_digest = hashlib.sha256(json.dumps(
+                observation, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":")).encode("utf-8")).hexdigest()
+            store.write_receipt({"schema_version": 1, "result": output,
+                                 "code_identity_digest": state.code_identity_digest,
+                                 "dirty_epoch": state.dirty_epoch,
+                                 "generation": observation["generation"],
+                                 "canonical_root": observation["canonical_root"],
+                                 "required_paths": output["required_paths"],
+                                 "observation_digest": observation_digest})
+        else:
+            output = {"state": None if state is None else asdict(state),
+                      "receipt": store.load_receipt()}
+        print(json.dumps(output, ensure_ascii=False, sort_keys=True, indent=2))
+        return 0
+    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
+        print(f"codebase-context: {exc}", file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

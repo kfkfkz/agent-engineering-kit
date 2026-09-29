@@ -38,6 +38,26 @@ class PolicyEvaluatorTests(unittest.TestCase):
         result = evaluate_policy({"Security/Secret.py"}, [], set(), policy)
         self.assertEqual(result.matched, [])
 
+    def test_legacy_min_route_is_explicitly_migrated_not_routed(self) -> None:
+        policy = {"profile": "lightweight", "default": {"require": []},
+                  "rules": [{"id": "legacy",
+                             "require": ["min_route:standard"],
+                             "match": {"paths": ["auth/**"]}}]}
+        result = evaluate_policy({"auth/login.py"}, [], set(), policy)
+        payload = result.to_dict()
+        self.assertIn("impact-analysis", payload["risk_requirements"]["checks"])
+        self.assertIn("thorough", payload["risk_requirements"]["reviews"])
+        self.assertEqual(payload["deprecated_findings"][0]["action"],
+                         "min_route:standard")
+        self.assertNotIn("minimum_route", payload)
+
+    def test_unknown_legacy_min_route_fails_closed(self) -> None:
+        policy = {"profile": "strict", "default": {"require": []},
+                  "rules": [{"id": "bad", "require": ["min_route:extreme"],
+                             "match": {"paths": ["**"]}}]}
+        with self.assertRaises(PolicyError):
+            evaluate_policy({"a.py"}, [], set(), policy)
+
 
 if __name__ == "__main__":
     unittest.main()

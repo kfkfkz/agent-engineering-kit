@@ -22,8 +22,9 @@ def load(name: str, path: Path):
 
 
 class CliServiceParityTests(unittest.TestCase):
-    def test_route_application_matches_legacy_oracle(self) -> None:
+    def test_route_cli_wrapper_matches_application_service(self) -> None:
         module = load("route_eval_parity", ROOT / "route-eval")
+        from aek.application.routing import evaluate_route
         card = {
             "version": 1, "route": "standard", "work_kind": "feature",
             "intent_gaps": "minor", "behavior_change": "public",
@@ -40,7 +41,7 @@ class CliServiceParityTests(unittest.TestCase):
             "matched_rules": [], "required_actions": [],
         }
         self.assertEqual(module.evaluate(card, governance),
-                         module._legacy_evaluate(card, governance))
+                         evaluate_route(card, governance))
 
     def test_governance_application_matches_legacy_oracle(self) -> None:
         module = load("governance_eval_parity", ROOT / "governance-eval")

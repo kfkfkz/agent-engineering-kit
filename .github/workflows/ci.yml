@@ -12,8 +12,8 @@ jobs:
       - name: 语法检查（sh -n / py_compile）
         run: |
           sh -n install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/route-eval.test.sh tests/benchmark.test.sh
-          python3 -m py_compile memory-build spec-migrate memory-recall domain-check doc-gate governance-eval route-eval tests/benchmark/context.py
-          python3 -m compileall -q aek
+          python3 -m py_compile memory-build spec-migrate memory-recall domain-check doc-gate governance-eval route-eval tests/benchmark/context.py tests/run-python-tests.py
+          python3 -m compileall -q aek installer tests
       - name: ShellCheck
         run: |
           sudo apt-get update -qq
@@ -59,6 +59,8 @@ jobs:
         run: sh tests/route-eval.test.sh
       - name: Git 变更范围负证据测试
         run: python3 tests/change-scope.test.py
+      - name: 全部 Python 行为套件（自动发现）
+        run: python3 tests/run-python-tests.py
       - name: Benchmark 评测器回归测试
         run: sh tests/benchmark.test.sh
       - name: Windows 可导入性守卫（AST：fcntl/msvcrt/O_NOFOLLOW 隔离在 platform/）
@@ -83,7 +85,7 @@ jobs:
           python-version: "3.12"
       - name: Windows Python 源码编译
         run: |
-          python -m compileall -q aek installer
+          python -m compileall -q aek installer tests
           python -m py_compile doc-gate governance-eval route-eval domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
       - name: 全模块可导入（fcntl 已隔离在 platform/posix_fs）
         shell: pwsh
@@ -93,24 +95,34 @@ jobs:
             "aek.core.context.budget",
             "aek.core.context.telemetry", "aek.adapters.telemetry",
             "aek.core.context.memory", "aek.adapters.memory",
+            "aek.core.context.lookup", "aek.core.context.identity",
             "aek.core.context.capsule",
             "aek.adapters.capsule", "aek.application.context_capsule",
             "aek.application.context_telemetry",
             "aek.application.memory_recall",
+            "aek.core.codebase_context", "aek.adapters.codebase_state",
+            "aek.core.work_unit", "aek.application.work_unit",
+            "aek.adapters.work_unit_store", "aek.adapters.atomic_file",
             "aek.application.planning",
+            "aek.application.identity",
             "aek.adapters.plan_transaction",
             "aek.adapters.evidence",
             "aek.adapters.change_scope",
             "aek.core.review.judge",
             "aek.core.review.result",
             "aek.core.review.incremental",
+            "aek.core.review.lifecycle", "aek.application.review_lifecycle",
+            "aek.adapters.review_lifecycle_store",
             "aek.core.policy.evaluator",
+            "aek.core.policy.requirements",
             "aek.core.artifact.registry",
             "aek.core.artifact.plan",
             "aek.core.dispatch", "aek.application.dispatch",
             "aek.application.document_gate", "aek.application.routing",
             "aek.application.governance",
-            "aek.application.review", "aek.adapters.review_markdown",
+            "aek.application.review", "aek.application.review_evidence",
+            "aek.application.delivery_gate",
+            "aek.adapters.review_markdown",
             "aek.core.planning.facts", "aek.core.planning.policy",
             "aek.core.planning.sql_screen",
             "installer.install", "installer.transaction", "installer.uninstall",
@@ -128,45 +140,8 @@ jobs:
             }
           }
           Write-Output "installer modules import OK on Windows"
-      - name: Windows 新 package 行为测试
-        shell: pwsh
-        run: |
-          $tests = @(
-            "tests/artifact-plan.test.py",
-            "tests/artifact-plan-transaction.test.py",
-            "tests/doc-gate-lock.test.py",
-            "tests/doc-gate-plan.test.py",
-            "tests/dispatch-service.test.py",
-            "tests/mcp-dispatch.test.py",
-            "tests/planning-service.test.py",
-            "tests/evidence-adapter.test.py",
-            "tests/change-scope.test.py",
-            "tests/context-memory.test.py",
-            "tests/context-capsule.test.py",
-            "tests/context-capsule-store.test.py",
-            "tests/cli-service-parity.test.py",
-            "tests/context-telemetry.test.py",
-            "tests/context-service.test.py",
-            "tests/memory-recall-service.test.py",
-            "tests/context-budget.test.py",
-            "tests/review-judge.test.py",
-            "tests/review-result.test.py",
-            "tests/review-incremental.test.py",
-            "tests/review-service.test.py",
-            "tests/review-markdown.test.py",
-            "tests/policy-evaluator.test.py"
-          )
-          foreach ($test in $tests) {
-            $output = & python $test 2>&1
-            $rc = $LASTEXITCODE
-            $output | ForEach-Object { Write-Output $_ }
-            if ($rc -ne 0) {
-              $detail = (($output | Select-Object -Last 40) -join " | ")
-              $detail = $detail.Replace("%", "%25").Replace("`r", "%0D").Replace("`n", "%0A").Replace("::", ":")
-              Write-Output "::error title=Windows behavior test failed::$test — $detail"
-              exit $rc
-            }
-          }
+      - name: Windows 全部 Python 行为套件（自动发现）
+        run: python tests/run-python-tests.py
       - name: 原生 Windows copy 生命周期（install / update / doctor / uninstall）
         shell: pwsh
         run: |

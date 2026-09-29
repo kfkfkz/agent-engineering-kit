@@ -30,6 +30,9 @@ description: "检查并迁移已有 Spec Kit 文档到统一交付字段，保�
 
 ## 迁移后的语义核验
 
+第一次结构检索必须调用 `codebase-memory`（含 freshness/coverage）；禁止先用 `rg/grep/find`，
+它们仅补文档/字面量、配置、非代码或 coverage 缺口。
+
 迁移器会保留旧正文并添加 `agent-engineering-kit:migration-pending:*` 标记（附 `> 状态：待核验` 行，与项目文档的状态头约定一致）。字段判定只认核心三文件的标题和 `quickstart.md` 的存在性；research、contracts、checklists 等辅助文档是证据来源，不作为字段已覆盖的依据。逐 feature 读取当前文档、权威设计、代码和测试，把已有事实归并到这些字段：
 
 `目标与范围 | 当前证据/根因与复用依据 | 行为与验收 | 设计/契约/数据流 | 兼容性与风险 | 安全与威胁模型 | 测试接缝与用例 | 实施任务 | 验证结果 | 文档与记忆影响`

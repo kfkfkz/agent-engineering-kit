@@ -61,7 +61,14 @@ stage=`route` 只读路线规则；只有进入最终交付门禁时，stage=`cl
 
 ## 执行与升级
 
-结构检索优先 `codebase-memory` Verify；只展开命中的记忆与规范。可观察代码行为按 `tdd`
+查项目历史、决策、坑点、SDD 或交付知识时，先调用宿主可见的 `memory_recall` MCP，并传
+`context={schema_version,route,stage,purpose,subject_digest,session_id}`。只有 MCP 不可见、不兼容或
+调用开始前失败，才由 Agent 内部降级到等价 `memory-recall --context-json`；两者都不可用才做有界
+metadata 文本查找。MCP 已开始但结果未知时停止并披露，不再运行 CLI/grep；成功后只消费返回的
+`expanded`，不得重复检索同一材料。`selected_path/reason_code/capability_snapshot/uncertainty` 是阶段证据。
+
+结构检索先用 `codebase-memory` Verify（含 freshness/coverage），grep 仅补字面量/缺口；
+只展开命中的记忆与规范。可观察代码行为按 `tdd`
 RED→GREEN→REFACTOR，配置/纯文档/生成物可用等价验证并记录理由。失败进入
 `systematic-debugging`，不放宽断言。Standard/Initiative 的正式设计使用 `design-pipeline`；
 人工门禁只留判断给人，用户确认后由 Agent 内部写凭证并继续。

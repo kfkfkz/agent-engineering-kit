@@ -136,7 +136,20 @@ class ChangeScopeTests(unittest.TestCase):
         (reviews / "详细设计.gate.json").write_text('{"status":"PASS"}\n')
         after = scan_negative_risks(self.root, self.base)
         self.assertEqual(after.subject_digest, before.subject_digest)
+        self.assertEqual(after.scope_digest, before.scope_digest)
         self.assertEqual(after.changed_paths, before.changed_paths)
+
+    def test_delivery_receipt_control_state_does_not_self_invalidate_subject(self) -> None:
+        self.guide.write_text("after\n")
+        before = scan_negative_risks(self.root, self.base)
+        receipts = self.root / "docs" / "delivery-receipts"
+        receipts.mkdir(parents=True)
+        (receipts / "current.md").write_text("# generated receipt\n")
+        after = scan_negative_risks(self.root, self.base)
+        self.assertEqual(after.subject_digest, before.subject_digest)
+        self.assertEqual(after.scope_digest, before.scope_digest)
+        self.assertEqual(after.changed_paths, before.changed_paths)
+        self.assertRegex(after.scope_digest, r"^[0-9a-f]{64}$")
 
 
 if __name__ == "__main__":

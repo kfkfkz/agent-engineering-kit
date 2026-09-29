@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
-from typing import Any, Literal, TypeVar
+from typing import Literal, TypeVar
 
 from aek.core.context.reference_catalog import REFERENCE_CATALOG
 
@@ -125,6 +125,7 @@ KIT_TOOLS = [
     "validate-memory.sh", "memory-build", "spec-migrate", "memory-recall",
     "domain-check", "session-reminder", "agent-engineering-mcp",
     "doc-gate", "governance-eval", "route-eval",
+    "codebase-context",
 ]
 
 
@@ -134,12 +135,12 @@ def _root_specs() -> list[ResourceSpec]:
             id="claude-md-block", source_path="templates/claude-md-section.md",
             destination_path="CLAUDE.md", resource_type="managed_block",
             locator=None, merge_policy="replace", expected_mode=None,
-            block_start=SEC_START, block_end=SEC_END, create_container=False),
+            block_start=SEC_START, block_end=SEC_END, create_container=True),
         ResourceSpec(
             id="agents-md-block", source_path="templates/agents-md-section.md",
             destination_path="AGENTS.md", resource_type="managed_block",
             locator=None, merge_policy="replace", expected_mode=None,
-            block_start=SEC_START, block_end=SEC_END, create_container=False),
+            block_start=SEC_START, block_end=SEC_END, create_container=True),
         ResourceSpec(
             id="mcp-claude", source_path=None,
             destination_path=".mcp.json", resource_type="json_fragment",
@@ -236,6 +237,14 @@ def _skill_reference_specs() -> list[ResourceSpec]:
                     f".{tree}/skills/repo-delivery/references/{name}.md"),
                 resource_type="owned_file", locator=None,
                 merge_policy="replace", expected_mode=0o644))
+    for skill, name in (("delivery-gate", "review-evidence"),):
+        for tree in ("claude", "agents"):
+            out.append(ResourceSpec(
+                id=f"skill-{tree}-{skill}-reference-{name}",
+                source_path=f"skills/{skill}/references/{name}.md",
+                destination_path=f".{tree}/skills/{skill}/references/{name}.md",
+                resource_type="owned_file", locator=None,
+                merge_policy="replace", expected_mode=0o644))
     return out
 
 
@@ -247,7 +256,9 @@ AEK_PACKAGE_FILES = (
     "core/context/budget.py",
     "core/context/telemetry.py",
     "core/context/memory.py",
+    "core/context/lookup.py",
     "core/context/capsule.py",
+    "core/context/identity.py",
     "core/artifact/__init__.py",
     "core/artifact/registry.py",
     "core/artifact/plan.py",
@@ -255,9 +266,13 @@ AEK_PACKAGE_FILES = (
     "core/review/judge.py",
     "core/review/result.py",
     "core/review/incremental.py",
+    "core/review/lifecycle.py",
     "core/policy/__init__.py",
     "core/policy/evaluator.py",
+    "core/policy/requirements.py",
     "core/dispatch.py",
+    "core/codebase_context.py",
+    "core/work_unit.py",
     "core/planning/__init__.py",
     "core/planning/facts.py",
     "core/planning/policy.py",
@@ -266,13 +281,19 @@ AEK_PACKAGE_FILES = (
     "application/planning.py",
     "application/document_gate.py",
     "application/review.py",
+    "application/review_evidence.py",
+    "application/delivery_gate.py",
+    "application/identity.py",
+    "application/review_lifecycle.py",
     "application/context_telemetry.py",
     "application/context_capsule.py",
     "application/memory_recall.py",
     "application/dispatch.py",
+    "application/work_unit.py",
     "application/routing.py",
     "application/governance.py",
     "adapters/__init__.py",
+    "adapters/atomic_file.py",
     "adapters/capsule.py",
     "adapters/telemetry.py",
     "adapters/memory.py",
@@ -280,6 +301,9 @@ AEK_PACKAGE_FILES = (
     "adapters/evidence.py",
     "adapters/change_scope.py",
     "adapters/review_markdown.py",
+    "adapters/review_lifecycle_store.py",
+    "adapters/work_unit_store.py",
+    "adapters/codebase_state.py",
 )
 
 
@@ -538,16 +562,25 @@ _KIT_VERSION: str | None = None
 
 
 def current_kit_version() -> str:
-    """kit 版本（git describe --tags --always；无 git 时 unknown）。"""
+    """Return the release version, with git metadata as a source-tree fallback."""
     global _KIT_VERSION
     if _KIT_VERSION is None:
+        version_file = KIT_DIR / "VERSION"
         try:
-            proc = subprocess.run(
-                ["git", "-C", str(KIT_DIR), "describe", "--tags", "--always"],
-                capture_output=True, text=True, timeout=10)
-            _KIT_VERSION = proc.stdout.strip() if proc.returncode == 0 else "unknown"
-        except Exception:
-            _KIT_VERSION = "unknown"
+            candidate = version_file.read_text(encoding="ascii").strip()
+            _KIT_VERSION = (candidate if re.fullmatch(
+                r"[0-9]+\.[0-9]+\.[0-9]+", candidate) else None)
+        except (OSError, UnicodeError):
+            _KIT_VERSION = None
+        if _KIT_VERSION is None:
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", str(KIT_DIR), "describe", "--tags", "--always"],
+                    capture_output=True, text=True, timeout=10)
+                _KIT_VERSION = (proc.stdout.strip()
+                                if proc.returncode == 0 else "unknown")
+            except Exception:
+                _KIT_VERSION = "unknown"
         if not _KIT_VERSION:
             _KIT_VERSION = "unknown"
     return _KIT_VERSION

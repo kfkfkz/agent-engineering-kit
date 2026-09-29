@@ -15,6 +15,11 @@ from aek.core.context.capsule import (
     CapsuleClaim, CapsuleSource, ContextCapsule, capsule_as_dict,
 )
 from aek.core.context.memory import CandidateSet, select_expansions
+from aek.core.context.lookup import (
+    CapabilitySnapshot,
+    KnowledgeLookupPlan,
+    plan_knowledge_lookup,
+)
 from aek.core.context.telemetry import ContextReport
 
 
@@ -34,6 +39,12 @@ class MemoryRecallResult:
     capsule: ContextCapsule | None
     capsule_reused: bool
     report: ContextReport
+    selected_path: str
+    reason_code: str
+    capability_snapshot: dict[str, object]
+    uncertainty: str
+    delivered_bytes: int
+    tool_calls: dict[str, int]
 
 
 def recall_context(
@@ -42,9 +53,22 @@ def recall_context(
     candidate_search: Callable[[Path, str], CandidateSet],
     candidate_read: Callable[[Path, object, str], str],
     capsule_store=None, profile_version: int = 1,
+    lookup_plan: KnowledgeLookupPlan | None = None,
+    purpose: str = "target_evidence",
 ) -> MemoryRecallResult:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("memory query is required")
+    if not isinstance(purpose, str) or not purpose.strip():
+        raise ValueError("memory recall purpose is required")
+    if lookup_plan is None:
+        lookup_plan = plan_knowledge_lookup(CapabilitySnapshot(
+            mcp_configured=False, mcp_visible=False, mcp_compatible=False,
+            cli_available=True, bounded_text_available=True,
+            evidence=("application:legacy-cli",)))
+    if not isinstance(lookup_plan, KnowledgeLookupPlan):
+        raise ValueError("lookup plan is invalid")
+    if lookup_plan.selected_path == "stop":
+        raise ValueError(f"lookup is stopped: {lookup_plan.reason_code}")
     batch = candidate_search(repo, query)
     if not isinstance(batch, CandidateSet):
         raise ValueError("candidate adapter returned an invalid batch")
@@ -57,8 +81,8 @@ def recall_context(
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     record_context_delivery(
         ledger, budget, metadata, source="memory", source_kind="memory",
-        channel="memory_candidate", event_purpose="target_evidence",
-        expansion_purpose="target_evidence", session_id=session_id,
+        channel="memory_candidate", event_purpose=purpose,
+        expansion_purpose=purpose, session_id=session_id,
         subject_digest=subject_digest,
         logical_path="generated/memory-candidates.json")
     selection = select_expansions(
@@ -84,7 +108,7 @@ def recall_context(
         record_context_delivery(
             ledger, budget, capsule_text, source="capsule",
             source_kind="capsule", channel="capsule_loader",
-            event_purpose="target_evidence", expansion_purpose="target_evidence",
+            event_purpose=purpose, expansion_purpose=purpose,
             session_id=session_id, subject_digest=subject_digest,
             logical_path=f"generated/context-capsules/{capsule.capsule_id}.json",
             cache_hit=capsule_reused)
@@ -93,8 +117,8 @@ def recall_context(
         content = candidate_read(repo, ref, batch.generation)
         record_context_delivery(
             ledger, budget, content, source="memory", source_kind="memory",
-            channel="memory_open", event_purpose="target_evidence",
-            expansion_purpose="target_evidence", session_id=session_id,
+            channel="memory_open", event_purpose=purpose,
+            expansion_purpose=purpose, session_id=session_id,
             subject_digest=subject_digest, logical_path=ref.path)
         expanded.append(ExpandedMemory(ref.path, ref.content_digest, content))
     observed = (("capsule_loader",) if capsule is not None else ()) + \
@@ -105,6 +129,19 @@ def recall_context(
         ledger, budget, coverage="partial",
         expected_channels=expected,
         observed_channels=observed, bypass_detected=False)
+    if not batch.candidates:
+        uncertainty = "no_match_unknown"
+    elif selection.needs_more_candidates or batch.has_more:
+        uncertainty = "truncated_unknown"
+    elif batch.source == "fallback":
+        uncertainty = "index_fallback"
+    else:
+        uncertainty = lookup_plan.uncertainty
     return MemoryRecallResult(
         batch, tuple(expanded), selection.needs_more_candidates,
-        selection.reason, capsule, capsule_reused, report)
+        selection.reason, capsule, capsule_reused, report,
+        lookup_plan.selected_path, lookup_plan.reason_code,
+        lookup_plan.capability_snapshot.as_dict(), uncertainty,
+        report.delivered_bytes,
+        {"candidate_search": 1, "memory_open": len(expanded),
+         "capsule": 1 if capsule is not None else 0})

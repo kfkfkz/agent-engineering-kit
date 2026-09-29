@@ -25,14 +25,14 @@ else
     # 索引未建：仅当 zvec 实际可用时提醒构建，否则静默（避免每会话唠叨）
     command -v python3 >/dev/null 2>&1 || exit 0
     python3 -c "import zvec" >/dev/null 2>&1 || exit 0
-    echo "[agent-engineering-kit] 语义检索层未建索引。构建：.repo-memory-kit/bin/memory-recall --rebuild"
+    echo "[agent-engineering-kit] Memory configured；MCP visible/indexed 状态需由当前宿主确认。请先使用 memory_recall MCP；索引维护由 Agent 内部处理。"
     exit 0
 fi
 
 # 新增/修改：docs/ 下有比索引目录更新的 md
 newest="$(find "$check_dir" -name '*.md' -newer "$INDEX" -print -quit 2>/dev/null)"
 if [ -n "$newest" ]; then
-    echo "[agent-engineering-kit] 语义索引落后于最近文档变更。刷新：.repo-memory-kit/bin/memory-recall --rebuild"
+    echo "[agent-engineering-kit] Memory 索引可能落后；请先使用 memory_recall MCP，Agent 将按契约决定是否内部刷新。codebase visible/indexed/fresh 仍需宿主取证。"
     exit 0
 fi
 
@@ -41,9 +41,9 @@ doc_count="$(find "$check_dir" -name '*.md' ! -name '_*' -not -path '*/01-索引
 if [ "$doc_count" -gt 0 ] && [ -f "$count_file" ]; then
     last_count="$(cat "$count_file" 2>/dev/null || echo 0)"
     if [ "$doc_count" != "$last_count" ]; then
-        echo "[agent-engineering-kit] 语义索引文档数变化（$last_count → $doc_count），可能存在删除或新增。刷新：.repo-memory-kit/bin/memory-recall --rebuild"
+        echo "[agent-engineering-kit] Memory 文档数变化（$last_count → $doc_count）；请先使用 memory_recall MCP，由 Agent 内部处理刷新。"
         exit 0
     fi
 fi
 
-echo "[agent-engineering-kit] 语义检索可用：.repo-memory-kit/bin/memory-recall \"<任务描述>\"（docs/ 全量：坑/决定/场景/域条目/SDD）"
+echo "[agent-engineering-kit] Memory configured；优先使用 memory_recall MCP。codebase configured 不代表 visible/indexed/fresh，结构查询前需宿主执行 freshness barrier。"

@@ -78,8 +78,12 @@ from installer.registry import _skill_reference_specs
 expected = {"direct", "bounded", "standard", "initiative", "evidence-closeout"}
 assert set(REFERENCE_CATALOG.references) == expected
 reference_specs = _skill_reference_specs()
-assert len(reference_specs) == 2 * len(expected)
-for spec in reference_specs:
+repo_reference_specs = [
+    spec for spec in reference_specs
+    if "repo-delivery-reference" in spec.id
+]
+assert len(repo_reference_specs) == 2 * len(expected)
+for spec in repo_reference_specs:
     name = spec.source_path.rsplit("/", 1)[-1].removesuffix(".md")
     assert spec.source_path == REFERENCE_CATALOG.references[name].source_path
 for route in ("direct", "bounded", "standard", "initiative"):
@@ -114,6 +118,10 @@ ids = {entry["spec_id"] for entry in manifest["entries"]}
 for ref in expected:
     assert f"skill-agents-repo-delivery-reference-{ref}" in ids
     assert f"skill-claude-repo-delivery-reference-{ref}" in ids
+for tree in ("agents", "claude"):
+    assert f"skill-{tree}-delivery-gate-reference-review-evidence" in ids
+    assert (target / f".{tree}/skills/delivery-gate/references/"
+            "review-evidence.md").is_file()
 for relative in ("__init__.py", "core/__init__.py", "core/context/__init__.py",
                  "core/context/reference_catalog.py", "core/context/budget.py",
                  "core/artifact/__init__.py", "core/artifact/registry.py",
@@ -155,6 +163,7 @@ proc = subprocess.run(
      "from aek.core.artifact.plan import build_plan; "
      "from aek.core.review.judge import judge_gate; "
      "from aek.core.review.result import validate_review_payload; "
+     "from aek.application.review_evidence import plan_code_review_evidence; "
      "from aek.core.policy.evaluator import evaluate_policy; "
      "from aek.adapters.memory import fallback_candidates; "
      "from aek.adapters.plan_transaction import PlanStore; "
@@ -162,6 +171,7 @@ proc = subprocess.run(
      "assert resolve_context_budget('bounded', 'routing', 'quick'); "
      "assert ARTIFACT_REGISTRY.get_group('计划'); assert len(FACT_CATALOG) == 8; "
      "assert callable(preview_plan); assert SqlPerformanceScreenResult; "
+     "assert callable(plan_code_review_evidence); "
      "assert callable(build_context_report); assert ContextLedger; "
      "assert callable(report_for_budget); "
      "assert CandidateRef; assert callable(fallback_candidates); "
@@ -265,10 +275,47 @@ grep -q 'execution_profile' "$RD" \
     || bad "repo-delivery 未消费 execution_profile"
 
 DG="$P/.agents/skills/delivery-gate/SKILL.md"
+DGREF="$P/.agents/skills/delivery-gate/references/review-evidence.md"
 grep -q 'receipt_detail=compact' "$DG" \
     && grep -q '不得扩成全仓库审查' "$DG" \
     && ok "delivery-gate 对轻路线保持紧凑验证预算" \
     || bad "delivery-gate 仍可能把轻路线扩成重型门禁"
+grep -q '^### 代码评审取证顺序' "$DG" \
+    && grep -q 'references/review-evidence.md' "$DG" \
+    && grep -q 'stage=closeout' "$DGREF" \
+    && grep -q 'purpose=review_required' "$DGREF" \
+    && grep -q '第一次结构检索必须用' "$DGREF" \
+    && grep -q 'check_index_coverage' "$DGREF" \
+    && ok "delivery-gate 强制 Memory-first 与 Codebase-first 评审取证" \
+    || bad "delivery-gate 仍允许代码评审直接 grep"
+grep -q 'MCP 成功后不得再跑' "$DGREF" \
+    && grep -q 'grep 扫记忆' "$DGREF" \
+    && grep -q 'coverage 明示的' "$DGREF" \
+    && grep -q 'partial/skipped/excluded 缺口' "$DGREF" \
+    && ok "delivery-gate 限制评审文本回退且禁止重复检索" \
+    || bad "delivery-gate 的评审回退边界不完整"
+
+SR="$P/.agents/skills/security-review/SKILL.md"
+grep -q 'stage=closeout' "$SR" \
+    && grep -q 'purpose=review_required' "$SR" \
+    && grep -q 'freshness barrier' "$SR" \
+    && grep -q '第一次结构检索' "$SR" \
+    && ok "security-review 直接入口复用统一评审取证顺序" \
+    || bad "security-review 直接入口仍可能绕过 Memory/codebase"
+
+# 所有会主动发现或核实代码结构的入口都必须显式禁止“先 grep 代码”。
+CODE_DISCOVERY_SKILLS="repo-delivery systematic-debugging tdd reuse-research security-review delivery-gate spec-migrate task-handoff design-pipeline memory-capture codebase-memory memory-check"
+for tool in $CODE_DISCOVERY_SKILLS; do
+    skill="$P/.agents/skills/$tool/SKILL.md"
+    if [ "$tool" = "delivery-gate" ]; then
+        skill="$P/.agents/skills/delivery-gate/references/review-evidence.md"
+    elif [ "$tool" = "memory-check" ]; then
+        skill="$P/docs/memory/RULES.md"
+    fi
+    grep -Eq '结构检索先用|结构检索必须先用|第一次结构检索必须|第一次结构检索（含|定位现有接缝必须先用|STRUCTURAL 的第一次检索必须|grep 仅限字面量' "$skill" \
+        && ok "$tool 固化 codebase-first 结构取证" \
+        || bad "$tool 仍可能先 grep 代码"
+done
 
 for section in "$SRC/templates/agents-md-section.md" "$SRC/templates/claude-md-section.md"; do
     grep -q '只有正向证据才升径' "$section" \

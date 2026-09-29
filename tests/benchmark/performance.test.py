@@ -2,6 +2,7 @@
 """Pinned old/new CLI outputs and seven-run same-host latency smoke."""
 from __future__ import annotations
 
+import json
 import subprocess
 import runpy
 import sys
@@ -20,6 +21,23 @@ COMMIT = "88944283eb8030b4c44363f21f5ef0110252e1fa"
 
 
 class PerformanceTests(unittest.TestCase):
+    def assert_legacy_json_compatible(self, old, new) -> None:
+        """Every old field remains equal; additive 1.0.2 fields are allowed."""
+        if isinstance(old, dict):
+            self.assertIsInstance(new, dict)
+            self.assertEqual(set(old) - set(new), set())
+            for key, value in old.items():
+                with self.subTest(field=key):
+                    self.assert_legacy_json_compatible(value, new[key])
+            return
+        if isinstance(old, list):
+            self.assertIsInstance(new, list)
+            self.assertEqual(len(new), len(old))
+            for expected, actual in zip(old, new):
+                self.assert_legacy_json_compatible(expected, actual)
+            return
+        self.assertEqual(new, old)
+
     def test_threshold_semantics(self) -> None:
         self.assertEqual(compare_latency((1,) * 7, (11,) * 7).verdict, "FINDING")
         self.assertEqual(compare_latency((2_000_000,) * 7,
@@ -35,7 +53,7 @@ class PerformanceTests(unittest.TestCase):
             for entry, args, stdin in (
                 ("route-eval", ("--init",), None),
                 ("governance-eval", (".", "--json"), b""),
-                # Top-level help intentionally lists the new 1.0.1 dynamic-plan
+                # Top-level help intentionally lists the new dynamic-plan
                 # commands.  Pin an existing public operation instead: its
                 # JSON, exit code and stderr remain the compatibility contract.
                 ("doc-gate", ("status", ".", "--json"), None),
@@ -55,7 +73,15 @@ class PerformanceTests(unittest.TestCase):
                     old_result = invoke(old)
                     new_result = invoke(ROOT / entry)
                     self.assertEqual(new_result.returncode, old_result.returncode)
-                    self.assertEqual(new_result.stdout, old_result.stdout)
+                    if entry == "governance-eval":
+                        old_payload = json.loads(old_result.stdout)
+                        new_payload = json.loads(new_result.stdout)
+                        self.assert_legacy_json_compatible(
+                            old_payload, new_payload)
+                        self.assertIn("risk_requirements", new_payload)
+                        self.assertIn("provenance", new_payload)
+                    else:
+                        self.assertEqual(new_result.stdout, old_result.stdout)
                     self.assertEqual(new_result.stderr, old_result.stderr)
                     baseline = measure_seven(lambda: invoke(old))
                     current = measure_seven(lambda: invoke(ROOT / entry))
@@ -82,7 +108,9 @@ class PerformanceTests(unittest.TestCase):
                     old = old_evaluate(card, governance)
                     new = new_evaluate(card, governance)
                     new.pop("context_budget")
-                    self.assertEqual(new, old)
+                    self.assert_legacy_json_compatible(old, new)
+                    self.assertEqual(new["route_verdict"]["status"], "DECIDED")
+                    self.assertEqual(new["governance"]["verdict"], "DECIDED")
             card = old_module["_template"]()
             with patch("subprocess.run", side_effect=AssertionError("Core subprocess")), \
                  patch("pathlib.Path.open", side_effect=AssertionError("Core file scan")):

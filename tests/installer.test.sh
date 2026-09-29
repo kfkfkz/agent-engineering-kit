@@ -87,9 +87,13 @@ check "空目录首次安装退出码 0" 0 $?
 [ -f "$P/.mcp.json" ] && ok ".mcp.json 已创建" || bad ".mcp.json 缺失"
 [ -f "$P/.codex/config.toml" ] && ok ".codex/config.toml 已创建" || bad ".codex 缺失"
 [ -f "$P/.claude/settings.json" ] && ok "settings.json 已创建" || bad "settings.json 缺失"
-# create_container=False：不擅建用户容器
-[ ! -f "$P/CLAUDE.md" ] && [ ! -f "$P/AGENTS.md" ] && [ ! -f "$P/.gitignore" ] \
-  && ok "CLAUDE.md/AGENTS.md/.gitignore 不存在时不擅建" || bad "擅建了用户容器文件"
+# 1.0.2：空仓库也必须获得可达的受管 Agent 根指引；普通 .gitignore 仍不擅建。
+[ -f "$P/CLAUDE.md" ] && [ -f "$P/AGENTS.md" ] && [ ! -f "$P/.gitignore" ] \
+  && [ "$(grep -c '<!-- repo-memory-kit:start -->' "$P/CLAUDE.md")" -eq 1 ] \
+  && [ "$(grep -c '<!-- repo-memory-kit:start -->' "$P/AGENTS.md")" -eq 1 ] \
+  && grep -q "第一次检索必须先用 \`codebase-memory\`" "$P/AGENTS.md" \
+  && ok "空仓库创建受管根指引且不擅建 .gitignore" \
+  || bad "空仓库根指引创建/容器边界错误"
 # 事务目录清理（done 后 tx/<id> 应删除）
 n_tx=$(ls "$P/.repo-memory-kit/tx" 2>/dev/null | wc -l)
 check "done 后 tx 目录已清空" 0 "$n_tx"

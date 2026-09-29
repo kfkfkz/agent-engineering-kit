@@ -5,10 +5,33 @@ import re
 from typing import Any
 
 from aek.core.context.budget import resolve_context_budget
+from aek.core.policy.requirements import (
+    RequirementError,
+    normalize_governance_actions,
+)
 
 
 ROUTES = ("direct", "bounded", "standard", "initiative")
-RISK_OVERLAY_CHECKS = {"performance_capacity": ["performance-review"]}
+RISK_OVERLAY_REQUIREMENTS = {
+    "public_contract": {"checks": ["contract-review"]},
+    "schema_migration": {"checks": ["migration-plan", "rollback-verification",
+                                      "sql-performance-screen"]},
+    "security_privacy": {"checks": ["security-review"],
+                         "reviews": ["independent"]},
+    "irreversible": {"checks": ["rollback-verification"],
+                     "reviews": ["human"]},
+    "cross_service": {"checks": ["integration-test"]},
+    "cross_repo": {"checks": ["integration-gate"]},
+    "concurrency_consistency": {"checks": ["concurrency-review"]},
+    "core_data_flow": {"checks": ["impact-analysis"]},
+    "compliance": {"checks": ["compliance-review"],
+                   "reviews": ["independent"]},
+    "performance_capacity": {"checks": ["performance-review"]},
+}
+RISK_OVERLAY_CHECKS = {
+    risk: list(requirements.get("checks", []))
+    for risk, requirements in RISK_OVERLAY_REQUIREMENTS.items()
+}
 ROUTE_CHECKS = {
     "direct": ["targeted-verification"],
     "bounded": ["acceptance-criteria", "targeted-tests", "quick-review"],
@@ -31,7 +54,6 @@ ROUTE_EXECUTION_PROFILES = {
                    "design_depth": "full_sdd", "verification_depth": "integration",
                    "receipt_detail": "full"},
 }
-
 
 class RoutingError(ValueError):
     """The already-validated card or governance result is inconsistent."""
@@ -66,66 +88,32 @@ def _minimum(card: dict[str, Any]) -> tuple[str, list[dict[str, str]]]:
         require("bounded", "MEDIUM_UNCERTAINTY", "存在中等不确定性")
     if card["uncertainty"] == "high":
         require("standard", "HIGH_UNCERTAINTY", "实现或影响面存在高不确定性")
-    if card["reversibility"] == "moderate":
-        require("bounded", "MODERATE_REVERSIBILITY", "回退需要明确步骤")
-    if card["reversibility"] == "hard":
-        require("standard", "HARD_TO_REVERSE", "变更难以回滚")
     if footprint["modules"] > 1:
         require("standard", "CROSS_MODULE", "影响多个模块")
     if footprint["sessions"] > 1:
         require("standard", "MULTI_SESSION", "预计需要多个实施会话")
     if card["coordination"] == "multi_contributor":
         require("standard", "COORDINATION", "需要多人协调")
-    for risk in card["risk_overlays"]:
-        if risk == "cross_repo":
-            require("initiative", "RISK_CROSS_REPO", "跨仓库风险覆盖项")
-        else:
-            require("standard", f"RISK_{risk.upper()}", f"风险覆盖项: {risk}")
     if (footprint["repos"] > 1 or footprint["sessions"] >= 3
             or card["coordination"] == "multi_team"):
         require("initiative", "INITIATIVE_SCALE", "多仓库、较长多会话或多团队协作")
     return minimum, reasons
 
 
-def _policy(governance: dict[str, Any]) -> tuple[str | None, str, str, list[str]]:
-    minimum = None
-    review_depth = "quick"
-    receipt_mode = "formal" if governance.get("profile", "strict") == "strict" else "inline"
-    checks: list[str] = []
+def _policy(governance: dict[str, Any]) -> dict[str, Any]:
     actions = governance.get("all_actions", [])
-    if not isinstance(actions, list):
-        raise RoutingError("governance all_actions 必须是数组")
-    for action in actions:
-        if not isinstance(action, str):
-            raise RoutingError("governance action 必须是字符串")
-        if action.startswith("min_route:"):
-            candidate = action.split(":", 1)[1]
-            if candidate not in ROUTES:
-                raise RoutingError(f"治理动作的 min_route 非法: {candidate}")
-            minimum = candidate if minimum is None else _promote(minimum, candidate)
-        elif action.startswith("review_depth:"):
-            depth = action.split(":", 1)[1]
-            if depth not in ("quick", "thorough"):
-                raise RoutingError(f"治理动作的 review_depth 非法: {depth}")
-            if depth == "thorough":
-                review_depth = depth
-        elif action.startswith("required_check:"):
-            check = action.split(":", 1)[1]
-            if not check:
-                raise RoutingError("required_check 动作不得为空")
-            if check not in checks:
-                checks.append(check)
-        elif action.startswith("receipt_mode:"):
-            mode = action.split(":", 1)[1]
-            if mode not in ("inline", "formal"):
-                raise RoutingError(f"治理动作的 receipt_mode 非法: {mode}")
-            if mode == "formal":
-                receipt_mode = mode
-        elif action in ("receipt", "independent_review"):
-            receipt_mode = "formal"
-            if action == "independent_review":
-                review_depth = "thorough"
-    return minimum, review_depth, receipt_mode, checks
+    try:
+        normalized = normalize_governance_actions(
+            actions, governance.get("profile", "strict"))
+    except RequirementError as exc:
+        raise RoutingError(str(exc)) from exc
+    return {
+        "review_depth": normalized.review_depth,
+        "receipt_mode": normalized.receipt_mode,
+        "requirements": normalized.requirements_dict(),
+        "deprecated_findings": list(normalized.deprecated_findings),
+        "provenance": normalized.provenance_dicts(),
+    }
 
 
 def _matches(path: str, patterns: list[str]) -> bool:
@@ -141,14 +129,27 @@ def _matches(path: str, patterns: list[str]) -> bool:
 def evaluate_route(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]:
     """Return the complete, presenter-independent route decision."""
     minimum, reasons = _minimum(card)
-    policy_min, review_depth, receipt_mode, policy_checks = _policy(governance)
-    if policy_min is not None:
-        previous = minimum
-        minimum = _promote(minimum, policy_min)
-        if minimum != previous:
-            reasons.append({"code": "GOVERNANCE_MIN_ROUTE",
-                            "message": f"治理规则要求至少 {policy_min}",
-                            "minimum": policy_min})
+    policy = _policy(governance)
+    risk_requirements = {
+        kind: list(values)
+        for kind, values in policy["requirements"].items()
+    }
+    risk_provenance = list(policy["provenance"])
+    for risk in card["risk_overlays"]:
+        overlay = RISK_OVERLAY_REQUIREMENTS.get(risk, {})
+        for kind, values in overlay.items():
+            for value in values:
+                if value not in risk_requirements[kind]:
+                    risk_requirements[kind].append(value)
+                    risk_provenance.append({
+                        "kind": kind, "requirement": value,
+                        "source": f"risk_overlay:{risk}",
+                    })
+    review_depth = ("thorough" if any(
+        item in {"thorough", "independent", "human"}
+        for item in risk_requirements["reviews"])
+                    else policy["review_depth"])
+    receipt_mode = policy["receipt_mode"]
     selected = card["route"]
     route_valid = ROUTES.index(selected) >= ROUTES.index(minimum)
     override = card.get("route_override")
@@ -182,9 +183,8 @@ def evaluate_route(card: dict[str, Any], governance: dict[str, Any]) -> dict[str
                         "message": "最终 diff 含 Route Card 未计划路径: " + ", ".join(unplanned),
                         "minimum": minimum})
     checks: list[str] = []
-    risk_checks = [check for risk in card["risk_overlays"]
-                   for check in RISK_OVERLAY_CHECKS.get(risk, [])]
-    for check in ROUTE_CHECKS[effective] + risk_checks + card["required_checks"] + policy_checks:
+    for check in (ROUTE_CHECKS[effective] + card["required_checks"]
+                  + risk_requirements["checks"]):
         if check not in checks:
             checks.append(check)
     if effective in ("standard", "initiative"):
@@ -204,9 +204,16 @@ def evaluate_route(card: dict[str, Any], governance: dict[str, Any]) -> dict[str
         "requirements": {"review_depth": review_depth,
                          "receipt_mode": receipt_mode,
                          "required_checks": checks},
+        "route_verdict": {"status": "DECIDED", "minimum": minimum,
+                          "effective": effective,
+                          "reason_codes": [item["code"] for item in reasons]},
         "governance": {"profile": governance.get("profile", "strict"),
+                       "verdict": "DECIDED",
                        "matched_rules": governance.get("matched_rules", []),
-                       "required_actions": governance.get("required_actions", [])},
+                       "required_actions": governance.get("required_actions", []),
+                       "risk_requirements": risk_requirements,
+                       "provenance": risk_provenance,
+                       "deprecated_findings": policy["deprecated_findings"]},
         "reasons": reasons,
         "ok": route_valid and route_efficient and not unplanned,
     }

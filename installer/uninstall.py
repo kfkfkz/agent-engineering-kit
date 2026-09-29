@@ -15,7 +15,6 @@ from typing import Any
 
 from .manifest import (
     MANIFEST_SPEC_ID,
-    Manifest,
     ManifestCorruptError,
     manifest_payload_bytes,
     read_manifest,
@@ -28,12 +27,9 @@ from .registry import (
     CodexLinkSpec,
     ResourceSpec,
     SecurityError,
-    _SPEC_ORDER,
     cleanup_legacy_state,
     determine_status,
-    fsync_dir,
     read_codex_workspace_marker,
-    resolve_spec,
     secure_mkdir,
     secure_rmdir,
 )
@@ -143,7 +139,8 @@ def remove_hook(container: dict, spec: ResourceSpec) -> dict:
 
 
 def build_removal_content(target: Path, group: list[ResourceSpec],
-                          pre_bytes: bytes | None) -> bytes | None:
+                          pre_bytes: bytes | None, *,
+                          delete_empty_container: bool = False) -> bytes | None:
     """组内全部 spec 的移除结果。返回 None = kind "delete"（整文件删除）；
     其余 = 移除 Kit 片段后的完整容器（容器永不删除，§2）。"""
     spec0 = group[0]
@@ -167,6 +164,8 @@ def build_removal_content(target: Path, group: list[ResourceSpec],
         text = pre_bytes.decode("utf-8") if pre_bytes is not None else ""
         for spec in group:
             text = remove_block(text, spec)
+        if delete_empty_container and not text.strip():
+            return None
         return text.encode()
 
     raise ValueError(f"不可卸载的资源类型: {spec0.resource_type}")
@@ -371,11 +370,18 @@ def _classify_entries(target: Path, manifest, codex_root_cli):
 def _build_removal_plan(target: Path, removal_specs, manifest, residual):
     """步骤 5：内存构建全部 CommitStep（含 Manifest 最后一步）。"""
     plans = []
+    entries = manifest.entry_map()
     for group in group_specs(removal_specs):
         spec0 = group[0]
         dst = target / spec0.destination_path
         pre_bytes, pre_mode = _read_container(dst)
-        content = build_removal_content(target, group, pre_bytes)
+        delete_empty = all(
+            entries.get(spec.id) is not None
+            and entries[spec.id].created_container
+            for spec in group)
+        content = build_removal_content(
+            target, group, pre_bytes,
+            delete_empty_container=delete_empty)
         kind = "delete" if content is None else "replace"
         step = CommitStep(
             spec_id=spec0.id, spec_ids=tuple(s.id for s in group), kind=kind,

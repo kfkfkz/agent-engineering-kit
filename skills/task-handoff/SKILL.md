@@ -7,11 +7,20 @@ description: "在任务中断、跨 Agent/会话转交或需要可恢复上下�
 
 交接是可核验的上下文，不是新的权威规范。接手者必须以当前源码、版本状态、项目指令和既有 spec 为准。
 
+接手时第一次结构检索必须调用 `codebase-memory`（含 freshness/coverage）；禁止先用
+`rg/grep/find`，它们仅补字面量、配置、非代码或 coverage 缺口。
+
 ## 何时使用
 
 任务未完成但需要换 Agent/会话、等待外部权限或决策、长任务达到清晰阶段边界时使用。已完成的普通汇报无需另造 handoff 文档。
 
 优先把交接状态写入项目已有 tasks/spec/issue/任务系统；没有持久载体时才在对话中输出。除非项目明确要求，不创建与现有计划并行的交接文件。
+
+接手或恢复时先探测 ArtifactPlan、任务清单、gate/dispatch receipt 与宿主任务状态；这些载体足够时
+不得再创建并行状态。只有载体缺口时才使用 WorkUnit 本地状态。新 writer 必须以已读 snapshot digest
+执行 takeover 并递增 writer epoch，然后用当前 IdentityEnvelope 重验每步：有效的幂等完成项复用，
+失效项重算；非幂等项必须查询 STARTED/COMMITTED receipt，COMMITTED 从下一步继续，STARTED 或
+结果不明转 NEEDS_HUMAN，绝不因超时直接重做。旧 writer 的 CAS 失败后必须重读，不得覆盖。
 
 ## 交接契约
 

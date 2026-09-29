@@ -67,7 +67,7 @@ RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVe
 printf '%s\n' "$RESP" | python3 -c "
 import json,sys; r=json.load(sys.stdin)
 assert r['result']['protocolVersion']=='2025-06-18'  # 回显
-assert r['result']['serverInfo']=={'name':'agent-engineering-kit','version':'1.0.1'}
+assert r['result']['serverInfo']=={'name':'agent-engineering-kit','version':'1.0.2'}
 " && ok "T1b 版本协商：回显客户端版本" || bad "T1b: $RESP"
 
 # T1c: 客户端发送未知版本 → 默认版本
@@ -92,6 +92,8 @@ tools=[t['name'] for t in r['result']['tools']]
 assert 'memory_recall' in tools and 'memory_build' in tools
 assert 'domain_check' in tools and 'kit_status' in tools
 assert all('inputSchema' in t for t in r['result']['tools'])
+memory=next(t for t in r['result']['tools'] if t['name']=='memory_recall')
+assert 'context' in memory['inputSchema']['properties']
 " && ok "tools/list：4 工具 + inputSchema" || bad "tools/list 异常: $RESP"
 
 # ── T3 tools/call kit_status ──
@@ -115,6 +117,41 @@ data=json.loads(text)
 assert data.get('returncode')==0 or 'RULES' in data.get('output',''), \
     f'recall failed: {data}'
 " && ok "tools/call memory_recall：检索命中" || bad "memory_recall 异常: $RESP"
+
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"RULES","context":{"schema_version":1,"route":"direct","stage":"closeout","purpose":"review_required","subject_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","session_id":"mcp-context-test"}}}}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+data=json.loads(r['result']['content'][0]['text'])
+assert data['returncode']==0, data
+assert data['context_mode']=='explicit'
+assert data['selected_path']=='mcp'
+assert data['reason_code']=='MCP_AVAILABLE'
+assert data['tool_calls']['candidate_search']==1
+assert data['uncertainty']=='no_match_unknown'
+" && ok "memory_recall context：MCP 路径与预算化结构返回" || bad "memory_recall context 异常: $RESP"
+if python3 - "$P/.repo-memory-kit/context/mcp-context-test-aaaaaaaaaaaa.jsonl" <<'PY'
+import json
+import pathlib
+import sys
+
+rows = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+assert rows
+assert {row["stage"] for row in rows} == {"closeout"}
+assert {row["purpose"] for row in rows} == {"review_required"}
+PY
+then
+    ok "memory_recall MCP 保留 review purpose"
+else
+    bad "memory_recall MCP 丢失 review purpose"
+fi
+
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"RULES","context":{"schema_version":2,"route":"direct","subject_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","session_id":"bad-context"}}}}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+data=json.loads(r['result']['content'][0]['text'])
+assert r['result']['isError'] is True
+assert 'schema_version' in data['error']
+" && ok "memory_recall context 非法 schema fail-closed" || bad "非法 context 未拒绝: $RESP"
 
 # ── T5 未知工具 → -32602 ──
 RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nonexistent","arguments":{}}}')

@@ -7,8 +7,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-
 from .manifest import Manifest, ManifestCorruptError, read_manifest
 from .registry import (
     REGISTRY,
@@ -172,6 +170,27 @@ def run_doctor_checks(target: Path,
                                 "managed",
                                 f"kit 版本不一致（已装={manifest.kit_version}，"
                                 f"当前={current_kit_version()}）"))
+
+    # 宿主 MCP 能力四态必须分别报告。doctor 只能证明配置文件，不能从本地
+    # 安装状态推导当前 Agent 看得见工具、仓库已登记或索引已追平。
+    configured_paths = [
+        path for path in (target / ".mcp.json", target / ".codex/config.toml")
+        if path.is_file()
+    ]
+    findings.append(Finding(
+        "codebase-capability-configured", ".mcp.json/.codex/config.toml",
+        "managed" if configured_paths else "unverifiable",
+        ("configured=true；证据=" + ",".join(
+            path.relative_to(target).as_posix() for path in configured_paths))
+        if configured_paths else "configured=unknown；未发现项目级配置证据"))
+    for state_name, reason in (
+        ("visible", "需由当前宿主工具清单或实际调用证明"),
+        ("indexed", "需由 list_projects/index_status 的 canonical root 匹配证明"),
+        ("fresh", "需由代码身份、generation 与全路径 coverage 证明"),
+    ):
+        findings.append(Finding(
+            f"codebase-capability-{state_name}", "<host-observation>",
+            "unverifiable", f"{state_name}=unknown；{reason}"))
 
     # 可选能力 archify：文件已装但 Node.js 运行时缺失 → DEGRADED（§14 能力缺失
     # 语义——基础功能不受影响，图表生成降级为 mermaid 回退）

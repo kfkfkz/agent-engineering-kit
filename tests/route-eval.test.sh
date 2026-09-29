@@ -330,24 +330,27 @@ PY
 run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json
 assert_eq "Direct 不接受中等不确定性" "$rc" "2"
 
-# 公共契约、Schema 等风险是独立 overlay，至少提升到 Standard。
+# 公共契约、Schema 等风险是独立 governance overlay，不抬高工作量路线。
 write_card bounded feature local 1 1 1 '["public_contract"]' '["src/api.py"]'
 run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json
-assert_eq "公共契约风险至少 Standard" "$rc" "2"
-write_card standard feature local 1 1 1 '["schema_migration"]' '["db/migration.sql"]'
+assert_eq "公共契约风险保持 Bounded" "$rc" "0"
 python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"
-python3 -c "import json; d=json.load(open('$T/out.json')); assert d['minimum_route']=='standard'" \
-    && ok "Schema overlay 计算 Standard 下限" || bad "Schema overlay 下限错误"
+python3 -c "import json; d=json.load(open('$T/out.json')); assert d['minimum_route']=='bounded' and 'contract-review' in d['requirements']['required_checks']" \
+    && ok "公共契约风险追加独立检查" || bad "公共契约风险与路线仍耦合"
+write_card bounded feature local 1 1 1 '["schema_migration"]' '["db/migration.sql"]'
+python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"
+python3 -c "import json; d=json.load(open('$T/out.json')); assert d['minimum_route']=='bounded' and 'migration-plan' in d['requirements']['required_checks']" \
+    && ok "Schema overlay 只追加迁移检查" || bad "Schema overlay 错误提升路线"
 
-# 性能/容量风险只在显式命中时叠加专项审查，并至少提升到 Standard。
-write_card standard feature local 1 1 1 '["performance_capacity"]' '["src/query.py"]'
+# 性能/容量风险只在显式命中时叠加专项审查，不改变工作量路线。
+write_card bounded feature local 1 1 1 '["performance_capacity"]' '["src/query.py"]'
 python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --json > "$T/out.json"
 python3 - "$T/out.json" <<'PY' \
     && ok "性能风险叠加专项审查" \
     || bad "性能风险未进入路线或专项检查"
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
-assert d["minimum_route"] == "standard"
+assert d["minimum_route"] == "bounded"
 assert "performance-review" in d["requirements"]["required_checks"]
 PY
 
@@ -445,7 +448,7 @@ write_card bounded feature local 1 1 1 '[]' '["src/**"]'
 run_rc python3 "$KIT/route-eval" "$GIT_REPO" --card "$T/card.json" --git-ref HEAD --json
 assert_eq "--git-ref 捕获未跟踪文件" "$rc" "2"
 python3 "$KIT/route-eval" "$GIT_REPO" --card "$T/card.json" --git-ref HEAD --json > "$T/out.json" 2>/dev/null || true
-python3 -c "import json; d=json.load(open('$T/out.json')); assert d['changed_files']==['db/schema.sql','src/export.py'] and d['unplanned_files']==['db/schema.sql'] and d['minimum_route']=='standard' and d['governance']['matched_rules'][0]['rule_id']=='DB-UNTRACKED'" \
+python3 -c "import json; d=json.load(open('$T/out.json')); assert d['changed_files']==['db/schema.sql','src/export.py'] and d['unplanned_files']==['db/schema.sql'] and d['minimum_route']=='bounded' and d['governance']['matched_rules'][0]['rule_id']=='DB-UNTRACKED' and d['governance']['deprecated_findings'][0]['action']=='min_route:standard'" \
     && ok "untracked 同时进入漂移与治理证据" || bad "--git-ref 漏掉工作区文件或治理规则"
 
 # untracked 新增行以 + 开头时仍是内容，不得被误认成 +++ 文件头而漏掉正则规则。
@@ -460,12 +463,12 @@ git -C "$GIT_LINE" commit -qm base
 printf 'strict\n' > "$GIT_LINE/.repo-memory-kit/governance"
 printf '%s\n' '{"version":1,"rules":[{"id":"LINE-001","require":["min_route:standard"],"match":{"added_lines_regex":["danger"]}}]}' > "$GIT_LINE/.repo-memory-kit/governance.json"
 printf '+++danger\n' > "$GIT_LINE/src/risky.txt"
-write_card standard feature local 1 1 1 '[]' '["src/**"]'
+write_card bounded feature local 1 1 1 '[]' '["src/**"]'
 python3 "$KIT/route-eval" "$GIT_LINE" --card "$T/card.json" --git-ref HEAD --json > "$T/out.json"
 python3 -c "import json; d=json.load(open('$T/out.json')); assert d['governance']['matched_rules'][0]['rule_id']=='LINE-001'" \
     && ok "以 + 开头的新增内容仍参与治理正则" || bad "新增内容被误判成 diff 文件头"
 
-# 治理规则可以为命中的最终 diff 设置路线下限、审查深度和专项检查。
+# 旧 min_route 规则迁移为明确审查/检查要求，不再改变任务路线。
 cat > "$REPO/.repo-memory-kit/governance.json" <<'EOF'
 {
   "version": 1,
@@ -486,20 +489,22 @@ diff --git a/db/schema.sql b/db/schema.sql
 EOF
 write_card bounded feature local 1 1 1 '[]' '["db/schema.sql"]'
 run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --diff "$T/db.diff" --json
-assert_eq "治理规则可提升路线下限" "$rc" "2"
-python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --diff "$T/db.diff" --json > "$T/out.json" 2>/dev/null || true
+assert_eq "治理规则不再提升路线下限" "$rc" "0"
+python3 "$KIT/route-eval" "$REPO" --card "$T/card.json" --diff "$T/db.diff" --json > "$T/out.json"
 python3 - "$T/out.json" <<'PY' \
     && ok "治理动作映射到路线/审查/检查" \
     || bad "治理动作未进入路线结果"
 import json, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
-assert d["minimum_route"] == "standard"
-assert d["effective_route"] == "standard"
+assert d["minimum_route"] == "bounded"
+assert d["effective_route"] == "bounded"
 assert d["requirements"]["review_depth"] == "thorough"
 assert "impact-analysis" in d["requirements"]["required_checks"]
 assert "migration-plan" in d["requirements"]["required_checks"]
 assert "performance-review" in d["requirements"]["required_checks"]
 assert d["governance"]["matched_rules"][0]["rule_id"] == "DB-001"
+assert d["governance"]["deprecated_findings"][0]["action"] == "min_route:standard"
+assert d["execution_profile"]["planning_depth"] == "compact"
 PY
 
 # 非法卡片 fail-closed；--init 输出可直接作为 schema 起点。
@@ -519,6 +524,10 @@ assert_eq "项目级超配必须给出规则来源" "$rc" "3"
 write_card bounded feature local 1 1 1 '[]' '["../outside.py"]'
 run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json"
 assert_eq "planned_paths 拒绝绝对/逃逸路径" "$rc" "3"
+printf '%s\n' '{"version":1,"rules":[{"id":"BAD-ACTION","require":["min_route:extreme"],"match":{"paths":["never/**"]}}]}' > "$REPO/.repo-memory-kit/governance.json"
+write_card bounded feature local 1 1 1 '[]' '["src/x.py"]'
+run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json"
+assert_eq "未命中规则的非法治理动作也在加载期 fail-closed" "$rc" "3"
 printf '{broken\n' > "$REPO/.repo-memory-kit/governance.json"
 write_card bounded feature local 1 1 1 '[]' '["src/x.py"]'
 run_rc python3 "$KIT/route-eval" "$REPO" --card "$T/card.json"

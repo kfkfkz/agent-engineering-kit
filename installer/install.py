@@ -337,7 +337,9 @@ def assemble_manifest(target: Path, preflight: PreflightResult,
                 spec_id=spec.id, action=action,
                 before_state=gp.before_states.get(spec.id, "unknown"),
                 installed_hash=installed, canonical_hash=canonical,
-                codex_root=None))
+                codex_root=None,
+                created_container=(spec.resource_type == "managed_block"
+                                   and gp.step.pre_container_hash is None)))
 
     # codex_link：--codex-root 传入时逐链接登记（哈希取期望链接目标的确定性指纹）
     if codex_root_cli is not None:
@@ -532,12 +534,10 @@ def run_install(target: Path, *, repair: bool = False,
                 "rules": [
                     {"id": "SEC-001",
                      "require": ["receipt", "independent_review",
-                                 "min_route:standard",
                                  "required_check:security-review"],
                      "match": {"paths": ["**/security/**", "**/auth/**"]}},
                     {"id": "DB-001",
                      "require": ["receipt", "independent_review",
-                                 "min_route:standard",
                                  "required_check:migration-plan",
                                  "required_check:rollback-verification",
                                  "required_check:sql-performance-screen"],

@@ -13,6 +13,10 @@ from aek.adapters.plan_transaction import PlanStore
 
 
 KIT = Path(__file__).resolve().parent.parent
+# The 0.4 s assertion proves that the process is blocked while the lock is held.
+# After release, allow for cold Python imports and loaded CI hosts; this timeout
+# is only a deadlock guard, not a latency requirement.
+RELEASE_TIMEOUT = 15
 
 
 class DocumentGateLockTests(unittest.TestCase):
@@ -34,7 +38,7 @@ class DocumentGateLockTests(unittest.TestCase):
                         with self.assertRaises(subprocess.TimeoutExpired):
                             proc.wait(timeout=0.4)
                     try:
-                        out, err = proc.communicate(timeout=5)
+                        out, err = proc.communicate(timeout=RELEASE_TIMEOUT)
                     except subprocess.TimeoutExpired:
                         proc.kill()
                         proc.communicate()
@@ -64,7 +68,7 @@ class DocumentGateLockTests(unittest.TestCase):
                             if proc.poll() is not None:
                                 proc.communicate()
                     try:
-                        out, err = proc.communicate(timeout=5)
+                        out, err = proc.communicate(timeout=RELEASE_TIMEOUT)
                     except subprocess.TimeoutExpired:
                         proc.kill()
                         proc.communicate()
@@ -85,7 +89,7 @@ class DocumentGateLockTests(unittest.TestCase):
                     proc.wait(timeout=0.4)
                 (reviews / "artifact-plan.json").write_text("{}")
             try:
-                out, err = proc.communicate(timeout=5)
+                out, err = proc.communicate(timeout=RELEASE_TIMEOUT)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.communicate()

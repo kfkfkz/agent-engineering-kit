@@ -20,6 +20,14 @@ description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移�
 
 ## 阶段一：路线复核、治理评估与最终 diff 审查
 
+需要项目历史、既有决定、坑点或旧回执时，先调用 `memory_recall` MCP 的预算化 context 契约；只在
+MCP 不可见/不兼容/调用开始前失败时内部降级 CLI，再失败才有界文本查找。不得在 MCP 成功后重复
+CLI/grep，也不得把无命中、截断或 degraded 解释成“没有相关约束”。
+
+### 代码评审取证顺序
+
+代码评审前完整读取并执行 [取证规范](references/review-evidence.md)，不得仅凭摘要评审。
+
 1. 固定本次任务目标、验收条件、Route Card、基线和最终 diff；区分本次修改与用户已有改动。
 2. **路线与范围裁决**：运行
    `.repo-memory-kit/bin/route-eval <仓库根> --card <Route Card> --git-ref <基线> --json`；
@@ -33,7 +41,8 @@ description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移�
    `governance-eval` 的结果；需要单独诊断规则时再把 diff 喂给
    `.repo-memory-kit/bin/governance-eval <仓库根目录> --diff <file>`（或管道），
    拿到命中规则 ID 与 required_actions（receipt / independent_review / inline_review /
-   min_route / required_check / review_depth）。
+   required_check / review_depth / receipt / artifact）。旧 `min_route:*` 只按机器返回的
+   deprecated migration 映射为明确治理要求，绝不提升 Task Route。
    引擎输出即门禁要求——命中 `independent_review` 时本节对抗式复核必须执行。
 4. 至少逐项检查：行为正确性与失败路径、项目宪章/规范、调用影响与兼容性、
    测试充分性、复杂度与维护性、文档/记忆一致性、**与冻结设计文档的偏离**

@@ -10,6 +10,22 @@
 减少“不同 Agent 各写一套设计、各走一套流程”的偏差。AI 负责提出候选和评审问题，
 脚本负责可重复判定，维护者保留需求确认、业务流程签核和高风险决策权。
 
+## 1.0.2 产品收敛
+
+1.0.2 聚焦“用得顺、做得对、失败可恢复”，把 1.0.1 的工程框架补成可闭环的产品能力：
+
+- Task Route 只决定工作量和流程深度，Governance 独立追加风险审查、验证、凭证与产物；小改动不再因一条风险规则被迫走完整 SDD，高风险也不会因路线轻而被绕过；
+- 项目知识固定采用 Memory MCP → 等价 CLI → 有界文本的唯一降级链；代码结构、调用链和影响分析先过 codebase-memory 新鲜度屏障，再查图谱和精确源码，`grep` 只补字面量与已披露覆盖缺口；
+- 代码生成、Git/SVN 更新、切分支和合并会使图谱进入待重验状态；同一变更批次至多显式刷新一次，已被后台索引追平时不重复强刷；
+- Review Issue 拥有稳定身份和 `OPEN → FIXED → VERIFIED → CLOSED / REOPENED / BLOCKED` 生命周期，Author 不能自行关闭问题，增量 Review 仅在影响闭包可证明时启用；
+- WorkUnit 以 writer epoch、CAS、七态步骤和 STARTED/COMMITTED 回执恢复中断任务，已提交的非幂等动作不会因重试而重复执行；
+- Delivery Gate 将 route、governance、identity、codebase/review evidence 合成机器结果；每项 requirement 都带 policy、fact、evidence 和状态，代码、文档、策略或证据变化会使旧回执 STALE/INVALID；
+- 安装器会为缺少根指引的仓库安全创建受管容器，并把 configured、visible、indexed、fresh 四种 codebase 能力分开报告；Linux/POSIX 与 Windows copy 生命周期继续保持兼容；
+- CI 自动发现 Python 行为套件，新增能力不会因为忘记登记测试文件而形成“本地有测试、CI 没运行”的假绿。
+
+完整版本差异见 [CHANGELOG.md](CHANGELOG.md)。第三方运行时与许可证范围没有新增，归属仍以
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 为准。
+
 ## 1.0.1 架构升级
 
 1.0.1 把“按任务复杂度少读、少产出、少评审”从 Skill 建议升级为可验证的产品行为：
@@ -297,7 +313,7 @@ AEK 把三个维度分开，避免把组织治理、任务规模和专项风险�
 | --- | --- | --- |
 | 项目治理 | `strict` / `lightweight` | 回执形态、组织级底线；不决定任务路线 |
 | 任务路线 | Direct / Bounded / Standard / Initiative | 本任务需要多少规划、设计、拆分和审查 |
-| 风险覆盖项 | 契约、Schema、安全、性能/容量、不可逆、跨服务/仓库、并发一致性等 | 只叠加相关专项检查和最低路线 |
+| 风险覆盖项 | 契约、Schema、安全、性能/容量、不可逆、跨服务/仓库、并发一致性等 | 独立叠加专项审查、验证、凭证与产物，不改变工作量路线 |
 
 任务路线如下：
 
@@ -305,7 +321,7 @@ AEK 把三个维度分开，避免把组织治理、任务规模和专项风险�
 | --- | --- | --- |
 | Direct | 文案、格式、无行为变化的局部修改 | 修改 + 针对性验证 |
 | Bounded | 清晰、局部、可逆、一个实施单元的小功能或缺陷 | 简短验收与范围 + 必要的 TDD + 定向测试 + 快速审查 |
-| Standard | 跨模块、公共行为变化、实质不确定性或高风险覆盖项 | 影响分析 + 适用设计 + 计划 + 独立审查 |
+| Standard | 跨模块、公共行为变化或实质不确定性 | 影响分析 + 适用设计 + 计划 + 独立审查 |
 | Initiative | 多仓库、较长多会话、多团队/并行工作流 | 完整 SDD + 工作单元拆分 + 集成门禁 |
 
 先做零阶段快速分流，再决定读多少上下文。此时只读取用户请求、根指令、governance marker、
@@ -329,7 +345,8 @@ Route Card 记录所选路线、工作种类、意图缺口、行为变化、预
 `route-eval` 同时检查安全性和经济性：路线过轻会阻断，无理由选择更重路线也会以
 `route_fit=too_heavy` 阻断并返回 `recommended_route`。只有用户明确要求或项目现有规则
 明确要求时，才可填写带具体原因的 `route_override`；`project_required` 还必须提供规则来源
-`source`，项目级最低路线优先写进治理规则。
+`source`。项目若确实要求更重的工作流，应以带来源的 `route_override` 表达；治理规则只声明
+风险要求，不再借 `min_route` 混入工作量裁决。
 工具还返回机器可读的 `execution_profile`：
 
 | 路线 | 上下文 | 计划/设计 | 验证 | 回执详细度 |
@@ -445,9 +462,14 @@ Standard/Initiative 会在计划冻结后生成动态 ArtifactPlan。Plan 只允
 
 ### codebase-memory
 
-负责结构化代码取证。默认按 Verify 等级查询符号、调用链、数据流和影响范围，再回到当前源码、测试及索引覆盖信息核验。
+负责结构化代码取证。默认先核对当前代码身份与索引 generation/coverage；新鲜时按 Verify
+等级查询符号、调用链、数据流和影响范围，再回到精确源码、测试及索引覆盖信息核验。Agent
+写代码、生成文件、Git/SVN 更新、切分支或合并后，下一次结构查询和交付裁决必须先过 freshness
+barrier。同一 dirty epoch 最多显式刷新一次。
 
-项目 Skill 会始终安装；MCP 运行时是可选增强。运行时缺失时允许普通交付降级为源码检索并披露置信度，但严格记忆巡检会按规则停止，避免用 grep 冒充完整结构核验。
+项目 Skill 会始终安装；MCP 运行时是可选增强。运行时缺失时允许普通交付降级为有界源码
+检索并披露原因与置信度，但不得把降级结果表述成完整结构证明，也不得用 grep 冒充调用链或
+全量影响分析。
 
 ### systematic-debugging
 
@@ -505,8 +527,10 @@ validate 只证明图能正确渲染，不证明架构事实正确。
 Route Card 检查所选/最低路线与最终 diff 范围漂移，再复用 `governance-eval` 对 diff 做
 规则匹配（命中规则 + required_actions），叠加正确性、宪章、兼容性、测试、维护性和安全
 审查，高危发现做对抗式复核。阶段二从项目自身 CI、构建文件和宪章提取实际门禁执行
-验证闭环。结论枚举 `READY`、`NOT READY`、`NEEDS HUMAN REVIEW`，未运行的检查不会被写成
-通过；回执形态由项目治理 profile 决定。
+验证闭环。1.0.2 的 Gate Composer 保留 Route 与 Governance 两个独立 verdict，并为每项
+requirement 输出 policy ID、fact ID、evidence refs 和当前状态；最终回执绑定 change/task、
+source、Artifact、Policy、Context 和 Evidence 组合身份。结论枚举 `READY`、`NOT READY`、
+`NEEDS HUMAN REVIEW`，未运行的检查不会被写成通过；回执形态由项目治理 profile 决定。
 
 性能审查分两级。普通 SQL/ORM 形状变化先走跨数据库的 `sql-performance-screen`：确认目标
 数据库/方言、查询次数与 N+1、结果/分页/批次边界、已知索引和明显锁风险；初查不自动升径，
@@ -535,7 +559,7 @@ Route Card 检查所选/最低路线与最终 diff 范围漂移，再复用 `gov
 
 MCP 实现完整的 initialize 生命周期与 JSON-RPC envelope/参数校验；非法
 请求返回结构化错误，notification 不回包，单个工具异常不会终止 stdio 服务。
-1.0.1 会在请求执行前根据 capability 与 parity 选择 Application Service 或兼容 CLI，整个请求
+1.0.2 会在请求执行前根据 capability 与 parity 选择 Application Service 或兼容 CLI，整个请求
 只走一条路径；开始执行后的超时/响应丢失不会 fallback，已提交结果可由请求 receipt 去重返回。
 工具名、schema 与成功响应保持不变。
 
@@ -564,7 +588,12 @@ L1  pitfall / decision 条目   原子经验：坑（缺陷/陷阱）与决定�
 L0  代码（第一事实源）、业务域地图、spec/SDD、接口文档
 ```
 
-**匹配首选语义检索**：`memory-recall` 直扫 `docs/**/*.md` 与 frontmatter 建全文索引（zvec jieba 双字段 + RRF），不依赖目录结构——功能点多了以后靠人工翻索引表必然漏召回；`memory-index.md` 只服务人肉浏览。条目 frontmatter 是唯一事实源（`type`/`status`/`module`/`created`/`verified`/`anchors`…），本地索引与锚点表全部由它生成、禁止手改。
+**匹配首选语义检索**：Agent 查项目历史决定、坑点、业务域知识、SDD 或旧回执时，先调用
+`memory_recall` MCP；只有 MCP 在调用前确认不可见/不兼容时，才降级到绑定同一
+route/stage/purpose/subject/session 的 CLI；两者都不可用时才做有界文本检索。一次请求只走一个
+主通道，调用已经开始但结果未知时不能切换通道。`memory-recall` 以 `docs/**/*.md` 与 frontmatter
+建立索引（zvec jieba 双字段 + RRF），`memory-index.md` 只服务人肉浏览。条目 frontmatter 是唯一
+事实源，本地索引与锚点表全部由它生成、禁止手改。
 
 常用命令：
 
@@ -613,12 +642,14 @@ CLAUDE.md / AGENTS.md           agent-engineering-kit 托管区块
 治理双轨：**profile（strict/lightweight）唯一权威在文本标记**，每次安装重写——切换即时生效；
 **团队规则在 governance.json**（路径/文件名/新增行正则 → required_actions），存在才读、
 非法即阻断（fail-closed）。动作除 `receipt` / `independent_review` 外，还可声明
-`min_route:standard`、`review_depth:thorough`、`required_check:<name>`；`route-eval` 在最终
-diff 上复用同一治理结果，因此任务复杂度与风险规则不会形成两套事实源。既有团队自持的
-governance.json 不会在升级时被覆盖，可按需增量采用这些新动作。
+`review_depth:thorough`、`require_check:<name>`、`require_review:<name>`、
+`require_receipt:<name>`、`require_artifact:<name>`；`route-eval` 在最终 diff 上复用同一治理
+结果，但不会用治理风险提升工作量路线。1.0.1 的已知 `min_route:*` 会确定性迁移为等价风险
+requirements 并产生 deprecated diagnostic，未知值 fail-closed。既有团队自持的
+governance.json 不会在升级时被覆盖，可按需增量采用新动作。
 新安装把数据库规则拆为两层：`DB-SQL-001` 只为 `*.sql` 加入低成本
-`required_check:sql-performance-screen`；`DB-001` 仅对明确 migration/schema/DDL 加路线、
-迁移与回滚要求，并同样先做初查。存量项目的团队自持规则不会被升级覆盖，需要团队确认后
+`require_check:sql-performance-screen`；`DB-001` 仅对明确 migration/schema/DDL 追加迁移、
+回滚、审查与凭证要求，并同样先做初查。存量项目的团队自持规则不会被升级覆盖，需要团队确认后
 自行采用。即使未改团队规则，`repo-delivery` 仍会对 SQL 语义变化启用初查，并只在有升级
 证据时标记 `performance_capacity`。
 

@@ -59,7 +59,7 @@ class CompleteReplayTests(unittest.TestCase):
             BASELINE.with_name("context-baseline-v1.0.0.json"))
         frozen = json.loads(BASELINE.read_text(encoding="utf-8"))
         receipt_digests = json.loads(BASELINE.with_name(
-            "complete-equivalence-v1.0.1.json").read_text(encoding="utf-8"))
+            "complete-equivalence-v1.0.2.json").read_text(encoding="utf-8"))
         records = {row["case_id"]: row for row in frozen["cases"]}
         comparisons = []
         complete_cases = []

@@ -58,6 +58,9 @@ from aek.adapters.change_scope import resolve_base_commit, scan_negative_risks
 from aek.adapters.telemetry import ContextLedger
 from aek.adapters.review_markdown import extract_trace_ids, parse_review_documents
 from aek.adapters.plan_transaction import PlanInvalid, PlanStore
+from aek.adapters.review_lifecycle_store import (
+    LifecycleConflict, LifecycleGateStore,
+)
 from aek.application.document_gate import (
     effective_stage_states, participating_documents,
     participating_prerequisites,
@@ -74,6 +77,8 @@ from aek.application.review import (
     load_review_request, load_review_snapshot, plan_review, review_request_bytes,
     review_snapshot_bytes, reviewer_receipt, validate_review_result,
 )
+from aek.application.review_lifecycle import prepare_lifecycle
+from aek.core.review.lifecycle import IssueState, project_pass_gate
 from aek.core.review.judge import JudgeInput, judge_gate
 from aek.core.review.result import validate_review_payload
 
@@ -613,6 +618,20 @@ def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, st
         return "BLOCKED", "最近判定 BLOCKED（人工介入）"
     if gate.get("status") != "PASS":
         return "DRAFT", f"最近判定 {gate.get('status')}"
+    lifecycle_path = req_dir / "reviews" / f"{stage}.issue-lifecycle.json"
+    if lifecycle_path.exists() or lifecycle_path.is_symlink():
+        try:
+            lifecycle = LifecycleGateStore(
+                req_dir / "reviews", stage).load_lifecycle()
+            bound_digest = gate.get("lifecycle_snapshot_digest")
+            if lifecycle is None or not isinstance(bound_digest, str):
+                raise ValueError("PASS gate 未绑定 Issue 生命周期")
+            project_pass_gate(
+                lifecycle, stage=stage, status="PASS",
+                lifecycle_snapshot_digest=bound_digest,
+                gate_digest=_sha256(gate_file) or "")
+        except (OSError, TypeError, ValueError) as exc:
+            return "DRAFT", f"Issue 生命周期凭证无效：{exc}"
     plan_detail = None
     if stage == "计划":
         closeout_file = req_dir / "reviews" / "计划.closeout.json"
@@ -900,6 +919,30 @@ def _validate_issues(req_dir: Path, stage: str, spec: dict,
             return None, f"review proof 无效: {exc}"
     result, error = validate_review_payload(text, stage, expected)
     return (list(result.issues) if result is not None else None), error
+
+
+def _review_observation_digest(req_dir: Path, stage: str, issues_text: str) -> str:
+    """Bind a lifecycle occurrence to both sent input and returned sensor bytes."""
+    request_path = req_dir / "reviews" / f"{stage}.review-request.json"
+    request_digest = "legacy"
+    if request_path.exists() or request_path.is_symlink():
+        request_digest = load_review_request(
+            _read_review_bytes(request_path)).request_digest
+    payload = {"request_digest": request_digest, "issues_sha256": hashlib.sha256(
+        issues_text.encode("utf-8")).hexdigest()}
+    return hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _review_subject_digest(
+    stage: str, doc_hashes: dict[str, str], dependency_fingerprint: str,
+) -> str:
+    payload = {"stage": stage, "doc_hashes": doc_hashes,
+               "dependency_fingerprint": dependency_fingerprint}
+    return hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _atomic_review_write(path: Path, content: bytes) -> None:
@@ -1226,6 +1269,7 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
         return 3
 
     issues: list[dict] = []
+    issues_text: str | None = None
     if not no_review:
         text = _read(reviews_dir / f"{stage}.issues.json")
         if text is None:
@@ -1235,6 +1279,7 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
                 print(f"✗ 阶段 {stage} 需要先跑 AI 评审（reviews/{stage}.issues.json 缺失或损坏）")
                 return 3
         else:
+            issues_text = text
             issues, err = _validate_issues(
                 req_dir, stage, spec, text, dynamic_state)
             if issues is None:
@@ -1243,15 +1288,68 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
                     return 3
                 issues = []
 
-    upstream_issues = [i for i in issues if i.get("upstream")]
-    counted = [i for i in issues if not i.get("upstream")]
-    n_blocker = sum(1 for i in counted if i["severity"] == "blocker")
-    n_major = sum(1 for i in counted if i["severity"] == "major")
-    n_minor = sum(1 for i in counted if i["severity"] == "minor")
-
     log_file = reviews_dir / f"{stage}.gate.log"
     consecutive = _consecutive_failures(log_file)
     was_blocked = _was_blocked(log_file)
+    doc_hashes = {doc: _sha256(req_dir / doc) for doc in spec["docs"]
+                  if (req_dir / doc).is_file()}
+
+    lifecycle_store = None
+    lifecycle_before = None
+    lifecycle = None
+    lifecycle_path = reviews_dir / f"{stage}.issue-lifecycle.json"
+    if issues_text is not None or lifecycle_path.exists() or lifecycle_path.is_symlink():
+        try:
+            lifecycle_store = LifecycleGateStore(reviews_dir, stage)
+            lifecycle_before = lifecycle_store.recover()
+            if issues_text is None:
+                raise ValueError("已有 Issue 生命周期但本轮评审输出缺失")
+            claims_path = reviews_dir / f"{stage}.issue-claims.json"
+            claims_text = (_read(claims_path)
+                           if claims_path.exists() or claims_path.is_symlink()
+                           else None)
+            if claims_path.is_symlink():
+                raise ValueError("issue claims 不能是符号链接")
+            dependency = _review_dependency_fingerprint(
+                req_dir, stage, dynamic_state)
+            lifecycle = prepare_lifecycle(
+                lifecycle_before,
+                stage=stage,
+                subject_digest=_review_subject_digest(
+                    stage, doc_hashes, dependency),
+                request_digest=_review_observation_digest(
+                    req_dir, stage, issues_text),
+                doc_hashes=doc_hashes,
+                issues=tuple(item for item in issues if not item.get("upstream")),
+                iteration=min(consecutive + 1, policy["max_iterations"]),
+                max_iterations=policy["max_iterations"],
+                claims_text=claims_text,
+            )
+        except (LifecycleConflict, OSError, TypeError, ValueError) as exc:
+            print(f"✗ Issue 生命周期不可用: {exc}")
+            return 3
+
+    upstream_issues = [i for i in issues if i.get("upstream")]
+    upstream_ids = {str(item.get("id")) for item in upstream_issues}
+    if lifecycle is None:
+        counted = [i for i in issues if not i.get("upstream")]
+    else:
+        unresolved_states = {
+            IssueState.OPEN, IssueState.FIXED,
+            IssueState.REOPENED, IssueState.BLOCKED,
+        }
+        counted = [{
+            "id": item.occurrences[-1].issue_id,
+            "severity": item.occurrences[-1].severity,
+            "fingerprint": item.fingerprint,
+            "state": item.state.value,
+        } for item in lifecycle.issues
+                   if item.state in unresolved_states
+                   and item.occurrences[-1].issue_id not in upstream_ids]
+    n_blocker = sum(1 for i in counted if i["severity"] == "blocker")
+    n_major = sum(1 for i in counted if i["severity"] == "major")
+    n_minor = sum(1 for i in counted if i["severity"] == "minor")
+    lifecycle_pending = len(counted) if lifecycle is not None else 0
 
     hard_fail = checks.fails
     decision = judge_gate(JudgeInput(
@@ -1262,8 +1360,6 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
     over = decision.over_threshold
     current_attempt = decision.current_attempt
 
-    doc_hashes = {doc: _sha256(req_dir / doc) for doc in spec["docs"]
-                  if (req_dir / doc).is_file()}
     fix_targets = ([i.get("id", "?") for i in counted][:10]
                    if status != "PASS" else [])
     gate = {
@@ -1272,6 +1368,7 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
                  "failed": [f"{c['group']}/{c['name']}" for c in hard_fail]},
         "review": {"blocker": n_blocker, "major": n_major, "minor": n_minor,
                    "upstream_pending": len(upstream_issues),
+                   "lifecycle_pending": lifecycle_pending,
                    "fix_targets": fix_targets},
         "policy": policy, "iteration": consecutive + 1, "doc_hashes": doc_hashes,
         "upstream_fingerprints": {
@@ -1295,7 +1392,25 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
     if stage == "计划" and status == "PASS":
         gate["execution_baseline_hashes"] = _plan_baseline_hashes(req_dir)
     gate_file = reviews_dir / f"{stage}.gate.json"
-    gate_file.write_text(json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+    if lifecycle_store is not None and lifecycle is not None:
+        expected_lifecycle = (None if lifecycle_before is None
+                              else lifecycle_before.snapshot_digest)
+        try:
+            if status == "PASS":
+                _closed, gate = lifecycle_store.publish_pass_gate(
+                    lifecycle, gate,
+                    expected_snapshot_digest=expected_lifecycle)
+            else:
+                gate = lifecycle_store.publish_non_pass_gate(
+                    lifecycle, gate,
+                    expected_snapshot_digest=expected_lifecycle)
+        except (LifecycleConflict, OSError, TypeError, ValueError) as exc:
+            print(f"✗ Issue 生命周期发布失败: {exc}")
+            return 3
+    else:
+        _atomic_review_write(
+            gate_file,
+            json.dumps(gate, ensure_ascii=False, indent=2).encode("utf-8"))
     with log_file.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"time": gate["time"], "stage": stage, "status": status,
                             "iteration": gate["iteration"]}, ensure_ascii=False) + "\n")
@@ -2194,6 +2309,17 @@ def _current_plan_gate_inputs_no_parents(req_dir: Path, state, stage: str):
     if (not isinstance(gate, dict) or gate.get("status") != "PASS"
             or not isinstance(recorded, dict)):
         raise ValueError(f"{stage} gate 不是有效 PASS")
+    lifecycle_path = req_dir / "reviews" / f"{stage}.issue-lifecycle.json"
+    if lifecycle_path.exists() or lifecycle_path.is_symlink():
+        lifecycle = LifecycleGateStore(
+            req_dir / "reviews", stage).load_lifecycle()
+        binding = gate.get("lifecycle_snapshot_digest")
+        if lifecycle is None or not isinstance(binding, str):
+            raise ValueError(f"{stage} gate 未绑定 Issue 生命周期")
+        project_pass_gate(
+            lifecycle, stage=stage, status="PASS",
+            lifecycle_snapshot_digest=binding,
+            gate_digest=hashlib.sha256(raw_gate).hexdigest())
     identity_parts = [raw_gate]
     if stage == "计划":
         closeout_path = req_dir / "reviews" / "计划.closeout.json"

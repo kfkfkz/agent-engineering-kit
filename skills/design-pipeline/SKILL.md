@@ -87,9 +87,12 @@ Agent 的工具调用中；仅当用户明确要求诊断底层命令时才展�
    原始需求在同号 `docs/01-需求/NNN-名称/`——生成需求分析前先读它，不脱离原始需求加戏。
    需求已指派但 SDD 目录不存在（或索引行缺失）→ Agent 运行
    `doc-gate init NNN-名称 --repo <仓库根>`（登记单一入口：两处目录+模板骨架+索引行，幂等）。
-3. 生成前先取证：使用 `memory-recall --context-json` 并绑定当前 Route、subject digest、稳定
-   session ID 检索相关坑/决定/playbook，只读取返回的 expanded 正文；读业务域地图确认模块口径；
-   `codebase-memory` 定位既有能力与调用链——**禁止凭记忆编造现状**。
+3. 生成前先取证：先调用 `memory_recall` MCP，并以 context 绑定当前 Route、stage、purpose、subject
+   digest 和稳定 session ID；仅在 MCP 不可见/不兼容/调用开始前失败时内部降级到等价
+   `memory-recall --context-json`，再失败才做有界 metadata 文本查找。只读取返回的 expanded 正文，
+   不在 MCP 成功后重复 CLI/grep；读业务域地图确认模块口径；
+   能力/调用链的第一次结构检索必须用 `codebase-memory`（含 freshness/coverage），禁先 grep；
+   **禁止编造现状**。
 4. 运行 `.repo-memory-kit/bin/doc-gate status <SDD目录>` 了解参与阶段的当前状态；`SKIPPED`
    是冻结计划授权的正常终态，不补模板、不伪造 gate。
    需求分析若已签写冻结记录但无凭证（status 显示 未冻结/未过 freeze），Agent 从记录读取
@@ -157,15 +160,17 @@ request/receipt digest。issues 无总分、无 PASS/FAIL、不改文档正文�
     {"id": "REV-001", "severity": "blocker|major|minor",
      "category": "grounding|requirement_gap|consistency|verifiability|risk|upstream",
      "location": "§数据与存储/D2", "problem": "…", "evidence": "…",
-     "required_change": "…", "upstream": false}
+     "required_change": "…", "affected_ids": ["D2", "A5"],
+     "upstream": false}
   ]
 }
 ```
 
 **字段硬约束**（doc-gate 拒绝不合规文件）：`stage` 必须匹配当前阶段；
 `doc_hashes` 必须覆盖该阶段全部文档（sha256sum 计算）——评审后文档再改动，
-评审即过期，必须重评；每条 issue 必含 id/severity/location/problem/
-required_change，severity 只允许 blocker/major/minor。
+评审即过期，必须重评；每条新 issue 必含 id/severity/location/problem/evidence/
+required_change/affected_ids，severity 只允许 blocker/major/minor。`affected_ids`
+填受影响的 A/F/D/T/TC ID；无法定位时写 `UNSCOPED`，不得猜 ID。
 
 rubric 五维：
 1. **事实接地**（首要，分层增量）——现状声明分三档处理：
@@ -180,7 +185,21 @@ rubric 五维：
 3. **可验证性**——验收可测、测试接缝完整、失败/边界/回退已覆盖；
 4. **缺失维度**——该阶段应成型而未成型的兼容/安全/迁移内容；
 5. **风险盲区**——对公共契约/数据模型/兼容/安全做一次"证明它错"。
-每条 issue 必须含 location/problem/evidence/required_change——禁止"建议完善"式空话。
+
+Reviewer 的 `issues.json` 是不可变 sensor，不在后续轮次删除或反写旧问题。门禁首次接收后会建立
+`reviews/<阶段>.issue-lifecycle.json`，其中稳定 fingerprint 忽略临时 REV-ID，并保留每轮
+occurrence。Author 定向修复后，Agent 读取该文件的 `snapshot_digest` 和目标 fingerprint，按当前
+文档 hash 内部写入 `reviews/<阶段>.issue-claims.json`：
+
+```json
+{"schema_version":1,"stage":"详细设计","base_snapshot_digest":"<当前 lifecycle digest>",
+ "doc_hashes":{"详细设计.md":"<修改后 sha256>"},
+ "claims":[{"fingerprint":"<目标 fingerprint>","state":"FIXED"}]}
+```
+
+Author 只能声明 `FIXED`，不能写 `VERIFIED/CLOSED`。随后必须用当前文档重新生成 review-input；
+Reviewer 未再次命中才推进 `VERIFIED`，再次命中则 `REOPENED` 并追加 occurrence。只有绑定同一
+lifecycle snapshot 的确定性 PASS gate 才能派生 `CLOSED`；Agent 不手改 lifecycle/gate。
 
 ### 5. 门禁判定
 
@@ -192,7 +211,8 @@ rubric 五维：
   `docs/01-需求/README.md` 中本需求的"当前功能开发阶段"列（只动自己的行——
   多人协作下公共索引冲突面最小）→ 进入下一阶段。
 - **NEEDS_REVISION（1）** → 只修 gate.json 指定的问题（REV-ID/hard 项），回步骤 3。
-  **定向修改，禁止借机重写全文**——防设计漂移。
+  **定向修改，禁止借机重写全文**——防设计漂移。完成修改后按步骤 4 写 FIXED claim 并重送当前
+  Review；不得仅清空 issues.json 或复用旧 receipt 来制造通过。
 - **BLOCKED（2）** → 连续 3 轮不达标。停止迭代，向用户汇总：已试轮次、未解决问题、
   建议的人工裁决点。**不得通过反复重试碰运气**。
 

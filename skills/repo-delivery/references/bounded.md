@@ -16,7 +16,8 @@
 
 - 只读目标模块与接缝。Memory 先看 metadata，默认候选不超过 5、正文展开不超过 2；命中高风险、
   截断或低置信时记录目的后扩展，不能把 top-k 未命中当作“无约束”。
-  Agent 内部使用 `memory-recall --context-json` 并传冻结 Route、subject digest、稳定 session ID；
+  先用 `memory_recall` MCP context；仅在 MCP 调用开始前不可用时，Agent 内部降级
+  `memory-recall --context-json`，并传冻结 Route、subject digest、稳定 session ID；
   只消费返回的 `expanded`，不得绕过预算直接打开未选择候选。partial report 中未观测的宿主通道
   必须保留披露，不得改写成 complete。
 - 采用“简短验收与范围 → 必要 TDD → 定向测试 → 快速审查”。测试观察公共接缝，不验证私有调用顺序。

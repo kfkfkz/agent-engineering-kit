@@ -68,6 +68,24 @@ assert_eq "CLAUDE.md 区块标记=1"  "$(grep -cF '<!-- repo-memory-kit:start --
 if grep -q '/repo-delivery' "$P/CLAUDE.md"; then ok "CLAUDE.md 含 slash 工作流入口"; else bad "CLAUDE.md 缺 slash 工作流入口"; fi
 if grep -qF "\$repo-delivery" "$P/CLAUDE.md"; then ok "CLAUDE.md 含 Codex 工作流入口"; else bad "CLAUDE.md 缺 Codex 工作流入口"; fi
 assert_exists "安装清单 v2（manifest.json）" "$P/.repo-memory-kit/manifest.json"
+
+# 空白仓库也必须获得两类根指引；manifest 记录容器由 kit 创建，卸载可安全回收。
+P_BLANK="$T/blank-root"; mkdir -p "$P_BLANK"
+"$KIT/install.sh" "$P_BLANK" >/dev/null
+assert_exists "空白仓库创建 CLAUDE.md 根指引" "$P_BLANK/CLAUDE.md"
+assert_exists "空白仓库创建 AGENTS.md 根指引" "$P_BLANK/AGENTS.md"
+python3 - "$P_BLANK/.repo-memory-kit/manifest.json" <<'PY' \
+    && ok "空白根指引 manifest 记录 created_container" \
+    || bad "空白根指引缺 created_container 所有权"
+import json, sys
+d=json.load(open(sys.argv[1], encoding="utf-8"))
+rows={row["spec_id"]: row for row in d["entries"]}
+assert rows["claude-md-block"]["created_container"] is True
+assert rows["agents-md-block"]["created_container"] is True
+PY
+"$KIT/install.sh" --uninstall "$P_BLANK" >/dev/null
+assert_gone "卸载回收 kit 创建的空 CLAUDE.md" "$P_BLANK/CLAUDE.md"
+assert_gone "卸载回收 kit 创建的空 AGENTS.md" "$P_BLANK/AGENTS.md"
 assert_grep "清单为 Manifest v2" '"manifest_version": 2' "$P/.repo-memory-kit/manifest.json"
 if grep -q '"kit_version"' "$P/.repo-memory-kit/manifest.json"; then ok "清单含 kit_version"; else bad "清单缺 kit_version"; fi
 

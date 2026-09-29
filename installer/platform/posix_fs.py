@@ -16,7 +16,6 @@ BACKEND_NAME = "posix"
 SECURITY_LEVEL = "strict"
 
 from installer.atomic import rename_noreplace as _atomic_rename_noreplace
-from installer.atomic import AtomicRenameNotSupported
 
 
 def read_bytes(root: Path, rel: str) -> bytes | None:

@@ -47,6 +47,10 @@ if not (_package_root / "aek/core/policy/evaluator.py").is_file():
 sys.path.insert(0, str(_package_root))
 from aek.application.governance import evaluate_governance
 from aek.core.policy.evaluator import GovernanceResult, PolicyError, evaluate_policy
+from aek.core.policy.requirements import (
+    RequirementError,
+    normalize_governance_actions,
+)
 
 
 PROFILE_DEFAULTS: dict[str, list[str]] = {
@@ -93,6 +97,10 @@ def load_policy(governance_path: Path) -> dict[str, Any]:
             if not isinstance(require, list) or not all(
                     isinstance(a, str) for a in require):
                 raise PolicyError(f"{rid}: require 必须是字符串数组")
+            try:
+                normalize_governance_actions(require, profile)
+            except RequirementError as exc:
+                raise PolicyError(f"{rid}: {exc}") from exc
             match = rule.get("match", {})
             if not isinstance(match, dict):
                 raise PolicyError(f"{rid}: match 必须是对象")

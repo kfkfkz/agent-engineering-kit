@@ -7,6 +7,16 @@ description: "对应用变更或 Agent 配置做风险驱动的漏洞审查，�
 
 按风险选择深度，不要求外部扫描器。若项目已配置 SAST、依赖扫描或密钥扫描，则把它们纳入验证；缺失时明确披露，不能把“未运行扫描器”说成“无漏洞”。只读审查不自动修复，修复请求才进入实现。
 
+## 取证前置
+
+直接调用本技能也遵循 `delivery-gate` 的代码评审取证顺序：先以 `stage=closeout`、
+`purpose=review_required` 和当前 diff/风险主题
+调用预算化 `memory_recall`，读取相关安全决定、坑点和旧回执；MCP 成功后不重复 CLI/grep。随后让
+全部变更代码路径经过 codebase freshness barrier，新鲜度未证明时先核验或按 dirty epoch 至多刷新
+一次。第一次结构检索必须用 `codebase-memory` 图工具，候选确定后统一检查 coverage，再回到精确源码
+核实；rg/grep 仅补字面量、配置、非代码文件或 coverage 明示缺口。降级必须披露 reason、范围和
+confidence，不能声称完整结构影响。
+
 ## 两种模式
 
 ### 应用安全

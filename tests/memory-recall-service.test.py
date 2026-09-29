@@ -11,6 +11,10 @@ from aek.adapters.capsule import CapsuleStore
 from aek.adapters.telemetry import ContextLedger
 from aek.application.memory_recall import recall_context
 from aek.core.context.budget import resolve_context_budget
+from aek.core.context.lookup import (
+    CapabilitySnapshot,
+    plan_knowledge_lookup,
+)
 
 
 class MemoryRecallServiceTests(unittest.TestCase):
@@ -35,13 +39,18 @@ class MemoryRecallServiceTests(unittest.TestCase):
                 repo, query, limit=budget.memory_candidate_limit),
             candidate_read=read_candidate,
             capsule_store=CapsuleStore(
-                self.repo / ".repo-memory-kit/context/capsules"))
+                self.repo / ".repo-memory-kit/context/capsules"),
+            lookup_plan=plan_knowledge_lookup(CapabilitySnapshot(
+                True, True, True, True, True, ("test:tools/list",))))
 
     def test_direct_delivers_no_memory_body(self) -> None:
         result = self.recall("direct")
         self.assertEqual(result.candidates.candidates, ())
         self.assertEqual(result.expanded, ())
         self.assertEqual(result.report.observed_channels, ("memory_candidate",))
+        self.assertEqual(result.selected_path, "mcp")
+        self.assertEqual(result.reason_code, "MCP_AVAILABLE")
+        self.assertEqual(result.tool_calls["candidate_search"], 1)
 
     def test_bounded_caps_candidates_and_opened_bodies(self) -> None:
         result = self.recall("bounded")
@@ -49,6 +58,8 @@ class MemoryRecallServiceTests(unittest.TestCase):
         self.assertEqual(len(result.expanded), 2)
         self.assertEqual(result.report.coverage, "partial")
         self.assertIn("host_native", result.report.unobserved_channels)
+        self.assertGreater(result.delivered_bytes, 0)
+        self.assertEqual(result.tool_calls["memory_open"], 2)
 
     def test_standard_builds_and_reuses_source_bound_capsule(self) -> None:
         first = self.recall("standard")
@@ -57,6 +68,38 @@ class MemoryRecallServiceTests(unittest.TestCase):
         self.assertFalse(first.capsule_reused)
         self.assertTrue(second.capsule_reused)
         self.assertIn("capsule_loader", second.report.observed_channels)
+        self.assertEqual(second.tool_calls["capsule"], 1)
+
+    def test_no_match_is_explicitly_unknown_not_negative(self) -> None:
+        budget = resolve_context_budget("bounded", "routing", "quick")
+        result = recall_context(
+            self.repo, "does-not-exist", budget,
+            ContextLedger(self.repo / "missing.jsonl"),
+            session_id="session-missing", subject_digest="b" * 64,
+            risk_required=False,
+            candidate_search=lambda repo, query: fallback_candidates(
+                repo, query, limit=budget.memory_candidate_limit),
+            candidate_read=read_candidate,
+            capsule_store=CapsuleStore(
+                self.repo / ".repo-memory-kit/context/capsules"))
+        self.assertEqual(result.uncertainty, "no_match_unknown")
+
+    def test_review_purpose_is_preserved_in_context_ledger(self) -> None:
+        budget = resolve_context_budget("bounded", "closeout", "quick")
+        ledger = ContextLedger(self.repo / "review.jsonl")
+        recall_context(
+            self.repo, "database", budget, ledger,
+            session_id="session-review", subject_digest="c" * 64,
+            risk_required=False, purpose="review_required",
+            candidate_search=lambda repo, query: fallback_candidates(
+                repo, query, limit=budget.memory_candidate_limit),
+            candidate_read=read_candidate,
+            capsule_store=CapsuleStore(
+                self.repo / ".repo-memory-kit/context/capsules"))
+        events = ledger.read()
+        self.assertTrue(events)
+        self.assertEqual({event.purpose for event in events},
+                         {"review_required"})
 
 
 if __name__ == "__main__":

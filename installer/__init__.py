@@ -15,7 +15,7 @@ CLI 入口（python3 -m installer）：
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -321,9 +321,9 @@ def _post_install_extras(repo, migrate_features, sdd_layout, sdd_version,
                     return 1
                 actual = hashlib.sha256(installer.read_bytes()).hexdigest()
                 if actual != CBM_SHA256:
-                    print(f"✗ codebase-memory-mcp 安装器校验失败（sha256 不符）——"
-                          f"拒绝执行。上游已变更时请更新 installer/__init__.py "
-                          f"中的 CBM_REF/CBM_SHA256 常量。")
+                    print("✗ codebase-memory-mcp 安装器校验失败（sha256 不符）——"
+                          "拒绝执行。上游已变更时请更新 installer/__init__.py "
+                          "中的 CBM_REF/CBM_SHA256 常量。")
                     return 1
                 rc = subprocess.run(["sh", str(installer)]).returncode
                 if rc != 0:

@@ -63,6 +63,10 @@ from aek.adapters.memory import read_candidate, search_candidates
 from aek.adapters.telemetry import ContextLedger
 from aek.application.memory_recall import recall_context
 from aek.core.context.budget import resolve_context_budget
+from aek.core.context.lookup import (
+    CapabilitySnapshot,
+    plan_knowledge_lookup,
+)
 
 O_BINARY = getattr(os, "O_BINARY", 0)
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -641,9 +645,13 @@ def main():
     ap.add_argument("--route", choices=("direct", "bounded", "standard", "initiative"))
     ap.add_argument("--stage", choices=("routing", "design", "execution", "closeout"),
                     default="routing")
+    ap.add_argument("--purpose", default="target_evidence",
+                    help="内部：本次上下文消费目的")
     ap.add_argument("--subject", help="当前任务 subject SHA-256")
     ap.add_argument("--session", help="当前任务稳定 session ID")
     ap.add_argument("--risk-required", action="store_true")
+    ap.add_argument("--lookup-channel", choices=("cli", "mcp"), default="cli",
+                    help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     # --rebuild/--check/--list 模式下，单个位置参数视为目标仓库而非查询文本。
@@ -689,7 +697,14 @@ def main():
                 root, query, limit=budget.memory_candidate_limit),
             candidate_read=read_candidate,
             capsule_store=CapsuleStore(
-                repo / ".repo-memory-kit/context/capsules"))
+                repo / ".repo-memory-kit/context/capsules"),
+            lookup_plan=plan_knowledge_lookup(CapabilitySnapshot(
+                mcp_configured=args.lookup_channel == "mcp",
+                mcp_visible=args.lookup_channel == "mcp",
+                mcp_compatible=args.lookup_channel == "mcp",
+                cli_available=True, bounded_text_available=True,
+                evidence=(f"adapter:{args.lookup_channel}",))),
+            purpose=args.purpose)
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
         return 0
     types = [t.strip() for t in args.type.split(",")] if args.type else None

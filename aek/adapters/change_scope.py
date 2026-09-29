@@ -25,6 +25,7 @@ _MAX_FILE = 2_000_000
 @dataclass(frozen=True)
 class NegativeRiskScan:
     subject_digest: str
+    scope_digest: str
     irreversible: FactObservation
     performance: FactObservation
     changed_paths: tuple[str, ...]
@@ -121,8 +122,12 @@ def _safe_document(path: str) -> bool:
 
 def _control_state(path: str) -> bool:
     parts = path.split("/")
-    return (len(parts) >= 5 and parts[0:2] == ["docs", "03-SDD"]
+    return (
+        path.startswith(".repo-memory-kit/")
+        or path.startswith("docs/delivery-receipts/")
+        or (len(parts) >= 5 and parts[0:2] == ["docs", "03-SDD"]
             and parts[3] == "reviews")
+    )
 
 
 def resolve_base_commit(repository_root: Path, base_ref: str) -> str:
@@ -222,8 +227,13 @@ def scan_negative_risks(repository_root: Path, base_ref: str) -> NegativeRiskSca
         "complete": safe,
     }, sort_keys=True, separators=(",", ":")).encode("utf-8")
     subject = hashlib.sha256(canonical).hexdigest()
+    scope_canonical = json.dumps({
+        "schema_version": 1,
+        "base": base_oid,
+        "paths": paths,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    scope_digest = hashlib.sha256(scope_canonical).hexdigest()
     evidence = hashlib.sha256(b"aek-negative-risk-scan-v1\0" + canonical).hexdigest()
-    state = "false" if safe else "unknown"
     if safe:
         observations = tuple(
             FactObservation(fact_id, producer, "false", subject, evidence, True)
@@ -240,5 +250,5 @@ def scan_negative_risks(repository_root: Path, base_ref: str) -> NegativeRiskSca
                         if item.fact_id == "irreversible_change")
     performance = next(item for item in observations
                        if item.fact_id == "performance_capacity")
-    return NegativeRiskScan(subject, irreversible, performance, paths, safe,
-                            observations)
+    return NegativeRiskScan(subject, scope_digest, irreversible, performance,
+                            paths, safe, observations)

@@ -41,6 +41,7 @@ class ManifestEntry:
     installed_hash: str        # 实际片段字节 hash（漂移检测）
     canonical_hash: str        # 路径规范化 hash（血统证明）
     codex_root: str | None     # 仅审计展示；禁止用于派生任何删除路径
+    created_container: bool = False  # 仅授权移除 kit 创建且清空后的 managed 容器
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +51,7 @@ class ManifestEntry:
             "installed_hash": self.installed_hash,
             "canonical_hash": self.canonical_hash,
             "codex_root": self.codex_root,
+            "created_container": self.created_container,
         }
 
     @classmethod
@@ -64,6 +66,7 @@ class ManifestEntry:
                 installed_hash=str(data["installed_hash"]),
                 canonical_hash=str(data["canonical_hash"]),
                 codex_root=data.get("codex_root"),
+                created_container=data.get("created_container", False) is True,
             )
         except KeyError as e:
             raise ManifestCorruptError(f"manifest entry 缺字段: {e}")
@@ -235,5 +238,7 @@ def build_manifest_from_tx(target: Path, kit_version: str, steps) -> Manifest:
                 before_state="unknown",
                 installed_hash=installed,
                 canonical_hash=canonical,
-                codex_root=None))
+                codex_root=None,
+                created_container=(spec.resource_type == "managed_block"
+                                   and step.pre_container_hash is None)))
     return build_manifest(target, kit_version, entries)

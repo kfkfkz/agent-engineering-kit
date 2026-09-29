@@ -10,6 +10,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from aek.core.policy.requirements import (
+    RequirementError,
+    normalize_governance_actions,
+)
+
 
 class PolicyError(Exception):
     """Policy is invalid; callers must fail closed."""
@@ -31,6 +36,11 @@ class GovernanceResult:
     required_actions: list[str] = field(default_factory=list)
     all_actions: list[str] = field(default_factory=list)
     changed_files: list[str] = field(default_factory=list)
+    risk_requirements: dict[str, list[str]] = field(default_factory=dict)
+    requirement_provenance: list[dict[str, str]] = field(default_factory=list)
+    deprecated_findings: list[dict[str, object]] = field(default_factory=list)
+    review_depth: str = "quick"
+    receipt_mode: str = "inline"
 
     @property
     def is_inline_only(self) -> bool:
@@ -56,6 +66,11 @@ class GovernanceResult:
             "required_actions": self.required_actions,
             "all_actions": self.all_actions,
             "changed_files": self.changed_files,
+            "risk_requirements": self.risk_requirements,
+            "provenance": self.requirement_provenance,
+            "deprecated_findings": self.deprecated_findings,
+            "review_depth": self.review_depth,
+            "receipt_mode": self.receipt_mode,
             "is_inline_only": self.is_inline_only,
             "needs_formal_receipt": self.needs_formal_receipt,
             "needs_independent_review": self.needs_independent_review,
@@ -136,4 +151,14 @@ def evaluate_policy(
     for action in result.default_actions:
         if action not in result.all_actions:
             result.all_actions.append(action)
+    try:
+        normalized = normalize_governance_actions(
+            result.all_actions, result.profile)
+    except RequirementError as exc:
+        raise PolicyError(str(exc)) from exc
+    result.risk_requirements = normalized.requirements_dict()
+    result.requirement_provenance = normalized.provenance_dicts()
+    result.deprecated_findings = list(normalized.deprecated_findings)
+    result.review_depth = normalized.review_depth
+    result.receipt_mode = normalized.receipt_mode
     return result
