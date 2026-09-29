@@ -186,7 +186,8 @@ def rebuild(repo: Path) -> None:
         # 4-5. 验证：三方 hash + 路径集合。任何异常/失败 → 未发布的 generation
         # 一律回收（未过 .metadata.json 发布点，对读者不可见，可安全删除）。
         try:
-            build_meta = json.loads((gen_dir / ".build-metadata.json").read_text())
+            build_meta = json.loads(
+                (gen_dir / ".build-metadata.json").read_text(encoding="utf-8"))
             if build_meta["corpus_hash"] != snapshot_hash:
                 shutil.rmtree(gen_dir, ignore_errors=True)
                 sys.exit("子进程语料 hash 与父进程不一致")
@@ -261,7 +262,7 @@ def read_current(repo: Path) -> Path:
     """读路径：验证 pointer 安全后返回 generation 目录（§15.4 reader 的第一步）。"""
     from .registry import SecurityError, validate_tx_id
     zvec_dir = repo / ZVEC_REL
-    pointer = json.loads((zvec_dir / "current.json").read_text())
+    pointer = json.loads((zvec_dir / "current.json").read_text(encoding="utf-8"))
     gen_name = pointer.get("generation", "")
     validate_tx_id(gen_name)   # 复用 UUID v4 校验
     gen_dir = (zvec_dir / "generations" / gen_name).resolve()
@@ -301,7 +302,7 @@ def cleanup_old_generations(zvec_dir: Path, keep: int, min_age_seconds: int) -> 
     min_age（第二道防线）之后仍会再次尝试，但正确性不依赖它。"""
     from . import platform as _plat
     from .registry import SecurityError, validate_tx_id
-    pointer = json.loads((zvec_dir / "current.json").read_text())
+    pointer = json.loads((zvec_dir / "current.json").read_text(encoding="utf-8"))
     current_name = pointer.get("generation", "")
     entries = []
     for g in (zvec_dir / "generations").iterdir():
@@ -311,7 +312,7 @@ def cleanup_old_generations(zvec_dir: Path, keep: int, min_age_seconds: int) -> 
             continue
         meta_path = g / ".metadata.json"
         if meta_path.exists():
-            meta = json.loads(meta_path.read_text())
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
             entries.append((meta.get("built_at", ""), g))
 
     entries.sort(key=lambda x: x[0], reverse=True)

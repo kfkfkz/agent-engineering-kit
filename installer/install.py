@@ -654,7 +654,8 @@ def run_install(target: Path, *, repair: bool = False,
             from .registry import secure_open, write_all
             marker_rel = STATE_REGISTRY["state.codex-workspace-marker"].destination_path
             old_marker_path = target / marker_rel
-            old_value = old_marker_path.read_text().strip() if old_marker_path.is_file() else ""
+            old_value = (old_marker_path.read_text(encoding="utf-8").strip()
+                         if old_marker_path.is_file() else "")
             tx.codex_root_old = old_value    # HMAC 保护的事务字段
             tx.write(target)                 # 刷新记录（含旧值）
             # 写新 marker

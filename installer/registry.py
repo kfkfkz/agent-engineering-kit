@@ -958,7 +958,7 @@ def _generate_block(spec: ResourceSpec, target: Path) -> str:
         content = (f"[mcp_servers.agent-engineering]\n"
                    f"command = \"{target / '.repo-memory-kit' / 'bin' / 'agent-engineering-mcp'}\"\n")
     else:
-        content = (KIT_DIR / spec.source_path).read_text()
+        content = (KIT_DIR / spec.source_path).read_text(encoding="utf-8")
         if not content.endswith("\n"):
             content += "\n"
     return f"{spec.block_start}\n{content}{spec.block_end}"

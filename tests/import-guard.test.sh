@@ -255,6 +255,31 @@ if python3 - <<'EOF'
 import ast
 from pathlib import Path
 
+bad = []
+for path in Path("installer").rglob("*.py"):
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        name = node.func.attr
+        if name not in {"read_text", "write_text"}:
+            continue
+        has_encoding = any(keyword.arg == "encoding" for keyword in node.keywords)
+        positional_encoding = len(node.args) >= (1 if name == "read_text" else 2)
+        if not has_encoding and not positional_encoding:
+            bad.append(f"{path}:{node.lineno}: {name} 缺 encoding")
+assert not bad, "installer 文本 I/O 依赖系统编码:\n" + "\n".join(bad)
+EOF
+then
+    ok "installer 文本 I/O 显式使用 UTF-8（不依赖 Windows ACP）"
+else
+    bad "installer 仍有依赖系统编码的文本 I/O"
+fi
+
+if python3 - <<'EOF'
+import ast
+from pathlib import Path
+
 violations = []
 for path in Path("aek").rglob("*.py"):
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
