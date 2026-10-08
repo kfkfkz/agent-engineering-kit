@@ -45,7 +45,7 @@
 ## 1.0.1
 
 - 引入四路线 Route Card、动态 ArtifactPlan、Context Capsule、增量 Review、上下文成本基准和单路径 Application Service 调度。
-- 完整历史说明见该版本 Git tag 与 README 的“1.0.1 架构升级”。
+- 完整历史说明见 [v1.0.1 的 README](https://github.com/kfkfkz/agent-engineering-kit/blob/v1.0.1/README.md#101-架构升级)。
 
 ## 1.0.0
 
