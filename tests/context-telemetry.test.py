@@ -12,7 +12,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from aek.adapters.telemetry import ContextLedger, LedgerInvalid
+from aek.adapters.telemetry import (
+    ContextLedger, LedgerInvalid, _acquire_windows_lock,
+)
 from aek.core.context.telemetry import ContextEventInput, build_context_report
 
 
@@ -173,6 +175,22 @@ class LedgerTests(unittest.TestCase):
             tuple(item.sequence for item in self.ledger.read()),
             tuple(range(1, 13)),
         )
+
+    def test_windows_lock_retries_recoverable_contention(self) -> None:
+        attempts = 0
+
+        def locking(_fd: int, _mode: int, _length: int) -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise OSError(36, "Resource deadlock avoided")
+
+        _acquire_windows_lock(
+            1, locking, 2, timeout=1.0, retry_interval=0.0,
+            monotonic=lambda: 0.0, sleep=lambda _seconds: None,
+            seek=lambda _fd, _offset, _whence: 0,
+        )
+        self.assertEqual(attempts, 3)
 
     def test_cross_process_append_has_one_hash_chain(self) -> None:
         root = Path(__file__).resolve().parent.parent

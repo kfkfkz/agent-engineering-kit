@@ -1,14 +1,16 @@
 """Single-writer, crash-recoverable append adapter for context metadata."""
 from __future__ import annotations
 
+import errno
 import json
 import hashlib
 import os
 import stat
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from aek.core.context.telemetry import (
     ContextEvent, ContextEventInput, next_event, validate_events,
@@ -20,6 +22,44 @@ class LedgerInvalid(ValueError):
 
 
 _BINARY = getattr(os, "O_BINARY", 0)
+
+_WINDOWS_LOCK_RETRY_ERRNOS = frozenset(
+    (errno.EACCES, errno.EAGAIN, errno.EDEADLK, 36))
+_WINDOWS_LOCK_RETRY_WINERRORS = frozenset((33, 36))
+
+
+def _acquire_windows_lock(
+    fd: int,
+    locking: Callable[[int, int, int], None],
+    lock_mode: int,
+    *,
+    timeout: float = 30.0,
+    retry_interval: float = 0.05,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    seek: Callable[[int, int, int], int] = os.lseek,
+) -> None:
+    """Acquire one Windows lock byte without msvcrt's fixed ten-second limit."""
+    if timeout < 0 or retry_interval < 0:
+        raise ValueError("lock timeout and retry interval must be non-negative")
+    deadline = monotonic() + timeout
+    while True:
+        seek(fd, 0, os.SEEK_SET)
+        try:
+            locking(fd, lock_mode, 1)
+            return
+        except OSError as exc:
+            retryable = (
+                exc.errno in _WINDOWS_LOCK_RETRY_ERRNOS
+                or getattr(exc, "winerror", None)
+                in _WINDOWS_LOCK_RETRY_WINERRORS
+            )
+            if not retryable:
+                raise
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out acquiring context ledger lock") from exc
+            sleep(min(retry_interval, remaining))
 
 
 @contextmanager
@@ -37,8 +77,7 @@ def _exclusive_lock(path: Path) -> Iterator[None]:
             if os.fstat(fd).st_size == 0:
                 os.write(fd, b"\0")
                 os.fsync(fd)
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            _acquire_windows_lock(fd, msvcrt.locking, msvcrt.LK_NBLCK)
             try:
                 yield
             finally:
