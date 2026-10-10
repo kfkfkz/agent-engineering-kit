@@ -13,14 +13,14 @@ AEK 将 Skills、项目记忆、代码图谱接入和可重复执行的门禁安
 - **让设计和实现接得上**：按需生成需求、设计、任务和测试文档，追踪评审问题与上游变化；业务流程图由 archify 生成。
 - **凭证随版本变化**：代码、文档、策略或证据变化后，重新检查相关结论；中断任务先核验进度和提交状态再继续。
 
-当前稳定版为 **1.0.2**，版本变化见 [Changelog](CHANGELOG.md)。
+当前版本为 **1.0.3**，版本变化见 [Changelog](CHANGELOG.md)。AEK 不自带模型服务；开发侧离线核验不要求连接模型 API。
 
 ## 快速开始
 
 需要 **Python 3.10+**。获取稳定版：
 
 ```bash
-git clone --branch v1.0.2 --depth 1 https://github.com/kfkfkz/agent-engineering-kit.git
+git clone --branch v1.0.3 --depth 1 https://github.com/kfkfkz/agent-engineering-kit.git
 cd agent-engineering-kit
 ```
 

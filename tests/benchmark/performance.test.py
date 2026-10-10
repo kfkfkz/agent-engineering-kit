@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import runpy
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from aek.adapters.telemetry import ContextLedger
-
 from performance import compare_latency, measure_seven
 
+from aek.adapters.telemetry import ContextLedger
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMIT = "88944283eb8030b4c44363f21f5ef0110252e1fa"

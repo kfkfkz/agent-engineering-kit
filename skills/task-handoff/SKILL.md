@@ -19,8 +19,12 @@ description: "在任务中断、跨 Agent/会话转交或需要可恢复上下�
 接手或恢复时先探测 ArtifactPlan、任务清单、gate/dispatch receipt 与宿主任务状态；这些载体足够时
 不得再创建并行状态。只有载体缺口时才使用 WorkUnit 本地状态。新 writer 必须以已读 snapshot digest
 执行 takeover 并递增 writer epoch，然后用当前 IdentityEnvelope 重验每步：有效的幂等完成项复用，
-失效项重算；非幂等项必须查询 STARTED/COMMITTED receipt，COMMITTED 从下一步继续，STARTED 或
-结果不明转 NEEDS_HUMAN，绝不因超时直接重做。旧 writer 的 CAS 失败后必须重读，不得覆盖。
+失效的幂等项重算；非幂等项无论处于 IN_PROGRESS、FAILED_RETRYABLE、COMPLETED 或 STALE，
+都必须查询持久化回执或外部提交事实。COMMITTED 且当前所需身份有效才复用结果；身份已变时保留
+提交事实并转人工确认当前任务如何继续，不重做旧动作。STARTED 或结果不明也转 NEEDS_HUMAN，
+不能把失败/失效状态当作“外部动作未发生”的证明；只有可靠证据确认未发生，才另行授权重试。
+WorkUnit 不提供外部系统通用 exactly-once 保证，MCP 内存回执也不提供跨进程去重。旧 writer 的 CAS
+失败后必须重读，不得覆盖。
 
 ## 交接契约
 

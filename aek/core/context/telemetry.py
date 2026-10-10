@@ -10,8 +10,9 @@ import json
 import re
 from dataclasses import dataclass
 
-
-_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+CONTEXT_SUBJECT_PATTERN = r"^[0-9a-f]{64}$"
+CONTEXT_SESSION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+_DIGEST = re.compile(CONTEXT_SUBJECT_PATTERN)
 _ROUTES = {"direct", "bounded", "standard", "initiative"}
 _STAGES = {"routing", "design", "execution", "closeout"}
 _SOURCES = {"skill", "reference", "code", "test", "memory", "document", "tool",
@@ -19,7 +20,7 @@ _SOURCES = {"skill", "reference", "code", "test", "memory", "document", "tool",
 _PURPOSES = {"route_required", "target_evidence", "risk_required", "review_required",
              "user_requested", "reroute_evidence", "benchmark_fixture"}
 _CHANNEL = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_SESSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_SESSION = re.compile(CONTEXT_SESSION_PATTERN)
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _NOTES = {"", "fallback", "cache_reuse", "reroute", "user_requested"}
 _ZERO = "0" * 64
@@ -28,6 +29,18 @@ _ZERO = "0" * 64
 def _canonical(value: dict[str, object]) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":")).encode("utf-8")
+
+
+def validate_context_session_id(value: str) -> str:
+    if not isinstance(value, str) or not _SESSION.fullmatch(value):
+        raise ValueError("session ID is invalid; use 1-64 ASCII letters, digits, underscores or hyphens, starting with a letter or digit")
+    return value
+
+
+def validate_context_subject_digest(value: str) -> str:
+    if not isinstance(value, str) or not _DIGEST.fullmatch(value):
+        raise ValueError("subject digest must be lowercase SHA-256")
+    return value
 
 
 @dataclass(frozen=True)
@@ -66,11 +79,8 @@ class ContextEventInput:
             raise ValueError("logical bytes cannot be smaller than delivered bytes")
         if type(self.cache_hit) is not bool:
             raise ValueError("cache_hit must be boolean")
-        if not isinstance(self.session_id, str) or not _SESSION.fullmatch(self.session_id):
-            raise ValueError("session ID is invalid")
-        if not isinstance(self.subject_digest, str) or not _DIGEST.fullmatch(
-                self.subject_digest):
-            raise ValueError("subject digest must be SHA-256")
+        validate_context_session_id(self.session_id)
+        validate_context_subject_digest(self.subject_digest)
         path = self.logical_path
         if (not isinstance(path, str) or len(path) > 300 or not path
                 or path.startswith(("/", "\\")) or "\\" in path

@@ -34,12 +34,13 @@ Claude Code：`/repo-delivery [目标]`；Codex：`$repo-delivery [目标]`。�
 | Route | 判定 | 默认执行深度 |
 | --- | --- | --- |
 | Direct | 无行为变化、局部、低不确定、易回退 | 目标上下文、无独立设计、定向验证 |
-| Bounded | 单目标/单模块/单仓库/单会话、局部行为、无高风险 | 紧凑验收、必要 TDD、定向测试、快速审查 |
-| Standard | 跨模块、公共行为、实质缺口、难回退或风险覆盖 | 影响上下文、适用设计、结构化计划、深入审查 |
+| Bounded | 单目标/单模块/单仓库/单会话、局部行为、明确且可逆 | 紧凑验收、必要 TDD、定向测试、快速审查 |
+| Standard | 跨模块、公共契约、实质缺口或复杂的兼容/回滚实施 | 影响上下文、适用设计、结构化计划、深入审查 |
 | Initiative | 多仓库、多会话、多团队/并行 WorkUnit | 项目级上下文、完整 SDD、分批实现、集成门禁 |
 
 `modules` 是独立部署/版本/业务边界，不是源代码与测试目录的数量；`sessions` 是计划的跨会话交接，
 不是对话轮数或工具调用次数。
+风险覆盖项只追加专项要求；只有风险处置实际扩大工作量、影响面或协作规模时才据此重评路线。
 路线过轻或 `route_fit=too_heavy` 都阻断；更重路线只能由用户明确要求或带来源的项目规则通过
 `route_override` 授权。
 按裁决输出的 `execution_profile` 限制上下文/设计/验证；发现契约、数据、跨模块或风险新证据时
@@ -47,10 +48,9 @@ Claude Code：`/repo-delivery [目标]`；Codex：`$repo-delivery [目标]`。�
 
 ## 按需 Reference（必须完整读取）
 
-路线确定后，从 `aek.core.context.reference_catalog.REFERENCE_CATALOG` 选择当前 stage 的 reference；
-Catalog 外文件禁止加载。每个被选文件必须在对应阶段行动前完整读取，不得只读片段后声称遵循。
-stage=`route` 只读路线规则；只有进入最终交付门禁时，stage=`closeout` 才读收口规则，
-不得在零阶段预读它。Catalog 不可导入时，按下表执行同一固定映射，不能扫描目录猜规则。
+按 Route/stage 从 `aek.core.context.reference_catalog.REFERENCE_CATALOG` 的固定映射选 reference，
+并完整读取；不加载 Catalog 外文件。stage=`route` 只读路线规则，stage=`closeout` 才读收口规则，
+不得在零阶段预读它。Catalog 不可导入时用下表，不扫描目录猜规则。
 
 | Route | `route` 阶段必读 | `closeout` 阶段必读 |
 | --- | --- | --- |
@@ -61,11 +61,10 @@ stage=`route` 只读路线规则；只有进入最终交付门禁时，stage=`cl
 
 ## 执行与升级
 
-查项目历史、决策、坑点、SDD 或交付知识时，先调用宿主可见的 `memory_recall` MCP，并传
-`context={schema_version,route,stage,purpose,subject_digest,session_id}`。只有 MCP 不可见、不兼容或
-调用开始前失败，才由 Agent 内部降级到等价 `memory-recall --context-json`；两者都不可用才做有界
-metadata 文本查找。MCP 已开始但结果未知时停止并披露，不再运行 CLI/grep；成功后只消费返回的
-`expanded`，不得重复检索同一材料。`selected_path/reason_code/capability_snapshot/uncertainty` 是阶段证据。
+项目知识先调 `memory_recall` MCP，按工具 schema 绑定 Route/stage/subject/session；普通取证
+purpose=`target_evidence`，评审=`review_required`，业务说明写 query。仅在 MCP 不可见、不兼容或
+调用前失败时降级等价 CLI，再失败才有界 metadata 查找；调用已开始但结果未知则停止并披露。
+成功只消费 `expanded`，不重复检索；记录 `selected_path/reason_code/capability_snapshot/uncertainty`。
 
 结构检索先用 `codebase-memory` Verify（含 freshness/coverage），grep 仅补字面量/缺口；
 只展开命中的记忆与规范。可观察代码行为按 `tdd`

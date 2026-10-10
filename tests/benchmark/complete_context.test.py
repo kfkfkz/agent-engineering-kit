@@ -8,10 +8,14 @@ from dataclasses import replace
 from pathlib import Path
 
 from complete_context import CHANNELS, replay_case
-from context import (BaselineManifest, aggregate_route, compare_case,
-                     load_baseline, release_verdict)
+from context import (
+    BaselineManifest,
+    aggregate_route,
+    compare_case,
+    load_baseline,
+    release_verdict,
+)
 from equivalence import complete_equivalence
-
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("complete-baseline-v1.0.0.json")
@@ -59,7 +63,7 @@ class CompleteReplayTests(unittest.TestCase):
             BASELINE.with_name("context-baseline-v1.0.0.json"))
         frozen = json.loads(BASELINE.read_text(encoding="utf-8"))
         receipt_digests = json.loads(BASELINE.with_name(
-            "complete-equivalence-v1.0.2.json").read_text(encoding="utf-8"))
+            "complete-equivalence-v1.0.3.json").read_text(encoding="utf-8"))
         records = {row["case_id"]: row for row in frozen["cases"]}
         comparisons = []
         complete_cases = []

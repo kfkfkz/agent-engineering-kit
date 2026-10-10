@@ -8,19 +8,27 @@ from typing import Callable
 
 from aek.application.context_capsule import get_or_rebuild_capsule
 from aek.application.context_telemetry import (
-    record_context_delivery, report_for_budget,
+    record_context_delivery,
+    report_for_budget,
 )
-from aek.core.context.budget import ContextBudget
+from aek.core.context.budget import CONTEXT_PURPOSES, ContextBudget
 from aek.core.context.capsule import (
-    CapsuleClaim, CapsuleSource, ContextCapsule, capsule_as_dict,
+    CapsuleClaim,
+    CapsuleSource,
+    ContextCapsule,
+    capsule_as_dict,
 )
-from aek.core.context.memory import CandidateSet, select_expansions
 from aek.core.context.lookup import (
     CapabilitySnapshot,
     KnowledgeLookupPlan,
     plan_knowledge_lookup,
 )
-from aek.core.context.telemetry import ContextReport
+from aek.core.context.memory import CandidateSet, select_expansions
+from aek.core.context.telemetry import (
+    ContextReport,
+    validate_context_session_id,
+    validate_context_subject_digest,
+)
 
 
 @dataclass(frozen=True)
@@ -58,8 +66,10 @@ def recall_context(
 ) -> MemoryRecallResult:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("memory query is required")
-    if not isinstance(purpose, str) or not purpose.strip():
-        raise ValueError("memory recall purpose is required")
+    if not isinstance(purpose, str) or purpose not in CONTEXT_PURPOSES:
+        raise ValueError("memory recall purpose must be one of: " + ", ".join(sorted(CONTEXT_PURPOSES)))
+    validate_context_session_id(session_id)
+    validate_context_subject_digest(subject_digest)
     if lookup_plan is None:
         lookup_plan = plan_knowledge_lookup(CapabilitySnapshot(
             mcp_configured=False, mcp_visible=False, mcp_compatible=False,

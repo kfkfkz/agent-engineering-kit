@@ -14,8 +14,8 @@ Delegates to existing CLI tools (single implementation, no code duplication).
 Usage:
   agent-engineering-mcp <target-repo>     # stdio JSON-RPC MCP server
 """
-import json
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -44,7 +44,15 @@ if not os.path.isfile(os.path.join(_package_root, "aek", "core", "dispatch.py"))
     raise SystemExit(3)
 sys.path.insert(0, _package_root)
 from aek.application.dispatch import DispatchService, MemoryReceiptStore
+from aek.core.context.budget import CONTEXT_PURPOSES
+from aek.core.context.telemetry import (
+    CONTEXT_SESSION_PATTERN,
+    CONTEXT_SUBJECT_PATTERN,
+    validate_context_session_id,
+    validate_context_subject_digest,
+)
 from aek.core.dispatch import select_dispatch
+
 # 绑定目标仓库:MCP 服务器只能操作安装它的仓库,不允许 Agent 传任意路径
 # KIT_BIN 形如 <repo>/.repo-memory-kit/bin,向上三级即仓库根
 _BOUND_REPO = os.path.dirname(os.path.dirname(KIT_BIN))
@@ -61,13 +69,13 @@ _BOUND_REPO = os.path.dirname(os.path.dirname(KIT_BIN))
 SUPPORTED_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
 DEFAULT_PROTOCOL_VERSION = "2025-11-25"
 SERVER_NAME = "agent-engineering-kit"
-SERVER_VERSION = "1.0.2"
+SERVER_VERSION = "1.0.3"
 
 TOOLS = [
     {
         "name": "memory_recall",
         "description": "语义检索 docs/ 全量文档（记忆条目、业务域地图、SDD、交付回执）。"
-                       "任务开始时先调此工具查找相关知识，再读命中条目全文。",
+                       "需要项目历史知识时先调此工具；传 context 可获得预算化结果，只消费 expanded，不重复读取候选。",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -82,9 +90,11 @@ TOOLS = [
                         "schema_version": {"type": "integer", "const": 1},
                         "route": {"type": "string", "enum": ["direct", "bounded", "standard", "initiative"]},
                         "stage": {"type": "string", "enum": ["routing", "design", "execution", "closeout"]},
-                        "purpose": {"type": "string"},
-                        "subject_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                        "session_id": {"type": "string"},
+                        "purpose": {"type": "string", "enum": sorted(CONTEXT_PURPOSES),
+                                    "default": "target_evidence",
+                                    "description": "受控用途枚举；常规取证用 target_evidence，评审用 review_required。业务描述放在 query，不填在 purpose。"},
+                        "subject_digest": {"type": "string", "pattern": CONTEXT_SUBJECT_PATTERN},
+                        "session_id": {"type": "string", "pattern": CONTEXT_SESSION_PATTERN},
                         "risk_required": {"type": "boolean"},
                     },
                     "required": ["schema_version", "route", "subject_digest", "session_id"],
@@ -162,7 +172,13 @@ def tool_memory_recall(args):
     if context is not None:
         error = _validate_memory_context(context)
         if error:
-            return {"error": error}
+            invalid_purpose = error.startswith("context purpose")
+            response = {"returncode": 2, "output": "", "error": error,
+                        "reason_code": "INVALID_CONTEXT_PURPOSE" if invalid_purpose else "INVALID_MEMORY_CONTEXT",
+                        "lookup_started": False, "context_mode": "explicit"}
+            if invalid_purpose:
+                response["allowed_purposes"] = sorted(CONTEXT_PURPOSES)
+            return response
         cmd_args.extend([
             "--context-json", "--lookup-channel", "mcp",
             "--route", context["route"],
@@ -207,23 +223,22 @@ def _validate_memory_context(context):
     unknown = sorted(set(context) - allowed)
     if unknown:
         return "context contains unknown fields: " + ", ".join(unknown)
-    if context.get("schema_version") != 1:
+    if type(context.get("schema_version")) is not int or context["schema_version"] != 1:
         return "context schema_version must be 1"
-    if context.get("route") not in {"direct", "bounded", "standard", "initiative"}:
+    if not isinstance(context.get("route"), str) or context["route"] not in {"direct", "bounded", "standard", "initiative"}:
         return "context route is invalid"
-    if context.get("stage", "routing") not in {"routing", "design", "execution", "closeout"}:
+    if not isinstance(context.get("stage", "routing"), str) or context.get("stage", "routing") not in {"routing", "design", "execution", "closeout"}:
         return "context stage is invalid"
-    digest = context.get("subject_digest")
-    if (not isinstance(digest, str) or len(digest) != 64
-            or any(char not in "0123456789abcdef" for char in digest)):
-        return "context subject_digest must be lowercase SHA-256"
-    if not isinstance(context.get("session_id"), str) or not context["session_id"].strip():
-        return "context session_id is required"
+    try:
+        validate_context_subject_digest(context.get("subject_digest"))
+        validate_context_session_id(context.get("session_id"))
+    except ValueError as exc:
+        return "context " + str(exc)
     if "risk_required" in context and type(context["risk_required"]) is not bool:
         return "context risk_required must be boolean"
     if "purpose" in context and (not isinstance(context["purpose"], str)
-                                  or not context["purpose"].strip()):
-        return "context purpose must be a non-empty string"
+                                  or context["purpose"] not in CONTEXT_PURPOSES):
+        return "context purpose must be one of: " + ", ".join(sorted(CONTEXT_PURPOSES)) + "; put business details in query"
     return None
 
 
@@ -321,7 +336,7 @@ TOOL_HANDLERS = {
 # changing the public MCP tools or payloads.
 SERVICE_TOOL_HANDLERS = dict(TOOL_HANDLERS)
 LEGACY_TOOL_HANDLERS = dict(TOOL_HANDLERS)
-_SERVICE_VERSION = "1.0.2"
+_SERVICE_VERSION = "1.0.3"
 _SERVICE_MINIMUM = "1.0.1"
 _SERVICE_CAPABILITIES = frozenset(SERVICE_TOOL_HANDLERS)
 _PARITY_PASSED = frozenset(SERVICE_TOOL_HANDLERS)

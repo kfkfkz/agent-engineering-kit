@@ -67,7 +67,7 @@ RESP=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVe
 printf '%s\n' "$RESP" | python3 -c "
 import json,sys; r=json.load(sys.stdin)
 assert r['result']['protocolVersion']=='2025-06-18'  # 回显
-assert r['result']['serverInfo']=={'name':'agent-engineering-kit','version':'1.0.2'}
+assert r['result']['serverInfo']=={'name':'agent-engineering-kit','version':'1.0.3'}
 " && ok "T1b 版本协商：回显客户端版本" || bad "T1b: $RESP"
 
 # T1c: 客户端发送未知版本 → 默认版本
@@ -94,6 +94,9 @@ assert 'domain_check' in tools and 'kit_status' in tools
 assert all('inputSchema' in t for t in r['result']['tools'])
 memory=next(t for t in r['result']['tools'] if t['name']=='memory_recall')
 assert 'context' in memory['inputSchema']['properties']
+purpose=memory['inputSchema']['properties']['context']['properties']['purpose']
+assert set(purpose['enum'])=={'target_evidence','risk_required','review_required','user_requested','reroute_evidence'}
+assert purpose['default']=='target_evidence'
 " && ok "tools/list：4 工具 + inputSchema" || bad "tools/list 异常: $RESP"
 
 # ── T3 tools/call kit_status ──
@@ -152,6 +155,18 @@ data=json.loads(r['result']['content'][0]['text'])
 assert r['result']['isError'] is True
 assert 'schema_version' in data['error']
 " && ok "memory_recall context 非法 schema fail-closed" || bad "非法 context 未拒绝: $RESP"
+
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":42,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"RULES","context":{"schema_version":1,"route":"standard","stage":"design","purpose":"private-canary 依赖迁移的影响面与提交规范核查","subject_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","session_id":"invalid-purpose-test"}}}}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+data=json.loads(r['result']['content'][0]['text'])
+assert r['result']['isError'] is True
+assert data['returncode']==2
+assert data['reason_code']=='INVALID_CONTEXT_PURPOSE'
+assert data['lookup_started'] is False
+assert 'target_evidence' in data['allowed_purposes']
+assert 'private-canary' not in data['error'] and 'Traceback' not in data['error']
+" && ok "memory_recall 自然语言 purpose 检索前结构化拒绝" || bad "非法 purpose 未安全拒绝: $RESP"
 
 # ── T5 未知工具 → -32602 ──
 RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nonexistent","arguments":{}}}')

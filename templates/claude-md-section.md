@@ -13,7 +13,7 @@
 - 已有 `.specify/specs` 先用 `spec-migrate` 检查；只有明确要求时才增量迁移，待核验标记不等于设计完成
 - 项目建有 `docs/03-SDD/` 时，功能的设计交付物（业务流程设计/详细设计/API/验收）以其版本目录为载体
 - 任务中断或跨 Agent/会话移交时使用 `task-handoff`，以当前源码和权威 spec 复核交接内容
-- 查项目历史、坑点、决定、SDD 或旧回执时先调用 `memory_recall` MCP 并传 route/stage/purpose/subject/session context；仅在 MCP 不可见、不兼容或调用开始前失败时由 Agent 内部降级 CLI，再失败才有界文本查找。成功后只读返回的 expanded，不重复 grep；无命中/截断不得解释为无约束
+- 项目历史知识先调 `memory_recall` MCP；context.purpose 用 `target_evidence`（普通取证）或 `review_required`（评审），业务说明写 query。仅在 MCP 不可见、不兼容或调用前失败时降级 CLI，再失败才有界文本查找。成功只消费 expanded，不重复检索；无命中/截断不代表无约束
 - 会话开始先读 `docs/memory/PROFILE.md`（L3 画像，存在时），再查 `README.md` 索引
 - 修改代码前先查 `docs/memory/pitfalls/`，命中相关条目必须先读全文；状态为「待验证」的条目不得作为修改依据
 - bug 修复人工审核通过后，将原因/影响范围/修复方案整理为新 pitfall 条目入库

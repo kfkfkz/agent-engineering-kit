@@ -14,12 +14,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from context import BenchmarkCase
+
 from aek.adapters.telemetry import ContextLedger
 from aek.core.context.reference_catalog import REFERENCE_CATALOG
 from aek.core.context.telemetry import ContextReport, build_context_report
-
-from context import BenchmarkCase
-
 
 CHANNELS = ("skill_loader", "reference_loader", "code_loader",
             "test_loader", "memory_loader", "document_loader", "review_loader")

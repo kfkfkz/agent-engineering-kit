@@ -1,11 +1,11 @@
 """Pure WorkUnit lifecycle and resume decisions."""
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from enum import Enum
 import hashlib
 import json
 import re
+from dataclasses import dataclass, replace
+from enum import Enum
 
 from aek.core.context.identity import (
     IdentityEnvelope,
@@ -14,7 +14,6 @@ from aek.core.context.identity import (
     decode_identity,
     identity_as_dict,
 )
-
 
 _ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$")
 
@@ -241,16 +240,24 @@ def resume_work_unit(
             if step.receipt_ref else ""
         if step.state == WorkState.NEEDS_HUMAN:
             action, reason = "human", step.reason_code or "NEEDS_HUMAN"
-        elif not step.idempotent and step.state in {
-                WorkState.IN_PROGRESS, WorkState.COMPLETED}:
-            if receipt_state == "COMMITTED":
+        elif comparison.state == IdentityState.INVALID:
+            action, reason = "human", "IDENTITY_INVALID"
+        # A failed or stale workflow step does not undo an external action.
+        # Receipt references and possibly-executed states survive invalidation;
+        # only a never-started/skipped step without a receipt may start normally.
+        elif not step.idempotent and (step.receipt_ref or step.state not in {
+                WorkState.NOT_STARTED, WorkState.SKIPPED}):
+            if (receipt_state == "COMMITTED"
+                    and comparison.state == IdentityState.STALE):
+                # Preserve the external outcome, but it is not proof that the
+                # changed task has been delivered. Reconcile instead of rerun.
+                action, reason = "human", "NON_IDEMPOTENT_COMMITTED_IDENTITY_STALE"
+            elif receipt_state == "COMMITTED":
                 action, reason = "reuse", "NON_IDEMPOTENT_COMMITTED"
             else:
                 action, reason = "human", (
                     "NON_IDEMPOTENT_STARTED" if receipt_state == "STARTED"
                     else "NON_IDEMPOTENT_RECEIPT_UNKNOWN")
-        elif comparison.state == IdentityState.INVALID:
-            action, reason = "human", "IDENTITY_INVALID"
         elif comparison.state == IdentityState.STALE:
             action, reason = "recompute", "IDENTITY_STALE"
         elif step.state in {WorkState.COMPLETED, WorkState.SKIPPED}:

@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 from aek.core.context.reference_catalog import REFERENCE_CATALOG
 
-
 _DEFAULTS = {
     # scope, code files/bytes, Memory candidates/open/bytes, stage bytes, docs
     "direct": ("target_and_tests", 6, 96 * 1024, 0, 0, 0,
@@ -23,10 +22,10 @@ _DEFAULTS = {
 }
 _STAGES = {"routing", "design", "execution", "closeout"}
 _MANDATORY = ("user_request", "root_instructions", "governance", "safety_required")
-_EXPANSION_PURPOSES = {
+CONTEXT_PURPOSES = frozenset({
     "target_evidence", "risk_required", "review_required", "user_requested",
     "reroute_evidence",
-}
+})
 _OPTIONAL_SOURCES = {"target_code", "test", "memory", "document", "review",
                      "reference", "tool", "capsule"}
 
@@ -103,7 +102,7 @@ def decide_context_expansion(
             or source not in _OPTIONAL_SOURCES | set(budget.mandatory_sources)):
         raise ValueError("unknown context source")
     if purpose is not None and (not isinstance(purpose, str)
-                                or purpose not in _EXPANSION_PURPOSES):
+                                or purpose not in CONTEXT_PURPOSES):
         raise ValueError("unknown or unsafe expansion purpose")
     total = used_bytes + requested_bytes
     over = total > budget.stage_byte_limit

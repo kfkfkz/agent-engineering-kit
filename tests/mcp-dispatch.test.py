@@ -7,7 +7,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
-
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -52,6 +52,42 @@ class McpDispatchTests(unittest.TestCase):
         second = module._execute_tool(42, "memory_build", {"mode": "build"})
         self.assertEqual(calls, ["service"])
         self.assertEqual(first, second)
+
+    def test_memory_purpose_contract_rejects_freeform_before_cli_start(self) -> None:
+        module = self.module()
+        context = {"schema_version": 1, "route": "standard", "stage": "design",
+                   "purpose": "依赖迁移的影响分析与历史约束核查", "subject_digest": "d" * 64,
+                   "session_id": "purpose-test"}
+        with patch.object(module, "run_cli", return_value=(0, "{}", "")) as process:
+            result = module.tool_memory_recall({"query": "dependency migration", "context": context})
+        process.assert_not_called()
+        self.assertEqual(result["returncode"], 2)
+        self.assertEqual(result["reason_code"], "INVALID_CONTEXT_PURPOSE")
+        self.assertFalse(result["lookup_started"])
+        self.assertNotIn(context["purpose"], result["error"])
+        self.assertIn("target_evidence", result["allowed_purposes"])
+        tool = next(tool for tool in module.TOOLS if tool["name"] == "memory_recall")
+        schema = tool["inputSchema"]["properties"]["context"]["properties"]["purpose"]
+        self.assertEqual(set(schema["enum"]), set(result["allowed_purposes"]))
+        self.assertEqual(schema["default"], "target_evidence")
+
+    def test_memory_identity_validation_precedes_cli_and_accepts_uuid_format(self) -> None:
+        module = self.module()
+        context = {"schema_version": 1, "route": "standard", "stage": "design", "purpose": "target_evidence",
+                   "subject_digest": "d" * 64,
+                   "session_id": "12345678-1234-1234-1234-123456789abc-123456abcdef"}
+        for change in ({"session_id": "../../../outside"}, {"session_id": "a" * 65},
+                       {"subject_digest": "../../outside"}, {"schema_version": True},
+                       {"route": []}, {"stage": []}):
+            with self.subTest(change=change), patch.object(module, "run_cli") as process:
+                result = module.tool_memory_recall({"query": "migration", "context": {**context, **change}})
+                process.assert_not_called()
+                self.assertEqual(result["returncode"], 2)
+                self.assertFalse(result["lookup_started"])
+        with patch.object(module, "run_cli", return_value=(0, "{}", "")) as process:
+            result = module.tool_memory_recall({"query": "migration", "context": context})
+        self.assertEqual(result["returncode"], 0)
+        self.assertEqual(process.call_args.args[1][-1], context["session_id"])
 
 
 if __name__ == "__main__":

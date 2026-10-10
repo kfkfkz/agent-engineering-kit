@@ -2,21 +2,21 @@
 """Composable identity only invalidates consumers of changed components."""
 from __future__ import annotations
 
-from dataclasses import replace
 import unittest
+from dataclasses import replace
 
+from aek.application.identity import (
+    bind_receipt,
+    bound_receipt_as_dict,
+    decode_bound_receipt,
+    verify_bound_receipt,
+)
 from aek.core.context.identity import (
     IdentityState,
     build_identity,
     compare_identity,
     decode_identity,
     identity_as_dict,
-)
-from aek.application.identity import (
-    bind_receipt,
-    bound_receipt_as_dict,
-    decode_bound_receipt,
-    verify_bound_receipt,
 )
 
 
@@ -41,6 +41,24 @@ def components(**overrides: str) -> dict[str, dict[str, str]]:
 
 
 class IdentityTests(unittest.TestCase):
+    def test_schema_version_requires_integer_in_decoders_and_live_objects(self) -> None:
+        identity = build_identity(components())
+        receipt = bind_receipt(identity, {"status": "PASS"})
+        for version in (True, 1.0, "1"):
+            with self.subTest(version=version):
+                encoded = identity_as_dict(identity)
+                encoded["schema_version"] = version
+                with self.assertRaises(ValueError):
+                    decode_identity(encoded)
+                encoded_receipt = bound_receipt_as_dict(receipt)
+                encoded_receipt["schema_version"] = version
+                with self.assertRaises(ValueError):
+                    decode_bound_receipt(encoded_receipt)
+                with self.assertRaises(ValueError):
+                    identity_as_dict(replace(identity, schema_version=version))
+                with self.assertRaises(ValueError):
+                    bound_receipt_as_dict(replace(receipt, schema_version=version))
+
     def test_only_required_component_changes_make_a_consumer_stale(self) -> None:
         expected = build_identity(components())
         policy_changed = build_identity(components(**{"policy.content_digest": "4" * 64}))

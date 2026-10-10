@@ -1,10 +1,10 @@
 """Bind machine receipts to composable identity envelopes."""
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
 import hashlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 from aek.core.context.identity import (
     IdentityComparison,
@@ -86,6 +86,7 @@ def decode_bound_receipt(payload: Mapping[str, object]) -> IdentityBoundReceipt:
         "payload_digest", "receipt_digest",
     }
     if (not isinstance(payload, Mapping) or set(payload) != required
+            or type(payload.get("schema_version")) is not int
             or payload.get("schema_version") != 1
             or not isinstance(payload.get("identity"), Mapping)
             or not isinstance(payload.get("payload"), Mapping)
@@ -106,7 +107,8 @@ def decode_bound_receipt(payload: Mapping[str, object]) -> IdentityBoundReceipt:
 
 
 def _receipt_is_authentic(receipt: object) -> bool:
-    if not isinstance(receipt, IdentityBoundReceipt) or receipt.schema_version != 1:
+    if (not isinstance(receipt, IdentityBoundReceipt) or type(receipt.schema_version) is not int
+            or receipt.schema_version != 1):
         return False
     try:
         identity_as_dict(receipt.identity)

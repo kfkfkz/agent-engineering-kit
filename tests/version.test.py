@@ -2,8 +2,8 @@
 """The installer and release artifact use one durable semantic version."""
 from __future__ import annotations
 
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import installer.registry as registry
 
@@ -13,7 +13,7 @@ class VersionTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         expected = (root / "VERSION").read_text(encoding="ascii").strip()
         registry._KIT_VERSION = None
-        self.assertEqual(expected, "1.0.2")
+        self.assertEqual(expected, "1.0.3")
         self.assertEqual(registry.current_kit_version(), expected)
 
 

@@ -55,6 +55,25 @@ class WorkUnitServiceTests(unittest.TestCase):
             lambda request: "COMMITTED" if request == "request-1" else None)
         self.assertEqual(plan.by_step()["publish"].action, "reuse")
 
+    def test_reopened_service_uses_receipt_after_committed_step_becomes_stale(self):
+        snapshot = self.service.open_or_create(
+            repo_identity="repo-a", task_identity="task-c",
+            writer_id="writer-a", identity=envelope(), steps=self.steps).snapshot
+        for state, event in ((WorkState.IN_PROGRESS, "begin"),
+                             (WorkState.COMPLETED, "commit"),
+                             (WorkState.STALE, "invalidate")):
+            snapshot = self.service.transition(
+                snapshot.work_unit_id, expected_snapshot_digest=snapshot.snapshot_digest,
+                step_id="publish", state=state, writer_id="writer-a",
+                writer_epoch=1, event_id=event, receipt_ref="request-1")
+        reopened = WorkUnitService(WorkUnitStore(self.store.root))
+        plan = reopened.resume(snapshot.work_unit_id, envelope(),
+                               lambda request: "COMMITTED")
+        self.assertEqual(plan.by_step()["publish"].action, "reuse")
+        unknown = reopened.resume(snapshot.work_unit_id, envelope(),
+                                  lambda request: None)
+        self.assertEqual(unknown.by_step()["publish"].action, "human")
+
 
 if __name__ == "__main__":
     unittest.main()

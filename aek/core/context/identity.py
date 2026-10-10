@@ -6,13 +6,12 @@ those independent lifecycles into a new global source of truth.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
-from enum import Enum
 import hashlib
 import json
 import re
-
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import Enum
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _KEY = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -102,6 +101,7 @@ def decode_identity(payload: Mapping[str, object]) -> IdentityEnvelope:
     if (not isinstance(payload, Mapping)
             or set(payload) != {
                 "schema_version", "components", "envelope_digest"}
+            or type(payload.get("schema_version")) is not int
             or payload.get("schema_version") != 1
             or not isinstance(payload.get("components"), Mapping)
             or not isinstance(payload.get("envelope_digest"), str)):
@@ -117,6 +117,7 @@ def decode_identity(payload: Mapping[str, object]) -> IdentityEnvelope:
 
 def _is_authentic(envelope: object) -> bool:
     if (not isinstance(envelope, IdentityEnvelope)
+            or type(envelope.schema_version) is not int
             or envelope.schema_version != 1
             or not isinstance(envelope.components, tuple)
             or not isinstance(envelope.envelope_digest, str)

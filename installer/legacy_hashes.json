@@ -473,6 +473,9 @@
     "746b1f3": {
       "bin-memory-build": "canonical_sha256:91b7f6c458efe1dd801e6d52bc03005fdad94d5fe617c9e008511c2d828a7b50"
     },
+    "75b72e3": {
+      "lib-aek-adapters-telemetry-py": "canonical_sha256:0d0ab4c8ec789d78ca0b60dddc46b362e202d0732ce2cd1eea21753dacd80e36"
+    },
     "75f1eac": {
       "skill-agents-delivery-gate": "canonical_sha256:d808ce701237a31e9320f8776792aa2febfe6258bc7ec681eac03b7ec7464b66",
       "skill-agents-repo-delivery": "canonical_sha256:a3c8462fc16ad546cfe4ca86bb58f87a58fbcb223e79851f4eae119dc1afeaed",

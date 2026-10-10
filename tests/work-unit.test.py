@@ -95,6 +95,35 @@ class WorkUnitTests(unittest.TestCase):
         self.assertEqual(started.by_step()["publish"].action, "human")
         self.assertEqual(missing.by_step()["publish"].action, "human")
 
+    def test_non_idempotent_receipts_survive_failed_and_stale_steps(self) -> None:
+        started = transition_step(
+            self.snapshot(), "publish", WorkState.IN_PROGRESS,
+            writer_id="writer-a", writer_epoch=1, event_id="started",
+            receipt_ref="request-7")
+        completed = transition_step(
+            started, "publish", WorkState.COMPLETED,
+            writer_id="writer-a", writer_epoch=1, event_id="completed")
+        snapshots = (
+            transition_step(started, "publish", WorkState.FAILED_RETRYABLE,
+                            writer_id="writer-a", writer_epoch=1,
+                            event_id="failed"),
+            transition_step(started, "publish", WorkState.STALE,
+                            writer_id="writer-a", writer_epoch=1,
+                            event_id="stale-started"),
+            transition_step(completed, "publish", WorkState.STALE,
+                            writer_id="writer-a", writer_epoch=1,
+                            event_id="stale-completed"),
+        )
+        for snapshot in snapshots:
+            for receipt, expected in (("COMMITTED", "reuse"),
+                                      ("STARTED", "human"), (None, "human")):
+                with self.subTest(state=snapshot.by_step()["publish"].state,
+                                  receipt=receipt):
+                    observations = {"request-7": receipt} if receipt else {}
+                    decision = resume_work_unit(
+                        snapshot, identity(), observations).by_step()["publish"]
+                    self.assertEqual(decision.action, expected)
+
     def test_needs_human_preserves_exactly_one_next_step(self) -> None:
         current = self.snapshot()
         current = transition_step(
@@ -108,6 +137,28 @@ class WorkUnitTests(unittest.TestCase):
         self.assertEqual(step.reason_code, "OUTCOME_UNKNOWN")
         self.assertEqual(step.next_step,
                          "query request-8 in the external system")
+
+    def test_committed_external_action_does_not_authorize_changed_identity(self):
+        started = transition_step(
+            self.snapshot(), "publish", WorkState.IN_PROGRESS,
+            writer_id="writer-a", writer_epoch=1, event_id="begin",
+            receipt_ref="request-7")
+        decision = resume_work_unit(
+            started, identity(source="f"),
+            {"request-7": "COMMITTED"}).by_step()["publish"]
+        self.assertEqual(decision.action, "human")
+        self.assertEqual(decision.reason_code,
+                         "NON_IDEMPOTENT_COMMITTED_IDENTITY_STALE")
+
+    def test_never_started_and_skipped_external_steps_need_no_commit_receipt(self):
+        initial = self.snapshot()
+        skipped = transition_step(
+            initial, "publish", WorkState.SKIPPED,
+            writer_id="writer-a", writer_epoch=1, event_id="skip")
+        self.assertEqual(resume_work_unit(initial, identity(), {}).by_step()[
+            "publish"].action, "recompute")
+        self.assertEqual(resume_work_unit(skipped, identity(), {}).by_step()[
+            "publish"].action, "reuse")
 
 
 if __name__ == "__main__":

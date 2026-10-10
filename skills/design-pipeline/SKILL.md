@@ -87,7 +87,7 @@ Agent 的工具调用中；仅当用户明确要求诊断底层命令时才展�
    原始需求在同号 `docs/01-需求/NNN-名称/`——生成需求分析前先读它，不脱离原始需求加戏。
    需求已指派但 SDD 目录不存在（或索引行缺失）→ Agent 运行
    `doc-gate init NNN-名称 --repo <仓库根>`（登记单一入口：两处目录+模板骨架+索引行，幂等）。
-3. 生成前先取证：先调用 `memory_recall` MCP，并以 context 绑定当前 Route、stage、purpose、subject
+3. 生成前先取证：先调用 `memory_recall` MCP，并以 context 绑定当前 Route、stage、`purpose=target_evidence`、subject
    digest 和稳定 session ID；仅在 MCP 不可见/不兼容/调用开始前失败时内部降级到等价
    `memory-recall --context-json`，再失败才做有界 metadata 文本查找。只读取返回的 expanded 正文，
    不在 MCP 成功后重复 CLI/grep；读业务域地图确认模块口径；
@@ -221,9 +221,8 @@ lifecycle snapshot 的确定性 PASS gate 才能派生 `CLOSED`；Agent 不手�
 仅当 ArtifactPlan 中 `business-flow` 为 required 时执行本节；若为 skipped，不生成流程图、
 不询问人工评审，直接沿解析后的真实前置进入后继阶段。
 
-概要设计 PASS 后生成 `业务流程设计.md`——**给人读的文档**：通俗、无代码/
-表结构/接口字段（细节在 数据库设计/API设计）；按功能五件套展开（界面[嵌 UI
-原型截图]/业务逻辑/性能/安全/三方依赖）与端到端闭环叙述。
+概要设计 PASS 后按功能五件套（界面原型/业务逻辑/性能/安全/三方依赖）写通俗业务闭环，不含代码、表或字段。
+功能标题用 `### 3.1 名称`，子节用 `#### 3.1.1 界面设计`；正文用 `对应功能点：F1` 追踪，勿以 F-ID 编号。
 
 **业务流程图用 archify 产出**（已随 kit 安装到 `.agents` 与
 `.claude` 两棵技能树，需 Node.js ≥18）。先从**仓库根**定位 CLI，

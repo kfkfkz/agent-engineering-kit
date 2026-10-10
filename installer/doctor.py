@@ -4,9 +4,14 @@
 """
 from __future__ import annotations
 
+import json
 import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import platform as _plat
+from .governance import compare_governance_defaults
 from .manifest import Manifest, ManifestCorruptError, read_manifest
 from .registry import (
     REGISTRY,
@@ -34,6 +39,30 @@ class DoctorReport:
     overall: str     # HEALTHY / OUTDATED / DEGRADED / DRIFTED / CONFLICT / INCOMPLETE
     statuses: list[str] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
+
+
+def governance_defaults_finding(target: Path) -> Finding:
+    """Read a bounded, regular policy file through the platform safety adapter."""
+    rel = ".repo-memory-kit/governance.json"
+    limit = 1024 * 1024
+    try:
+        fd = _plat.secure_open(target, rel, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+                raise ValueError("policy is not a bounded regular file")
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                raw = stream.read(limit + 1)
+            if len(raw) > limit:
+                raise ValueError("policy exceeds the diagnostic budget")
+        finally:
+            os.close(fd)
+        status, detail = compare_governance_defaults(json.loads(raw.decode("utf-8")))
+    except (OSError, TypeError, ValueError, UnicodeError, RecursionError):
+        status = "unverifiable"
+        detail = ("schema/baseline=unknown；规则缺失、不可安全读取或格式不支持，"
+                  "无法比较当前默认规则；未修改团队策略")
+    return Finding("governance-defaults", rel, status, detail)
 
 
 def run_doctor(target: Path, *, codex_root_cli: Path | None = None) -> int:
@@ -170,6 +199,10 @@ def run_doctor_checks(target: Path,
                                 "managed",
                                 f"kit 版本不一致（已装={manifest.kit_version}，"
                                 f"当前={current_kit_version()}）"))
+
+    # Informational only: custom policies are team-owned, not installation drift.
+    # Do not change the six installation states or the doctor exit code.
+    findings.append(governance_defaults_finding(target))
 
     # 宿主 MCP 能力四态必须分别报告。doctor 只能证明配置文件，不能从本地
     # 安装状态推导当前 Agent 看得见工具、仓库已登记或索引已追平。

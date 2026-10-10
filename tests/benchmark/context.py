@@ -7,14 +7,13 @@ evaluator independent prevents the implementation from grading itself.
 """
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
-
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ROUTE_THRESHOLDS = {

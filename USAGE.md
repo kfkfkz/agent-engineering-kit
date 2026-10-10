@@ -104,6 +104,16 @@ docs/03-SDD/NNN-名称/
 
 计划首次通过时保存执行前基线。执行期可更新 checkbox 和执行记录；任务定义、预计范围或验证方式变化仍需重新评审。完成后统一 closeout，绑定任务清单和测试方案的完整终态哈希。
 
+### 中断恢复的边界
+
+WorkUnit 已支持工作流状态恢复与 CAS 接管，恢复后按当前身份和回执决定复用、重验或转人工；
+宿主 Agent 的完整对话、进程和工具会话恢复属于后续能力。
+
+非幂等动作的工作流状态变为失败或失效，不代表动作被撤销。可信 COMMITTED 回执且当前身份有效时
+复用结果；提交已确认但身份变化时保留提交事实并转人工核对当前任务。仅有 STARTED、缺回执或外部
+结果未知时禁止自动重做，需查询外部事实。外部接口的安全重试依赖其提交查询或幂等键；本地状态
+无法保证任意外部动作 exactly-once。MCP Dispatch 内存回执仅在同一服务进程内去重。
+
 ### 图表与验证
 
 archify 随 AEK 分发，需要 Node.js ≥18。业务流程图的交付链为类型化 JSON → 校验 → 自包含交互 HTML 与哈希回执 → 视觉检查。自动截图需要 Chrome/Chromium；图表内容仍要核对业务事实。
@@ -152,7 +162,7 @@ strict/lightweight 控制治理与回执形态，任务路线控制工作深度�
 
 ```bash
 git fetch --tags
-git switch --detach v1.0.2
+git switch --detach v1.0.3
 ./install.sh --update /path/to/project
 ./install.sh --doctor /path/to/project
 ```
@@ -160,6 +170,10 @@ git switch --detach v1.0.2
 从 main 分支克隆的开发副本可用 `git pull` 更新源码。存在本地改动时先检查并处理，避免覆盖。
 
 doctor 为只读检查，可报告 HEALTHY、OUTDATED、DRIFTED、DEGRADED、CONFLICT、INCOMPLETE。宿主 MCP 的 visible/indexed/fresh 信息可能为 unknown，需要 Agent 实际调用工具核验。
+
+doctor 还会比较团队治理规则与当前默认规则，列出缺失和不同的规则 ID。`policy_update_available`
+是信息提示，不改变安装健康状态或退出码，也不意味着团队策略更弱。旧文件的默认规则来源没有
+可靠记录时显示 `baseline=unknown`；该比较不修改文件。团队确认后才手工采用需要的规则。
 
 ```bash
 # 按报告修复有 AEK 血统的缺失/漂移产物
@@ -190,4 +204,4 @@ sh tests/installer.test.sh
 sh tests/benchmark.test.sh
 ```
 
-测试依赖按 CI 环境准备。性能与上下文 fixture 用于验证行为和成本约束；真实 Agent 配对的正确率、Token 与时延收益实验计划在 1.0.3 开展。
+测试依赖按 CI 环境准备。性能与上下文 fixture 用于验证行为、容量和材料约束，不代表真实 Agent Token 节省或产品收益。开发侧离线诊断不要求连接模型服务。

@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from aek.adapters.memory import fallback_candidates, read_candidate
 from aek.adapters.capsule import CapsuleStore
+from aek.adapters.memory import fallback_candidates, read_candidate
 from aek.adapters.telemetry import ContextLedger
 from aek.application.memory_recall import recall_context
 from aek.core.context.budget import resolve_context_budget
@@ -100,6 +100,35 @@ class MemoryRecallServiceTests(unittest.TestCase):
         self.assertTrue(events)
         self.assertEqual({event.purpose for event in events},
                          {"review_required"})
+
+    def test_freeform_purpose_is_rejected_before_search_or_delivery(self) -> None:
+        calls = []
+        ledger = ContextLedger(self.repo / "invalid-purpose.jsonl")
+
+        def search(_repo, _query):
+            calls.append("search")
+            raise AssertionError("invalid input reached retrieval")
+
+        with self.assertRaisesRegex(ValueError, "purpose"):
+            recall_context(self.repo, "dependency migration", resolve_context_budget("standard", "design", "thorough"),
+                           ledger, session_id="purpose-test", subject_digest="d" * 64,
+                           risk_required=False, purpose="依赖迁移的影响分析与历史约束核查",
+                           candidate_search=search, candidate_read=read_candidate,
+                           capsule_store=CapsuleStore(self.repo / "capsules"))
+        self.assertEqual(calls, [])
+        self.assertEqual(ledger.read(), ())
+
+    def test_invalid_identity_is_rejected_before_accessing_an_external_ledger(self) -> None:
+        outside = self.repo / "outside.jsonl"
+        original = b'{"private":"owned-canary"}'
+        outside.write_bytes(original)
+        for session, subject in (("../../../outside", "d" * 64), ("safe-session", "../outside")):
+            with self.subTest(session=session), self.assertRaises(ValueError):
+                recall_context(self.repo, "database", resolve_context_budget("direct", "routing", "quick"),
+                               ContextLedger(outside), session_id=session, subject_digest=subject,
+                               risk_required=False, candidate_search=lambda *_: self.fail("invalid input reached lookup"),
+                               candidate_read=read_candidate)
+            self.assertEqual(outside.read_bytes(), original)
 
 
 if __name__ == "__main__":

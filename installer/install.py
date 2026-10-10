@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from . import platform as _plat
+from .governance import default_governance_policy
 from .manifest import (
     MANIFEST_SPEC_ID,
     Manifest,
@@ -529,27 +530,7 @@ def run_install(target: Path, *, repair: bool = False,
         # governance.json：**仅在缺失时创建**（团队定制文件永不覆盖、不入 plan）
         gov_json_path = target / ".repo-memory-kit" / "governance.json"
         if not gov_json_path.is_file():
-            rules = {
-                "version": 1,
-                "rules": [
-                    {"id": "SEC-001",
-                     "require": ["receipt", "independent_review",
-                                 "required_check:security-review"],
-                     "match": {"paths": ["**/security/**", "**/auth/**"]}},
-                    {"id": "DB-001",
-                     "require": ["receipt", "independent_review",
-                                 "required_check:migration-plan",
-                                 "required_check:rollback-verification",
-                                 "required_check:sql-performance-screen"],
-                     "match": {
-                         "paths": ["**/migration/**", "**/migrations/**",
-                                   "**/schema/**"],
-                         "files": ["*migration*", "*schema*", "*ddl*"]}},
-                    {"id": "DB-SQL-001",
-                     "require": ["required_check:sql-performance-screen"],
-                     "match": {"files": ["*.sql"]}},
-                ],
-            }
+            rules = default_governance_policy()
             rules_bytes = (json.dumps(rules, ensure_ascii=False, indent=2)
                            + "\n").encode()
             state_plans.append(GroupPlan(

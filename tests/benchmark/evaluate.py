@@ -29,7 +29,8 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from enum import Enum
 from pathlib import Path
 
 # ══════════════════════════ 数据模型 ══════════════════════════
@@ -75,11 +76,14 @@ class BenchmarkResult:
     memory_referenced: bool = False
     memory_consistent: bool = False
     memory_score: float = 0.0      # 0-1
+    task_status: str = "NOT_EVALUATED"
 
     def to_dict(self) -> dict:
         return {
             "scenario": self.scenario_id,
-            "task_correctness": {"success": self.task_success, "detail": self.task_detail},
+            "task_correctness": {"success": self.task_success,
+                                 "detail": self.task_detail,
+                                 "status": self.task_status},
             "evidence_completeness": {
                 "score": self.evidence_score,
                 "has_design_doc": self.has_design_doc,
@@ -444,19 +448,54 @@ def evaluate_memory_usage(
     return referenced, consistent
 
 
-def run_tests(repo: Path, command: str) -> tuple[bool, str]:
-    """运行验证命令。"""
-    if not command:
-        return True, "no test command"
+class VerificationStatus(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    NOT_EVALUATED = "NOT_EVALUATED"
+    INFRA_ERROR = "INFRA_ERROR"
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    status: VerificationStatus
+    detail: str
+
+    @property
+    def success(self) -> bool:
+        return self.status == VerificationStatus.PASS
+
+
+def run_verification(repo: Path, command: str) -> VerificationResult:
+    """Run a trusted legacy scenario command, keeping unknowns out of PASS/FAIL.
+
+    The shell command belongs to the evaluator configuration, never the Agent's
+    answer. New scenario adapters will use argument arrays for independent checks.
+    """
+    if not command or not command.strip():
+        return VerificationResult(VerificationStatus.NOT_EVALUATED, "no test command")
     try:
         result = subprocess.run(
             command, shell=True, cwd=str(repo),
-            capture_output=True, text=True, timeout=120)
-        return result.returncode == 0, result.stdout[-200:] if result.stdout else ""
+            capture_output=True, text=True, timeout=120, check=False)
+        if result.returncode == 0:
+            status = VerificationStatus.PASS
+        elif result.returncode < 0 or result.returncode in (126, 127):
+            status = VerificationStatus.INFRA_ERROR
+        else:
+            status = VerificationStatus.FAIL
+        detail = (result.stdout or result.stderr or "")[-200:]
+        return VerificationResult(status, detail)
     except subprocess.TimeoutExpired:
-        return False, "test timeout"
-    except Exception as e:
-        return False, str(e)
+        return VerificationResult(VerificationStatus.INFRA_ERROR, "test timeout")
+    except OSError:
+        return VerificationResult(VerificationStatus.INFRA_ERROR,
+                                  "test infrastructure unavailable")
+
+
+def run_tests(repo: Path, command: str) -> tuple[bool, str]:
+    """Compatibility wrapper; an absent verifier no longer reports success."""
+    verification = run_verification(repo, command)
+    return verification.success, verification.detail
 
 
 def evaluate_scenario(repo: Path, scenario: Scenario,
@@ -465,9 +504,10 @@ def evaluate_scenario(repo: Path, scenario: Scenario,
     result = BenchmarkResult(scenario_id=scenario.id)
 
     # Task Correctness
-    success, detail = run_tests(repo, scenario.test_command)
-    result.task_success = success
-    result.task_detail = detail
+    verification = run_verification(repo, scenario.test_command)
+    result.task_success = verification.success
+    result.task_detail = verification.detail
+    result.task_status = verification.status.value
 
     # Evidence Completeness
     evidence = evaluate_evidence_chain(repo, scenario, base)
@@ -501,8 +541,8 @@ def compare_results(vanilla: BenchmarkResult, kit: BenchmarkResult) -> str:
     lines = [
         f"{'':30s} {'Vanilla':>10s} {'With Kit':>10s} {'Delta':>10s}",
         "=" * 65,
-        f"{'Task Correctness':30s} {'✓' if vanilla.task_success else '✗':>10s} "
-        f"{'✓' if kit.task_success else '✗':>10s}",
+        f"{'Task Correctness':30s} {vanilla.task_status:>10s} "
+        f"{kit.task_status:>10s}",
         f"{'Evidence Completeness':30s} {vanilla.evidence_score:>10.0%} "
         f"{kit.evidence_score:>10.0%} "
         f"{kit.evidence_score - vanilla.evidence_score:>+10.0%}",
@@ -527,15 +567,100 @@ def compare_results(vanilla: BenchmarkResult, kit: BenchmarkResult) -> str:
 
 # ══════════════════════════ CLI ══════════════════════════
 
+def evaluate_trusted_scenario(repo: Path, loaded, base: str | None = None) -> dict:
+    """Development post-hoc checks, not a validated live paired experiment."""
+    from adapters.check_runner import run_checks
+
+    outcome = run_checks(loaded, repo)
+    memory = tuple(check for check in outcome.checks if check.kind == "memory")
+    memory_status = "NOT_EVALUATED"
+    # Memory checks need no separate outcome-kind check, but remain behavioral,
+    # never inferred from keyword references in candidate source.
+    if memory:
+        memory_status = ("INFRA_ERROR" if any(c.status == "INFRA_ERROR" for c in memory)
+                         else "FAIL" if any(c.status == "FAIL" for c in memory)
+                         else "PASS" if all(c.status == "PASS" for c in memory)
+                         else "NOT_EVALUATED")
+    precision = {"status": "NOT_EVALUATED", "reason_code": "EXACT_GIT_BASE_REQUIRED"}
+    if base:
+        git_root = subprocess.run(["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+                                  capture_output=True, text=True, check=False)
+        reference = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify",
+                                    "--end-of-options", base + "^{commit}"],
+                                   capture_output=True, text=True, check=False)
+        if (git_root.returncode == reference.returncode == 0
+                and Path(git_root.stdout.strip()).resolve() == repo.resolve()):
+            legacy_scope = Scenario(loaded.scenario.id, loaded.scenario.name, "",
+                                    allowed_paths=list(loaded.scenario.allowed_paths),
+                                    forbidden_paths=list(loaded.scenario.forbidden_paths))
+            changed = _get_changed_files(repo, reference.stdout.strip())
+            score, unexpected, forbidden = evaluate_change_precision(changed, legacy_scope)
+            precision = {"status": "FAIL" if forbidden else "PASS", "score": score,
+                         "actual_changed": changed, "unexpected_changes": unexpected,
+                         "forbidden_violations": forbidden}
+    return {
+        "schema_version": 1, "scenario": loaded.scenario.id,
+        "scope": outcome.scope, "scenario_digest": outcome.scenario_digest,
+        "source_sha256": loaded.source_sha256,
+        "task_correctness": {"status": outcome.status, "success": outcome.status == "PASS"},
+        "checks": [asdict(check) for check in outcome.checks],
+        "change_precision": precision,
+        "artifact_evidence": {"status": "NOT_EVALUATED", "reason_code": "TRUSTED_ANCHORS_REQUIRED"},
+        "memory_utilization": {"behavior_status": memory_status,
+                               "reference_status": "NOT_EVALUATED"},
+        "experiment_validity": {"status": "NOT_EVALUATED",
+                                "reason_codes": ["RUN_MANIFEST_UNAVAILABLE", "ISOLATION_UNVERIFIED"]},
+        "resource_cost": {"input_tokens": None, "output_tokens": None,
+                          "cached_tokens": None, "source": "UNKNOWN"},
+    }
+
+
+def _trusted_scenario_cli(args) -> int:
+    # Bind benchmark adapters and shared Kit modules independent of caller cwd.
+    source_dir = Path(__file__).resolve().parent
+    sys.path.insert(0, str(source_dir.parents[1]))
+    sys.path.insert(0, str(source_dir))
+    from adapters.scenario_file import load_scenario
+    from core.scenario import ScenarioError
+
+    try:
+        loaded = load_scenario(Path(args.scenario_file))
+    except ScenarioError:
+        print(json.dumps({"status": "INVALID", "reason_code": "SCENARIO_INVALID"}))
+        return 2
+    paths = args.compare or ([args.repo] if args.repo else [])
+    if not paths or any(not Path(path).is_dir() for path in paths):
+        print(json.dumps({"status": "INFRA_ERROR", "reason_code": "WORKSPACE_UNAVAILABLE"}))
+        return 2
+    reports = [evaluate_trusted_scenario(Path(path), loaded, args.base) for path in paths]
+    if args.compare:
+        result = {"scope": "development_posthoc_comparison", "comparability": "NOT_EVALUATED",
+                  "vanilla": reports[0], "aek": reports[1]}
+    else:
+        result = reports[0]
+    if args.json:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        for label, report in zip(("Vanilla", "AEK") if args.compare else ("Result",), reports):
+            print(f"{label}: {report['scenario']} {report['task_correctness']['status']}")
+        print("Scope: development checks; live experiment validity not evaluated")
+    return 0
+
 def main():
     ap = argparse.ArgumentParser(description="Agent 行为评测引擎")
     ap.add_argument("--repo", help="Agent 完成任务后的仓库路径")
     ap.add_argument("--scenario", help="场景 ID（crud-add-field / bug-fix-regression / refactor-no-scope-creep）")
+    ap.add_argument("--scenario-file", help="可信 JSON 场景（开发侧独立检查；不启动 Agent）")
     ap.add_argument("--compare", nargs=2, metavar=("VANILLA", "KIT"),
                     help="对比两个仓库的结果")
     ap.add_argument("--base", help="diff 基线 ref（多提交任务不漏改动；缺省=工作区+最近提交）")
     ap.add_argument("--json", action="store_true", help="输出 JSON 格式")
     args = ap.parse_args()
+
+    if args.scenario_file:
+        if args.scenario:
+            ap.error("--scenario 与 --scenario-file 不能同时指定")
+        return _trusted_scenario_cli(args)
 
     scenarios = {s.id: s for s in load_scenarios()}
 
@@ -566,7 +691,7 @@ def main():
     else:
         print(f"\n场景: {scenario.id} — {scenario.name}")
         print(f"{'='*50}")
-        print(f"Task Correctness:    {'✓' if result.task_success else '✗'} {result.task_detail[:50]}")
+        print(f"Task Correctness:    {result.task_status} {result.task_detail[:50]}")
         print(f"Evidence Score:      {result.evidence_score:.0%}")
         print(f"  design_doc: {result.has_design_doc}  test_plan: {result.has_test_plan}  "
               f"receipt: {result.has_receipt}  regression: {result.has_regression_test}")

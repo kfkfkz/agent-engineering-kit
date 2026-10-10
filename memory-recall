@@ -26,12 +26,12 @@ import gc
 import hashlib
 import json
 import os
+import pathlib
 import re
 import shutil
 import sys
 import time
 import uuid
-import pathlib
 
 # Select from the real interpreter platform, not mutable ``os.name``. This is
 # equivalent on native Windows/POSIX and keeps import-only platform probes safe.
@@ -58,14 +58,19 @@ if not (_package_root / "aek/application/memory_recall.py").is_file():
     raise SystemExit(3)
 sys.path.insert(0, str(_package_root))
 from dataclasses import asdict
+
 from aek.adapters.capsule import CapsuleStore
 from aek.adapters.memory import read_candidate, search_candidates
 from aek.adapters.telemetry import ContextLedger
 from aek.application.memory_recall import recall_context
-from aek.core.context.budget import resolve_context_budget
+from aek.core.context.budget import CONTEXT_PURPOSES, resolve_context_budget
 from aek.core.context.lookup import (
     CapabilitySnapshot,
     plan_knowledge_lookup,
+)
+from aek.core.context.telemetry import (
+    validate_context_session_id,
+    validate_context_subject_digest,
 )
 
 O_BINARY = getattr(os, "O_BINARY", 0)
@@ -332,8 +337,14 @@ def _rebuild_gen_main(gen_dir, snapshot):
     """子进程：只读语料快照构建索引；写 .build-metadata.json（正式 .metadata.json
     由父进程验证后首次创建）。"""
     import zvec
-    from zvec import (CollectionOption, DataType, Doc, FieldSchema,
-                      FtsIndexParam, CollectionSchema)
+    from zvec import (
+        CollectionOption,
+        CollectionSchema,
+        DataType,
+        Doc,
+        FieldSchema,
+        FtsIndexParam,
+    )
 
     data = snapshot.read_bytes()
     corpus_hash = hashlib.sha256(data).hexdigest()
@@ -530,7 +541,6 @@ def _open_index(repo):
 
 def cmd_query(repo, text, top, types, status, module):
     require_zvec()
-    import zvec
     from zvec import Query
     from zvec.extension.multi_vector_reranker import RrfReRanker
     from zvec.model.param.query import Fts
@@ -645,10 +655,24 @@ def main():
     ap.add_argument("--route", choices=("direct", "bounded", "standard", "initiative"))
     ap.add_argument("--stage", choices=("routing", "design", "execution", "closeout"),
                     default="routing")
-    ap.add_argument("--purpose", default="target_evidence",
-                    help="内部：本次上下文消费目的")
-    ap.add_argument("--subject", help="当前任务 subject SHA-256")
-    ap.add_argument("--session", help="当前任务稳定 session ID")
+    def controlled_purpose(value):
+        if value not in CONTEXT_PURPOSES:
+            raise argparse.ArgumentTypeError("purpose 必须为 " + ", ".join(sorted(CONTEXT_PURPOSES))
+                                             + "；业务描述放在查询文本，不放在 purpose")
+        return value
+
+    ap.add_argument("--purpose", default="target_evidence", type=controlled_purpose,
+                    help="受控上下文用途：" + ", ".join(sorted(CONTEXT_PURPOSES)))
+    def controlled_identity(validator):
+        def validate(value):
+            try:
+                return validator(value)
+            except ValueError as exc:
+                raise argparse.ArgumentTypeError(str(exc)) from None
+        return validate
+
+    ap.add_argument("--subject", type=controlled_identity(validate_context_subject_digest), help="当前任务 subject SHA-256")
+    ap.add_argument("--session", type=controlled_identity(validate_context_session_id), help="当前任务稳定 session ID")
     ap.add_argument("--risk-required", action="store_true")
     ap.add_argument("--lookup-channel", choices=("cli", "mcp"), default="cli",
                     help=argparse.SUPPRESS)
