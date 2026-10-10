@@ -20,15 +20,17 @@ class IsolationProbeTests(unittest.TestCase):
             paths = tuple(root / name for name in ("workspace", "home", "cache", "session"))
             for path in paths:
                 path.mkdir()
+            backend = root / "unexecuted-backend"
+            backend.write_bytes(b"input validation fixture")
             with self.assertRaises(ValueError):
                 run_isolated_process(("/usr/bin/true",), root, *paths,
-                                     backend_sha256="0" * 64, timeout_seconds=3)
+                                     backend=backend, backend_sha256="0" * 64, timeout_seconds=3)
             with self.assertRaises(ValueError):
                 run_isolated_process(("/usr/bin/true",), root, paths[0], paths[0], paths[2], paths[3],
-                                     backend_sha256="0" * 64, timeout_seconds=3)
+                                     backend=backend, backend_sha256="0" * 64, timeout_seconds=3)
             with self.assertRaises(ValueError):
                 run_isolated_process(("/usr/bin/true",), root, paths[0], root.parent, paths[2], paths[3],
-                                     backend_sha256="0" * 64, timeout_seconds=3)
+                                     backend=backend, backend_sha256="0" * 64, timeout_seconds=3)
 
     def test_execution_uses_closed_namespace_and_redacts_process_bodies(self):
         from adapters.isolation import run_isolated_process
