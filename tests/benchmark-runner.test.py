@@ -144,13 +144,14 @@ class PreparedWorkspaceTests(unittest.TestCase):
         for name, reason in (("Main.py", "FIXTURE_PATH_COLLISION"),
                              ("NUL.txt", "FIXTURE_PATH_NOT_PORTABLE")):
             with self.subTest(name=name):
-                self.git(self.fixture, "update-index", "--add", "--cacheinfo", f"100644,{blob},{name}")
-                self.git(self.fixture, "commit", "-m", "nonportable fixture entry")
+                # Inject only an index entry, never a device-named filesystem file.
+                self.git(self.fixture, "-c", "core.protectNTFS=false", "update-index", "--add", "--cacheinfo", f"100644,{blob},{name}")
+                self.git(self.fixture, "-c", "core.protectNTFS=false", "commit", "-m", "nonportable fixture entry")
                 self.value["fixture"]["commit"] = self.git(self.fixture, "rev-parse", "HEAD").strip()
                 with self.assertRaisesRegex(ValueError, reason):
                     prepare_pair(self.scenario(), self.outputs)
                 self.assertEqual(list(self.outputs.iterdir()), [])
-                self.git(self.fixture, "update-index", "--force-remove", "--", name)
+                self.git(self.fixture, "-c", "core.protectNTFS=false", "update-index", "--force-remove", "--", name)
 
     def fake_agent(self, source):
         script = self.root / "agent.py"

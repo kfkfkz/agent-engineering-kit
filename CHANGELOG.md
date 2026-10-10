@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- 修复干净 checkout 遗漏公开历史场景文档的问题，保持内部文档默认不分发；修复 SQLite 验证器连接未关闭导致 Windows 清理覆盖原始失败分类，以及 Windows 保留文件名/UTF-8 诊断测试夹具兼容性。
+
 - 修复 Benchmark 空验证命令被误计成功；新增 PASS/FAIL/NOT_EVALUATED/INFRA_ERROR 结果状态，保留旧评测入口及 success 字段，配对报告区分未评测与失败。
 - 非幂等 WorkUnit 进入 FAILED_RETRYABLE 或 STALE 后仍核验提交回执，避免恢复建议绕过 COMMITTED/STARTED 保护；已提交但所需身份变化时转人工核对，旧提交不授权当前任务。
 - 统一 Overview、repo-delivery 与 Bounded 路线的工作量/风险分离规则，移除以风险标签直接升径的旧描述。

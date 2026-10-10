@@ -1,6 +1,8 @@
 """Public synthetic cases have independently verified bad/good reference behavior."""
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -76,6 +78,46 @@ class SyntheticScenarioTests(unittest.TestCase):
         for path, content in reference_files("SC-004"):
             (workspace / path).write_bytes(content)
         self.assertEqual(run_checks(loaded, workspace).status, "PASS")
+
+    def test_sqlite_verifier_closes_all_handles_before_temp_directory_cleanup(self):
+        loaded = materialize_scenario("SC-004", self.root)
+        workspace = prepare_pair(loaded, self.root).workspace("aek").path
+        for path, content in reference_files("SC-004"):
+            (workspace / path).write_bytes(content)
+        checker = loaded.scenario_root / loaded.scenario.checks[0].entrypoint
+        probe = '''import json, runpy, sqlite3, sys
+connections = []
+class TrackedConnection(sqlite3.Connection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.closed = False
+        connections.append(self)
+    def close(self):
+        self.closed = True
+        return super().close()
+original = sqlite3.connect
+def connect(*args, **kwargs):
+    return original(*args, factory=TrackedConnection, **kwargs)
+sqlite3.connect = connect
+checker, workspace = sys.argv[1:]
+sys.argv = [checker, workspace]
+runpy.run_path(checker, run_name="__main__")
+print(json.dumps({"connections": len(connections), "all_closed": all(c.closed for c in connections)}))
+'''
+        result = subprocess.run([sys.executable, "-I", "-c", probe, str(checker), str(workspace)],
+                                capture_output=True, timeout=15, check=True)
+        observed = json.loads(result.stdout)
+        self.assertEqual(observed["connections"], 5)
+        self.assertTrue(observed["all_closed"])
+
+    def test_only_the_public_history_fixture_is_exempted_from_docs_ignore(self):
+        for path, expected in (("tests/benchmark/scenarios/SC-005/fixture/docs/memory/external-keys.md", 1),
+                               ("docs/private-design.md", 0),
+                               ("tests/benchmark/scenarios/SC-005/fixture/docs/memory/private.md", 0)):
+            with self.subTest(path=path):
+                result = subprocess.run(["git", "check-ignore", "--no-index", "--quiet", path],
+                                        cwd=REPO, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, expected)
 
     def test_history_constraint_is_same_for_both_variants_and_judged_by_behavior(self):
         loaded = materialize_scenario("SC-005", self.root)

@@ -19,7 +19,7 @@ class MemoryContextInputTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / "memory-recall"), "dependency migration", str(repo),
                                      "--context-json", "--route", "standard", "--stage", "design", "--purpose", purpose,
                                      "--subject", "d" * 64, "--session", "purpose-test"],
-                                    cwd=repo, capture_output=True, text=True, timeout=5)
+                                    cwd=repo, capture_output=True, text=True, encoding="utf-8", timeout=5)
             self.assertEqual(result.returncode, 2)
             self.assertNotIn("Traceback", result.stderr)
             self.assertNotIn("private-canary", result.stdout + result.stderr)
@@ -37,7 +37,7 @@ class MemoryContextInputTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ROOT / "memory-recall"), "query", str(repo),
                                      "--context-json", "--route", "direct", "--subject", "d" * 64,
                                      "--session", "../../../outside"], cwd=repo,
-                                    capture_output=True, text=True, timeout=5)
+                                    capture_output=True, text=True, encoding="utf-8", timeout=5)
             self.assertEqual(outside.read_bytes(), original)
             self.assertEqual(result.returncode, 2)
             self.assertNotIn("Traceback", result.stderr)

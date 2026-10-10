@@ -760,6 +760,31 @@
       "bin-domain-check": "canonical_sha256:aef3751beba4015518881b17970bfd507939ee735e3a7074d322aefbeed2048c",
       "bin-spec-migrate": "canonical_sha256:859858439104aeeb4d7b766f757bce54eaaa41d688ab43b712bec02891a0ac93"
     },
+    "d6c3c16": {
+      "agents-md-block": "canonical_sha256:00710989dc7d6afc6c963e63ef5c0973daf3ff8559789949c8658600e24ff760",
+      "bin-agent-engineering-mcp": "canonical_sha256:4da1e36a33ef7c9fe987a69bbf9a195fc9b449f32e3e95a717d723bdd9bd64d0",
+      "bin-memory-recall": "canonical_sha256:5b16418cae4afb21801509bfa72a0272a659b0a5ccd1f24485c6a69fbf18af07",
+      "claude-md-block": "canonical_sha256:3ef1db688e154db31d0f888df404d70aa4dda1d5bf6c7b36b9f072c0d0bcae86",
+      "lib-aek-application-identity-py": "canonical_sha256:cbe7d33859ca70ac7605dfce523499795ccf0d73c638275dec0cac3906da3c66",
+      "lib-aek-application-memory_recall-py": "canonical_sha256:c27c5335dcca4a9d4f8933a408c97a0f23bab5a5935cb61f522e771a5752bfde",
+      "lib-aek-core-context-budget-py": "canonical_sha256:71ed8fe124b4c43bdb84123008b973863ec65e6162c91fc96c589f78dad8f1c0",
+      "lib-aek-core-context-identity-py": "canonical_sha256:f844c8ea6d9aa906e6c22941835c3e87ec7907042e0bde69fcff39e7ed0bda1f",
+      "lib-aek-core-context-telemetry-py": "canonical_sha256:28ea2c6f91f25b7f975b30f21894ff3b81bad2aa7c2d9d70615acc43820a7788",
+      "lib-aek-core-work_unit-py": "canonical_sha256:e84720e3c547c99284b210043cbc1315a4976e50ef9ab09ba6fea456888cf80b",
+      "req-tpl-flow": "canonical_sha256:f5133619f11537440670a62ec6f37d2461e0000ece3a1bf6db311471d0e2215c",
+      "skill-agents-design-pipeline": "canonical_sha256:dfb46e1fe22befbc8c45db81d71affec37d10a9d4878cb40a40cda52b08de11b",
+      "skill-agents-repo-delivery": "canonical_sha256:7ef886df846955152539ac52c4ce0276cad8f92ee412dae5838d7b8c6b9b5c74",
+      "skill-agents-repo-delivery-reference-bounded": "canonical_sha256:913817cc1941f9af9a00437ede8b4a7bc3611e06f390d753486752404538b9d7",
+      "skill-agents-task-handoff": "canonical_sha256:0b0f36c7b4aa82dec9a0eb26f218efb0bf41c8004bafb9e32220c2e6d3c8dea4",
+      "skill-claude-design-pipeline": "canonical_sha256:dfb46e1fe22befbc8c45db81d71affec37d10a9d4878cb40a40cda52b08de11b",
+      "skill-claude-repo-delivery": "canonical_sha256:7ef886df846955152539ac52c4ce0276cad8f92ee412dae5838d7b8c6b9b5c74",
+      "skill-claude-repo-delivery-reference-bounded": "canonical_sha256:913817cc1941f9af9a00437ede8b4a7bc3611e06f390d753486752404538b9d7",
+      "skill-claude-task-handoff": "canonical_sha256:0b0f36c7b4aa82dec9a0eb26f218efb0bf41c8004bafb9e32220c2e6d3c8dea4"
+    },
+    "d6c3c16:legacy-section": {
+      "agents-md-block": "canonical_sha256:16b569bbcdc853bd0c9db8b1e8a62c98ac1f7eee2d581eb9391f33fbcd7d4479",
+      "claude-md-block": "canonical_sha256:c7ca005cb673381556586703f961a3b159e39ca3c9b58cbcf56231bb11d86608"
+    },
     "dc629b4": {
       "bin-agent-engineering-mcp": "canonical_sha256:ef435d927bba34e381e93ee5f9782dd0f000e06f693d2dcecdd8f3300ae25528",
       "bin-memory-build": "canonical_sha256:2261aa4d71a1d6c6e737bc6b31a9f5bab5435521d0237d5235abdedb1ec1c3ad",

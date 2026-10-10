@@ -17,3 +17,10 @@ __pycache__/
 
 # 内部文档（设计/回执/项目记忆）：不随公开仓库分发
 docs/
+
+# Only this synthetic public fixture is distributable; private docs stay ignored.
+!tests/benchmark/scenarios/SC-005/fixture/docs/
+tests/benchmark/scenarios/SC-005/fixture/docs/*
+!tests/benchmark/scenarios/SC-005/fixture/docs/memory/
+tests/benchmark/scenarios/SC-005/fixture/docs/memory/*
+!tests/benchmark/scenarios/SC-005/fixture/docs/memory/external-keys.md
