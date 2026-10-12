@@ -1,4 +1,4 @@
-# Agent Engineering Kit（AEK）
+# Agent Engineering Kit（aek）
 
 让 Claude Code、Codex 等 Coding Agent 在现有仓库中按工程规则完成开发：先理解项目，再按任务复杂度选择流程，最后用审查和验证证据交付。
 
