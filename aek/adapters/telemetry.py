@@ -101,6 +101,16 @@ class ContextLedger:
         self._cached_identity: tuple[int, int, int, int, int] | None = None
         self._cached_last: ContextEvent | None = None
         self._cached_total: int | None = None
+        self._cached_by_stage: dict[str, int] = {}
+
+    def _cache_rows(self, rows: tuple[ContextEvent, ...], info: os.stat_result) -> None:
+        self._cached_identity = self._identity(info)
+        self._cached_last = rows[-1] if rows else None
+        self._cached_total = sum(row.delivered_bytes for row in rows)
+        self._cached_by_stage = {}
+        for row in rows:
+            self._cached_by_stage[row.stage] = (
+                self._cached_by_stage.get(row.stage, 0) + row.delivered_bytes)
 
     @staticmethod
     def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -158,29 +168,28 @@ class ContextLedger:
                 if os.fstat(fd).st_size != committed_end:
                     os.ftruncate(fd, committed_end)
                     os.fsync(fd)
-                self._cached_identity = self._identity(os.fstat(fd))
-                self._cached_last = rows[-1] if rows else None
-                self._cached_total = sum(row.delivered_bytes for row in rows)
+                self._cache_rows(rows, os.fstat(fd))
                 return rows
             finally:
                 os.close(fd)
 
-    def total_bytes(self) -> int:
-        """Return validated delivered bytes, reusing an unchanged stream prefix."""
+    def total_bytes(self, *, stage: str | None = None) -> int:
+        """Return global or stage bytes, reusing the same validated chain cache."""
+        if stage is not None and (not isinstance(stage, str)
+                                 or stage not in {"routing", "design", "execution", "closeout"}):
+            raise ValueError("unknown accounting stage")
         with _exclusive_lock(self.lock_path):
             fd = self._open()
             try:
                 identity = self._identity(os.fstat(fd))
                 if identity == self._cached_identity and self._cached_total is not None:
-                    return self._cached_total
+                    return self._cached_total if stage is None else self._cached_by_stage.get(stage, 0)
                 rows, committed_end = self._read_rows(fd)
                 if os.fstat(fd).st_size != committed_end:
                     os.ftruncate(fd, committed_end)
                     os.fsync(fd)
-                self._cached_identity = self._identity(os.fstat(fd))
-                self._cached_last = rows[-1] if rows else None
-                self._cached_total = sum(row.delivered_bytes for row in rows)
-                return self._cached_total
+                self._cache_rows(rows, os.fstat(fd))
+                return self._cached_total if stage is None else self._cached_by_stage.get(stage, 0)
             finally:
                 os.close(fd)
 
@@ -199,6 +208,7 @@ class ContextLedger:
                     rows, committed_end = self._read_rows(fd)
                     previous = rows[-1] if rows else None
                     previous_total = sum(row.delivered_bytes for row in rows)
+                    self._cache_rows(rows, os.fstat(fd))
                 if os.fstat(fd).st_size != committed_end:
                     os.ftruncate(fd, committed_end)
                     os.fsync(fd)
@@ -212,6 +222,8 @@ class ContextLedger:
                 self._cached_identity = self._identity(os.fstat(fd))
                 self._cached_last = row
                 self._cached_total = previous_total + row.delivered_bytes
+                self._cached_by_stage[row.stage] = (
+                    self._cached_by_stage.get(row.stage, 0) + row.delivered_bytes)
                 return row
             finally:
                 os.close(fd)

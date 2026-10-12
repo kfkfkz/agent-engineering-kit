@@ -173,6 +173,7 @@ def build_context_report(
     events: tuple[ContextEvent, ...], *, coverage: str,
     expected_channels: tuple[str, ...], observed_channels: tuple[str, ...],
     bypass_detected: bool, delivered_byte_limit: int | None = None,
+    stage: str | None = None,
 ) -> ContextReport:
     if not isinstance(events, tuple):
         raise ValueError("events must be an immutable tuple")
@@ -193,6 +194,13 @@ def build_context_report(
     if events and (len({event.session_id for event in events}) != 1
                    or len({event.subject_digest for event in events}) != 1):
         raise ValueError("report contains mixed sessions or subjects")
+    stream_digest = events[-1].event_hash if events else _ZERO
+    if stage is not None:
+        if not isinstance(stage, str) or stage not in _STAGES:
+            raise ValueError("unknown report stage")
+        # Validate the entire original chain before selecting accounting rows.
+        # Keep its digest; never fabricate a new chain from filtered events.
+        events = tuple(event for event in events if event.stage == stage)
     if any(event.channel not in observed for event in events):
         raise ValueError("event claims an unobserved channel")
     unobserved = tuple(sorted(expected - observed))
@@ -210,7 +218,7 @@ def build_context_report(
         schema_version=2, coverage=coverage, delivered_bytes=delivered,
         delivered_chars=sum(event.delivered_chars for event in events),
         logical_bytes=sum(event.logical_bytes for event in events),
-        stream_digest=events[-1].event_hash if events else _ZERO,
+        stream_digest=stream_digest,
         observed_channels=tuple(sorted(observed)),
         unobserved_channels=unobserved,
         by_source_kind=tuple((kind,

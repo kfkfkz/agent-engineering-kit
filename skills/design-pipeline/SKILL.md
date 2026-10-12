@@ -130,32 +130,44 @@ context 的 stage 为 `design`，purpose=`target_evidence` 或审查的 `review_
 ### 3. 硬校验循环
 
 ```bash
-.repo-memory-kit/bin/doc-gate check <SDD目录> --stage <阶段>
+.repo-memory-kit/bin/doc-gate check <SDD目录> --stage <阶段> --summary --json
 ```
 
-有 FAIL → 按 `hard-checks.json` 的 group/name **定向修复**（不重写全文），重跑直到全过。
+读取 `schema_version/stage/status/summary/failures/full_result_ref/result_digest`；summary 只压缩输出，
+完整硬校验仍执行，不能把预检成功当阶段批准。有 FAIL → 按失败规则与位置**定向修复**
+（不重写全文）；需补证时从 `full_result_ref` 展开并核验完整结果字节的摘要，再重跑。
 薄输入拒绝：需求分析场景/验收还是占位符 → 停止生成，向用户报告"需求意图不完整，
 请维护者补齐原始需求或口径"——不带空意图往下游走。
 
 ### 4. AI Reviewer（sensor——不是你裁决）
 
-用**未参与生成的独立子 Agent**（可用时）做评审；不可用时清空假设做第二遍，
+用**未参与生成的独立子 Agent**（可用且上层指令允许委派时）做评审；不可用时清空假设做第二遍，
 并在 issues.json 中写 `"reviewer": "same-context"`（披露）。
 
 硬校验通过后，Agent 内部运行
-`.repo-memory-kit/bin/doc-gate review-input <SDD目录> --stage <阶段> --json`。
+`.repo-memory-kit/bin/doc-gate review-input <SDD目录> --stage <阶段> --schema-version 2 --json`。
+旧 CLI 未指定版本时仍是 v1；本技能显式使用 v2，不把旧 receipt 改写成新版证明。
 由 ReviewService 决定 `request.mode=full|incremental`：只把 `request.full_documents`
-或 `request.section_documents`（二者恰有一个非空）和 `request.supporting_context` 送给 reviewer，
-不得自行扩缩章节。解析缺口、标题/引用/依赖变化或旧证明不可用会自动选择 full；receipt
+或 `request.section_documents`（二者恰有一个非空），加 `request.reference_sections` 的本阶段
+必要背景正文与 `request.supporting_context` 送给 reviewer；携带机器生成的 `scope_proof`，
+不得自行扩缩章节。目标是变更/未决问题及其消费者；provider/global 是必须核验的背景，
+不能只发指针，也不能因 `cache_hit` 免交付或抵扣实际已发正文。合法 full sensor 即使带 Issue
+也只建立材料基线，不代表批准。解析缺口、全局约束/标题/引用/实际上游字节或凭证变化、旧证明
+不可用会自动选择 full；无标记/未知边界的旧文档不能由 Agent 补标记后直接增量。receipt
 失配时重新生成输入并按工具结论全文重送，不能继续沿用旧评审。
+
+输入准备若返回无进展/需定位/达到上限的停止诊断，保留现有 Gate/Lifecycle 和未决问题，
+不调用新 Reviewer。新增相关证据后才恢复；改 REV-ID、无关编辑、删除 Gate 或换会话不重置
+原 `max_iterations=3` 上限，恢复先核验当前来源、完整问题集、已有轮次及 FIXED claim。
 
 Reviewer 在这份受控输入上做**分层取证**：已验证事实直接采信（业务域地图口径、已确认
 记忆条目、上游阶段已核实的声明与取证），只对新增/未覆盖/可疑声明做代码查证
 （`codebase-memory`）。评审不是文档对文档，而是文档对事实；内部自洽但现状失实的设计
 必须被打回。不从零重复核查已有结论。
 
-评审输出 `reviews/<阶段>.issues.json`，并把 review-input 返回的 `receipt` 原样写入
-`reviews/<阶段>.review-receipt.json`。receipt 只证明实际送审输入，不代表 PASS；不得手工改
+评审输出 `reviews/<阶段>.issues.json`，并把 review-input 返回的 `receipt` 写入
+`reviews/<阶段>.review-receipt.json`；无定位澄清时原样保存，需要定位时仅实际 Reviewer 添加
+下述合法 `issue_locations`，原输入绑定字段保持不变。receipt 只证明实际送审输入，不代表 PASS；不得手工改
 request/receipt digest。issues 无总分、无 PASS/FAIL、不改文档正文：
 
 ```json
@@ -178,6 +190,14 @@ request/receipt digest。issues 无总分、无 PASS/FAIL、不改文档正文�
 评审即过期，必须重评；每条新 issue 必含 id/severity/location/problem/evidence/
 required_change/affected_ids，severity 只允许 blocker/major/minor。`affected_ids`
 填受影响的 A/F/D/T/TC ID；无法定位时写 `UNSCOPED`，不得猜 ID。
+
+incremental 发现未知位置/范围缺口时先保留 OPEN occurrence，再按机器结论扩大或 full，
+未覆盖的问题不能 VERIFIED/CLOSED。当前 full 已完整覆盖材料仍有未知位置时，停止相同
+全文重送，等待定位证据；full 之外的范围在已有权限/计划内显式扩大，否则交维护者裁决。
+需要澄清旧问题位置时，仅实际 Reviewer 在本轮 full receipt 的 `issue_locations` 返回
+`{fingerprint, document, heading, section_digest}`；必须绑定原 fingerprint、当前实际章节字节，
+并覆盖该问题全部已知 owner/位置。Author 提示只是待验证背景，不改旧 occurrence；Gate
+核验合法定位后仍须有效 FIXED 声明、当前范围复核与原状态链，不能靠定位摘要直接关闭。
 
 rubric 五维：
 1. **事实接地**（首要，分层增量）——现状声明分三档处理：
@@ -217,11 +237,12 @@ lifecycle snapshot 的确定性 PASS gate 才能派生 `CLOSED`；Agent 不手�
 - **PASS（退出码 0）** → 文档冻结（gate.json 记录哈希）→ **回填索引行**：更新
   `docs/01-需求/README.md` 中本需求的"当前功能开发阶段"列（只动自己的行——
   多人协作下公共索引冲突面最小）→ 进入下一阶段。
-- **NEEDS_REVISION（1）** → 只修 gate.json 指定的问题（REV-ID/hard 项），回步骤 3。
+- **NEEDS_REVISION（1）** → 只修 gate.json 指定的问题（REV-ID/hard 项），有新相关证据后回步骤 3。
   **定向修改，禁止借机重写全文**——防设计漂移。完成修改后按步骤 4 写 FIXED claim 并重送当前
   Review；不得仅清空 issues.json 或复用旧 receipt 来制造通过。
 - **BLOCKED（2）** → 连续 3 轮不达标。停止迭代，向用户汇总：已试轮次、未解决问题、
   建议的人工裁决点。**不得通过反复重试碰运气**。
+  无进展或当前 full 问题仍未定位时可提前停止；同一已接收观察不增加伪轮次，也不清空历史重开。
 
 ### 6. 业务流程设计（人工评审关口）
 
@@ -315,3 +336,5 @@ canonical 入口（Claude Code：`/repo-delivery`；Codex：`$repo-delivery`）�
 
 迭代式评审、sensor/judge 分离与有界修订循环改编自 kit 设计文档
 `docs/design/document-pipeline.md`（ChatGPT 方案 + Claude 修正综合）。
+v2 目标/背景、简洁预检及无进展恢复遵循
+`docs/03-SDD/005-AEK-1.0.5评审效率与收敛/详细设计.md` 与 `API设计.md`；不扩展原批准权限。

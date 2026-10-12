@@ -225,6 +225,87 @@ else
     bad "ReferenceCatalog 或安装 package 不可用"
 fi
 
+# 从安装后的 Skill 提取内部参数，再用安装后的 CLI 验证实际入口；不导入源码服务。
+if python3 - "$SRC" "$P" "$T" <<'PY'
+import ast
+import hashlib
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+src, target, tmp = map(Path, sys.argv[1:])
+fixture_tree = ast.parse((src / "tests/review-v2.test.py").read_text(encoding="utf-8"))
+fixtures = {
+    node.targets[0].id: ast.literal_eval(node.value)
+    for node in fixture_tree.body
+    if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+    and node.targets[0].id in {"REQUIREMENTS", "OUTLINE"}
+}
+env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+env.pop("PYTHONPATH", None)
+cli = target / ".repo-memory-kit/bin/doc-gate"
+
+def invoke(sdd, verb, *args):
+    return subprocess.run([sys.executable, str(cli), verb, str(sdd), *args],
+                          cwd=tmp, env=env, capture_output=True, text=True,
+                          encoding="utf-8", check=False)
+
+def payload(proc, expected_code):
+    assert proc.returncode == expected_code, proc.stdout + proc.stderr
+    return json.loads(proc.stdout)
+
+def internal_flags(skill, verb):
+    match = re.search(r"\.repo-memory-kit/bin/doc-gate " + verb
+                      + r" <SDD目录> --stage <阶段>([^`\n]*)", skill)
+    assert match, f"installed skill has no executable {verb} entry"
+    return shlex.split(match.group(1).rstrip("。"))
+
+for tree in ("agents", "claude"):
+    skill = (target / f".{tree}/skills/design-pipeline/SKILL.md").read_text(encoding="utf-8")
+    check_flags = internal_flags(skill, "check")
+    review_flags = internal_flags(skill, "review-input")
+    repo = tmp / f"skill-cli-{tree}"
+    (repo / ".git").mkdir(parents=True)
+    sdd = repo / "docs/03-SDD/001-review"
+    sdd.mkdir(parents=True)
+    requirements = fixtures["REQUIREMENTS"].replace("冻结状态：未冻结", "冻结状态：已冻结")
+    (sdd / "需求分析.md").write_text(requirements, encoding="utf-8")
+    (sdd / "概要设计.md").write_text(fixtures["OUTLINE"], encoding="utf-8")
+    payload(invoke(sdd, "freeze", "--stage", "需求分析", "--by", "synthetic-reviewer", "--json"), 0)
+    legacy = payload(invoke(sdd, "review-input", "--stage", "概要设计", "--json"), 0)
+    assert legacy["request"]["schema_version"] == 1
+    prepared = payload(invoke(sdd, "review-input", "--stage", "概要设计", *review_flags), 0)
+    request, receipt = prepared["request"], prepared["receipt"]
+    assert request["schema_version"] == receipt["schema_version"] == 2
+    assert request["mode"] == "full"
+    assert dict(request["full_documents"]) == {"概要设计.md": fixtures["OUTLINE"]}
+    assert dict(request["supporting_context"])["upstream/需求分析/需求分析.md"] == requirements
+    assert request["scope_proof"] and receipt["scope_proof_digest"]
+    assert not (sdd / "reviews/概要设计.review-baseline.json").exists()
+    for expected_code, text in ((0, fixtures["OUTLINE"]), (1, "# 概要设计\n输入不完整。\n")):
+        (sdd / "概要设计.md").write_text(text, encoding="utf-8")
+        summary = payload(invoke(sdd, "check", "--stage", "概要设计", *check_flags), expected_code)
+        assert set(summary) == {"schema_version", "stage", "status", "summary",
+                                "failures", "full_result_ref", "result_digest"}
+        assert summary["schema_version"] == 1 and summary["stage"] == "概要设计"
+        raw = (sdd / summary["full_result_ref"]).read_bytes()
+        assert summary["result_digest"] == hashlib.sha256(raw).hexdigest()
+        complete = json.loads(raw)
+        assert summary["failures"] == [row for row in complete["checks"] if row["status"] == "FAIL"]
+        assert summary["status"] == ("PASS" if expected_code == 0 else "FAIL")
+        assert bool(summary["failures"]) == bool(expected_code)
+        assert summary["summary"] == complete["summary"]
+PY
+then
+    ok "两棵安装 Skill 实际启用 v2/summary，保留 v1 默认、上游正文与完整预检证据"
+else
+    bad "安装 Skill 的 v2/summary 实际入口或证据绑定失败"
+fi
+
 # design-pipeline 必须从仓库根/同级 skill 定位 archify；不能在
 # docs/03-SDD/<需求>/diagrams 下使用 ../.claude 这个错误相对路径。
 DP="$P/.agents/skills/design-pipeline/SKILL.md"

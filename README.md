@@ -14,7 +14,9 @@ AEK 将 Skills、项目记忆、代码图谱接入和可重复执行的门禁安
 - **凭证随版本变化**：代码、文档、策略或证据变化后，重新检查相关结论；中断任务先核验进度和提交状态再继续。
 - **安全审查留下可复核证据**：依赖采用前核对公告与兼容性，交付时复核真实解析版本和发布物；安全发现的修复、独立复验、审批和关闭分别记录。
 
-当前代码版本为 **1.0.4**，变化见 [Changelog](CHANGELOG.md)；正式发布以 [Releases](https://github.com/kfkfkz/agent-engineering-kit/releases) 和版本标签为准。AEK 不自带模型服务；开发侧离线核验不要求连接模型 API。
+当前代码版本为 **1.0.5**，变化见 [Changelog](CHANGELOG.md) 和 [GitHub Releases](https://github.com/kfkfkz/agent-engineering-kit/releases)。AEK 不自带模型服务；开发侧离线核验不要求连接模型 API。
+
+1.0.5 聚焦文档定向复核、简洁预检与评审停止/恢复；入口仍是原有 Skills，必要背景与安全材料仍完整交付。兼容性与变更范围见 [变更记录](CHANGELOG.md)。
 
 安全机械入口 `security-check` 提供只读 evaluate/report/doctor/plan。可选扫描器不自动安装或下载；当前默认宿主来源与进程隔离不足以授权扫描、审批或关闭，CLI/MCP 不提供自动安全闭环。用户仍通过 `security-review` 获得定向审查与补验建议，详见[使用指南](USAGE.md#安全审查与依赖治理)。
 
@@ -23,7 +25,7 @@ AEK 将 Skills、项目记忆、代码图谱接入和可重复执行的门禁安
 需要 **Python 3.10+**。获取稳定版：
 
 ```bash
-git clone --branch v1.0.4 --depth 1 https://github.com/kfkfkz/agent-engineering-kit.git
+git clone --branch v1.0.5 --depth 1 https://github.com/kfkfkz/agent-engineering-kit.git
 cd agent-engineering-kit
 ```
 

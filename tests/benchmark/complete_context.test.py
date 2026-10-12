@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pin the controlled full-channel fixture stream without claiming CLI parity."""
+"""Pin controls and reject stale 1.0.4 context-reduction evidence for 1.0.5."""
 from __future__ import annotations
 
 import json
@@ -19,12 +19,8 @@ from equivalence import complete_equivalence
 
 ROOT = Path(__file__).resolve().parents[2]
 BASELINE = Path(__file__).with_name("complete-baseline-v1.0.0.json")
-THRESHOLDS = {"direct": 0.50, "bounded": 0.30, "standard": 0.15,
-              "initiative": 0.0}
-
-
 class CompleteReplayTests(unittest.TestCase):
-    def test_pinned_stream_and_provisional_material_reduction(self) -> None:
+    def test_pinned_control_stream_and_current_full_channel_coverage(self) -> None:
         selected = load_baseline(
             BASELINE.with_name("context-baseline-v1.0.0.json"))
         frozen = json.loads(BASELINE.read_text(encoding="utf-8"))
@@ -52,13 +48,10 @@ class CompleteReplayTests(unittest.TestCase):
                                  tuple(sorted(CHANNELS)))
                 self.assertEqual(current.report.observed_channels,
                                  tuple(sorted(CHANNELS)))
-                reduction = (1 - current.report.delivered_bytes /
-                             baseline.report.delivered_bytes)
-                self.assertGreaterEqual(reduction, THRESHOLDS[case.route])
-                self.assertLessEqual(current.report.delivered_chars,
-                                     baseline.report.delivered_chars)
+                self.assertGreater(current.report.delivered_bytes, 0)
+                self.assertGreater(current.report.delivered_chars, 0)
 
-    def test_complete_equivalence_and_release_verdict(self) -> None:
+    def test_old_equivalence_receipts_cannot_authorize_changed_material(self) -> None:
         selected = load_baseline(
             BASELINE.with_name("context-baseline-v1.0.0.json"))
         frozen = json.loads(BASELINE.read_text(encoding="utf-8"))
@@ -66,7 +59,6 @@ class CompleteReplayTests(unittest.TestCase):
             "complete-equivalence-v1.0.4.json").read_text(encoding="utf-8"))
         records = {row["case_id"]: row for row in frozen["cases"]}
         comparisons = []
-        complete_cases = []
         for selected_case in selected.cases:
             record = records[selected_case.case_id]
             case = replace(
@@ -89,17 +81,22 @@ class CompleteReplayTests(unittest.TestCase):
                 "delivered_chars": current.report.delivered_chars,
             }
             comparison = compare_case(case, report, receipt)
-            self.assertEqual(comparison.verdict, "THRESHOLD_MET", comparison)
+            # The checked-in receipt pins 1.0.4 material. 1.0.5 intentionally
+            # makes no Token/context-reduction claim; changed streams require a
+            # new separately approved measurement, so the stale receipt cannot
+            # establish equivalence or a release verdict.
+            self.assertEqual(comparison.verdict, "INVALID", comparison)
+            self.assertIn("equivalence", comparison.reasons)
             comparisons.append(comparison)
-            complete_cases.append(case)
         routes = tuple(aggregate_route(
             route, [row for row in comparisons if row.route == route])
-            for route in THRESHOLDS)
+            for route in ("direct", "bounded", "standard", "initiative"))
         manifest = BaselineManifest(
             1, selected.baseline_commit, selected.metric,
-            "complete_delivered_context", tuple(complete_cases))
-        self.assertEqual(release_verdict(manifest, routes).verdict,
-                         "THRESHOLD_MET")
+            "complete_delivered_context", selected.cases)
+        verdict = release_verdict(manifest, routes)
+        self.assertEqual(verdict.verdict, "INVALID")
+        self.assertIn("invalid_case", verdict.reasons)
 
 
 if __name__ == "__main__":

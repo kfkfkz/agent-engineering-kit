@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,6 +34,21 @@ def event(channel: str = "aek_skill", content: str = "材料") -> ContextEventIn
 
 
 class LedgerTests(unittest.TestCase):
+    def test_stage_selection_preserves_full_chain_validation_and_global_default(self) -> None:
+        first = self.ledger.append(event(content="previous"))
+        second = self.ledger.append(replace(event(content="current"), stage="execution"))
+        arguments = dict(coverage="partial", expected_channels=("aek_skill", "host_native"),
+                         observed_channels=("aek_skill",), bypass_detected=False)
+        scoped = build_context_report(self.ledger.read(), stage="execution", **arguments)
+        self.assertEqual(scoped.delivered_bytes, 7)
+        self.assertEqual(scoped.stream_digest, second.event_hash)
+        self.assertEqual(build_context_report(self.ledger.read(), **arguments).delivered_bytes, 15)
+        with self.assertRaises(ValueError):
+            build_context_report((replace(first, delivered_bytes=999), second),
+                                 stage="execution", **arguments)
+        with self.assertRaises(ValueError):
+            build_context_report(self.ledger.read(), stage=[], **arguments)
+
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

@@ -275,6 +275,7 @@ AEK_PACKAGE_FILES = (
     "core/review/judge.py",
     "core/review/result.py",
     "core/review/incremental.py",
+    "core/review/scope.py",
     "core/review/lifecycle.py",
     "core/policy/__init__.py",
     "core/policy/evaluator.py",

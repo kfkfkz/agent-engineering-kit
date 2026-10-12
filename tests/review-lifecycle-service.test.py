@@ -31,6 +31,23 @@ def claims(snapshot_digest: str, fingerprint: str,
 
 
 class ReviewLifecycleServiceTests(unittest.TestCase):
+    def test_scoped_review_cannot_verify_fixed_issue_without_current_coverage(self) -> None:
+        first = prepare_lifecycle(None, stage="详细设计", subject_digest="a" * 64,
+            request_digest="b" * 64, doc_hashes={"详细设计.md": "c" * 64},
+            issues=(legacy_issue(),), iteration=1, max_iterations=3)
+        fingerprint = first.issues[0].fingerprint
+        pending = prepare_lifecycle(first, stage="详细设计", subject_digest="1" * 64,
+            request_digest="2" * 64, doc_hashes={"详细设计.md": "d" * 64},
+            issues=(), iteration=2, max_iterations=3,
+            claims_text=claims(first.snapshot_digest, fingerprint),
+            verified_fingerprints=())
+        self.assertEqual(pending.issues[0].state, IssueState.FIXED)
+        verified = prepare_lifecycle(pending, stage="详细设计", subject_digest="1" * 64,
+            request_digest="3" * 64, doc_hashes={"详细设计.md": "d" * 64},
+            issues=(), iteration=3, max_iterations=3,
+            verified_fingerprints=(fingerprint,))
+        self.assertEqual(verified.issues[0].state, IssueState.VERIFIED)
+
     def test_legacy_issue_is_normalized_but_not_trusted_to_close(self) -> None:
         snapshot = prepare_lifecycle(
             None, stage="详细设计", subject_digest="a" * 64,

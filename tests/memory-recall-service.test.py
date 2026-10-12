@@ -18,6 +18,30 @@ from aek.core.context.lookup import (
 
 
 class MemoryRecallServiceTests(unittest.TestCase):
+    def test_same_task_can_resume_across_stages_without_rewriting_history(self) -> None:
+        ledger = ContextLedger(self.repo / "resumed.jsonl")
+        first_events = None
+        for stage in ("design", "execution", "design"):
+            budget = resolve_context_budget("standard", stage, "thorough")
+            result = recall_context(self.repo, "database", budget, ledger,
+                session_id="stable-task", subject_digest="e" * 64,
+                risk_required=False,
+                candidate_search=lambda root, query: fallback_candidates(
+                    root, query, limit=budget.memory_candidate_limit),
+                candidate_read=read_candidate,
+                capsule_store=CapsuleStore(self.repo / "capsules"))
+            events = ledger.read()
+            if first_events is None:
+                first_events = events
+            self.assertEqual(events[:len(first_events)], first_events)
+            self.assertEqual(result.report.delivered_bytes,
+                             sum(row.delivered_bytes for row in events if row.stage == stage))
+            self.assertEqual(result.report.stream_digest, events[-1].event_hash)
+            self.assertEqual(result.report.coverage, "partial")
+            self.assertIn("host_native", result.report.unobserved_channels)
+        self.assertEqual(tuple(row.sequence for row in events), tuple(range(1, len(events) + 1)))
+        self.assertEqual(ledger.total_bytes(), sum(row.delivered_bytes for row in events))
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

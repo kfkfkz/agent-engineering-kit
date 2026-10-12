@@ -18,7 +18,7 @@ class LedgerReader(Protocol):
 
 
 class LedgerWriter(Protocol):
-    def total_bytes(self) -> int: ...
+    def total_bytes(self, *, stage: str | None = None) -> int: ...
     def append_text(self, content: str, **kwargs: object) -> ContextEvent: ...
 
 
@@ -47,7 +47,7 @@ def record_context_delivery(
     if expansion_purpose is not None and expansion_purpose != event_purpose:
         raise ValueError("expansion purpose must match the recorded event")
     decision = decide_context_expansion(
-        budget, used_bytes=ledger.total_bytes(),
+        budget, used_bytes=ledger.total_bytes(stage=budget.stage),
         requested_bytes=len(content.encode("utf-8", errors="strict")),
         source=source, purpose=expansion_purpose)
     if decision.action == "REQUIRE_PURPOSE_OR_REROUTE":
@@ -68,8 +68,8 @@ def report_for_budget(
 ) -> ContextReport:
     """Account for prior lower-route events after a monotonic reroute.
 
-    This service is stage-local. A host using one ledger across stages must
-    split/rebuild stage reports without breaking the global hash chain.
+    A task may retain one ledger across stages. Validate the complete chain
+    and route history, then account only for the current stage without rewriting.
     """
     if not isinstance(budget, ContextBudget) or not callable(getattr(ledger, "read", None)):
         raise ValueError("ledger and budget are required")
@@ -78,11 +78,12 @@ def report_for_budget(
     current_rank = _ROUTES.index(budget.route)
     for row in events:
         rank = _ROUTES.index(row.route)
-        if row.stage != budget.stage or rank < previous_rank or rank > current_rank:
+        if rank < previous_rank or rank > current_rank:
             raise ValueError("ledger stage or route transition conflicts with budget")
         previous_rank = rank
     return build_context_report(
         events, coverage=coverage, expected_channels=expected_channels,
         observed_channels=observed_channels, bypass_detected=bypass_detected,
         delivered_byte_limit=budget.stage_byte_limit,
+        stage=budget.stage,
     )

@@ -56,7 +56,9 @@ from aek.core.artifact.registry import ARTIFACT_REGISTRY
 from aek.core.context.budget import resolve_context_budget
 from aek.adapters.change_scope import resolve_base_commit, scan_negative_risks
 from aek.adapters.telemetry import ContextLedger
-from aek.adapters.review_markdown import extract_trace_ids, parse_review_documents
+from aek.adapters.review_markdown import (
+    ReviewMaterialParser, extract_trace_ids, parse_review_documents,
+)
 from aek.adapters.plan_transaction import PlanInvalid, PlanStore
 from aek.adapters.review_lifecycle_store import (
     LifecycleConflict, LifecycleGateStore,
@@ -74,10 +76,13 @@ from aek.application.planning import (
     read_frozen_dynamic_state, rollback_dynamic_state,
 )
 from aek.application.review import (
-    load_review_request, load_review_snapshot, plan_review, review_request_bytes,
+    ReviewRequestV2, full_review_request_v2,
+    load_versioned_review_request, load_review_snapshot, plan_review, plan_review_v2,
+    review_request_bytes,
     review_snapshot_bytes, reviewer_receipt, validate_review_result,
+    review_issue_locations, review_progress_digest,
 )
-from aek.application.review_lifecycle import prepare_lifecycle
+from aek.application.review_lifecycle import prepare_lifecycle, pending_fix_claims
 from aek.core.review.lifecycle import IssueState, project_pass_gate
 from aek.core.review.judge import JudgeInput, judge_gate
 from aek.core.review.result import validate_review_payload
@@ -867,7 +872,8 @@ def run_checks(req_dir: Path, stage: str, dynamic_state=None) -> Checks:
 # ══════════════════════════ gate 判定 ══════════════════════════
 
 def _validate_issues(req_dir: Path, stage: str, spec: dict,
-                     text: str, dynamic_state=None) -> tuple[list[dict] | None, str]:
+                     text: str, dynamic_state=None,
+                     material_parser: ReviewMaterialParser | None = None) -> tuple[list[dict] | None, str]:
     """Compatibility adapter: hash files here, validate immutable input in core."""
     expected = {
         doc: _sha256(req_dir / doc) if (req_dir / doc).is_file() else None
@@ -877,18 +883,19 @@ def _validate_issues(req_dir: Path, stage: str, spec: dict,
     request_path = reviews / f"{stage}.review-request.json"
     if request_path.exists() or request_path.is_symlink():
         try:
-            request = load_review_request(_read_review_bytes(request_path))
+            request = load_versioned_review_request(_read_review_bytes(request_path))
             if request.stage != stage or dict(request.doc_hashes) != expected:
                 return None, "review request 与当前阶段文档不一致，需重新生成评审输入"
             current_path = reviews / f"{stage}.review-current.json"
             current = load_review_snapshot(_read_review_bytes(current_path))
-            dependency = _review_dependency_fingerprint(req_dir, stage, dynamic_state)
+            dependency = _review_dependency_fingerprint(
+                req_dir, stage, dynamic_state, schema_version=request.schema_version)
             documents = {doc: _read(req_dir / doc) for doc in spec["docs"]}
             if (current.stage != stage or current.doc_hashes != request.doc_hashes
                     or current.dependency_fingerprint != dependency
                     or any(value is None for value in documents.values())):
                 return None, "review snapshot 已过期，需重新生成评审输入"
-            material = parse_review_documents(
+            material = (material_parser or ReviewMaterialParser()).parse(
                 stage, {key: value for key, value in documents.items()
                         if value is not None}, dependency)
             if (material.snapshot != current
@@ -897,20 +904,41 @@ def _validate_issues(req_dir: Path, stage: str, spec: dict,
                 return None, "当前 Markdown 章节快照已变化，需重新生成评审输入"
             if request.mode == "incremental":
                 expected_request, _expected_material = _build_review_request(
-                    req_dir, stage, dynamic_state)
+                    req_dir, stage, dynamic_state, schema_version=request.schema_version,
+                    material_parser=material_parser)
                 if request != expected_request:
                     return None, "增量依赖闭包无法从当前证明重算，需全文重新评审"
+            elif isinstance(request, ReviewRequestV2):
+                full = full_review_request_v2(current, documents=material.document_map(),
+                    section_texts=material.section_map(), supporting_context=dict(request.supporting_context))
+                if (request.full_documents != full.full_documents
+                        or request.selected_sections != full.selected_sections
+                        or request.scope_proof["current_snapshot_digest"] != full.scope_proof["current_snapshot_digest"]
+                        or request.scope_proof["boundary_evidence_digest"] != full.scope_proof["boundary_evidence_digest"]):
+                    return None, "全文范围/正文无法从当前来源重算"
             try:
                 receipt_text = _read_review_bytes(
                     reviews / f"{stage}.review-receipt.json").decode("utf-8")
             except (FileNotFoundError, UnicodeDecodeError):
                 return None, "缺少 reviewer receipt，不能证明实际送审输入"
-            checked = validate_review_result(request, text, receipt_text)
+            known = None
+            if isinstance(request, ReviewRequestV2):
+                bindings, _external, _lifecycle = _v2_review_bindings(
+                    req_dir, stage, material, dynamic_state, use_locations=False,
+                    material_parser=material_parser)
+                known = {row["fingerprint"]: tuple(tuple(key) for key in row["section_keys"])
+                         if row["section_keys"] is not None else None for row in bindings}
+            checked = validate_review_result(request, text, receipt_text,
+                current_snapshot=current if isinstance(request, ReviewRequestV2) else None,
+                known_issue_sections=known)
             if checked.state != "VALID" or checked.result is None:
                 return None, ("增量评审证明失效，需重新生成全文评审输入"
                               if checked.state == "FULL_REQUIRED" else checked.reason)
             baseline_path = reviews / f"{stage}.review-baseline.json"
-            if request.mode == "full" and not checked.result.issues:
+            if isinstance(request, ReviewRequestV2):
+                # A v2 material cache is published only after Lifecycle/Gate commit.
+                pass
+            elif request.mode == "full" and not checked.result.issues:
                 _atomic_review_write(baseline_path, review_snapshot_bytes(current))
             elif checked.result.issues:
                 _atomic_review_unlink(baseline_path)
@@ -921,12 +949,56 @@ def _validate_issues(req_dir: Path, stage: str, spec: dict,
     return (list(result.issues) if result is not None else None), error
 
 
+def _publish_full_v2_material_baseline(req_dir: Path, stage: str, gate: dict,
+                                       dynamic_state=None,
+                                       material_parser: ReviewMaterialParser | None = None) -> None:
+    """Cache accepted full material after commit, never cache an approval."""
+    reviews = req_dir / "reviews"
+    path = reviews / f"{stage}.review-request.json"
+    if not path.exists() and not path.is_symlink():
+        return
+    request = load_versioned_review_request(_read_review_bytes(path))
+    if not isinstance(request, ReviewRequestV2) or request.mode != "full":
+        return
+    current = load_review_snapshot(_read_review_bytes(
+        reviews / f"{stage}.review-current.json"))
+    if (request.stage != stage or dict(request.doc_hashes) != gate["doc_hashes"]
+            or current.doc_hashes != request.doc_hashes
+            or current.dependency_fingerprint != request.dependency_fingerprint):
+        raise ValueError("accepted v2 material changed before baseline publication")
+    receipt = _read_review_bytes(reviews / f"{stage}.review-receipt.json")
+    sensor = _read_review_bytes(reviews / f"{stage}.issues.json")
+    material = (material_parser or ReviewMaterialParser()).parse(
+        stage, dict(request.full_documents), request.dependency_fingerprint)
+    bindings, _external, _life = _v2_review_bindings(
+        req_dir, stage, material, dynamic_state, use_locations=False,
+        material_parser=material_parser)
+    known = {row["fingerprint"]: tuple(tuple(key) for key in row["section_keys"])
+             if row["section_keys"] is not None else None for row in bindings}
+    checked = validate_review_result(request, sensor.decode("utf-8"), receipt.decode("utf-8"),
+                                     current_snapshot=current, known_issue_sections=known)
+    if checked.state != "VALID":
+        raise ValueError("v2 material has no accepted full observation")
+    baseline = {
+        "schema_version": 2,
+        "snapshot": json.loads(review_snapshot_bytes(current)),
+        "accepted_full_request_digest": request.request_digest,
+        "accepted_receipt_digest": hashlib.sha256(receipt).hexdigest(),
+        "accepted_sensor_digest": hashlib.sha256(sensor).hexdigest(),
+        "dependency_fingerprint": request.dependency_fingerprint,
+        "boundary_evidence_digest": request.scope_proof["boundary_evidence_digest"],
+    }
+    _atomic_review_write(reviews / f"{stage}.review-baseline.json",
+                         json.dumps(baseline, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":")).encode("utf-8"))
+
+
 def _review_observation_digest(req_dir: Path, stage: str, issues_text: str) -> str:
     """Bind a lifecycle occurrence to both sent input and returned sensor bytes."""
     request_path = req_dir / "reviews" / f"{stage}.review-request.json"
     request_digest = "legacy"
     if request_path.exists() or request_path.is_symlink():
-        request_digest = load_review_request(
+        request_digest = load_versioned_review_request(
             _read_review_bytes(request_path)).request_digest
     payload = {"request_digest": request_digest, "issues_sha256": hashlib.sha256(
         issues_text.encode("utf-8")).hexdigest()}
@@ -1009,7 +1081,7 @@ def _atomic_review_unlink(path: Path) -> None:
 
 
 def _review_dependency_fingerprint(req_dir: Path, stage: str,
-                                   dynamic_state=None) -> str:
+                                   dynamic_state=None, schema_version: int = 1) -> str:
     root = _repo_root(req_dir)
     policy = _load_policy(root)
     reviews = req_dir / "reviews"
@@ -1035,21 +1107,144 @@ def _review_dependency_fingerprint(req_dir: Path, stage: str,
     security = _review_security_context(req_dir, stage)
     if security is not None:
         payload["security_material_digest"] = hashlib.sha256(security.encode("utf-8")).hexdigest()
+    if schema_version == 2:
+        payload["schema_version"] = 2
+        payload["rubric"] = "design-pipeline-review-v2"
+        payload["actual_context_hashes"] = {
+            name: hashlib.sha256(text.encode("utf-8")).hexdigest()
+            for name, text in _review_supporting_context(req_dir, stage, dynamic_state).items()}
+        payload["upstream_credentials"] = {
+            f"{up}.{suffix}": hashlib.sha256(_read_review_bytes(
+                reviews / f"{up}.{suffix}")).hexdigest()
+            for up in _effective_stage_spec(stage, dynamic_state)["upstream"]
+            for suffix in ("gate.json", "plan-binding.json")
+            if (reviews / f"{up}.{suffix}").exists()}
     return hashlib.sha256(json.dumps(
         payload, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def _build_review_request(req_dir: Path, stage: str, dynamic_state=None):
+def _v2_review_bindings(req_dir, stage, material, dynamic_state=None, *,
+                        use_locations=True, lifecycle_snapshot=None,
+                        material_parser: ReviewMaterialParser | None = None):
+    """Resolve all pending occurrences; explicit source conflicts stay unknown."""
+    spec = _effective_stage_spec(stage, dynamic_state)
+    external_ids = set()
+    for upstream in spec["upstream"]:
+        state, why = stage_frozen(req_dir, upstream, dynamic_state)
+        if state != "FROZEN":
+            raise ValueError(f"v2 upstream is not frozen: {upstream}: {why}")
+        docs = {doc: _read_review_bytes(req_dir / doc).decode("utf-8")
+                for doc in _effective_stage_spec(upstream, dynamic_state)["docs"]}
+        upstream_material = (material_parser or ReviewMaterialParser()).parse(
+            upstream, docs, material.snapshot.dependency_fingerprint)
+        if not upstream_material.snapshot.parse_complete or upstream_material.snapshot.unknown_edges:
+            raise ValueError("v2 upstream source definitions are not complete")
+        external_ids.update(item for section in upstream_material.snapshot.sections for item in section.defines_ids)
+    providers = {item: section.key for section in material.snapshot.sections for item in section.defines_ids}
+    lifecycle = lifecycle_snapshot or LifecycleGateStore(req_dir / "reviews", stage).recover()
+    bindings = []
+    if lifecycle is not None:
+        for item in lifecycle.issues:
+            if item.state == IssueState.CLOSED:
+                continue
+            occurrence = item.occurrences[-1]
+            tokens = set(re.findall(r"(?<![A-Za-z0-9_])(?:A|F|D|T|TC-)[1-9][0-9]*(?![A-Za-z0-9_])",
+                                   occurrence.location)) | set(occurrence.affected_ids)
+            keys = sorted({providers[token] for token in tokens if token in providers})
+            named_docs = set(re.findall(r"([^\s/\\:：]+\.md)", occurrence.location))
+            explicit = [section.key for section in material.snapshot.sections
+                        if section.heading in occurrence.location and " / " in section.heading]
+            # A named non-owner/global leaf takes precedence over ID hints.
+            leaf_names = {section.heading.rsplit(" / ", 1)[-1]: section for section in material.snapshot.sections}
+            named_global = any(name in occurrence.location and not section.defines_ids
+                               for name, section in leaf_names.items()
+                               if name not in {"<preamble>", "<whole-document>"} and len(name) > 1
+                               and name not in {stage, "功能点设计", "业务逻辑", "接口详细设计"})
+            if ("UNSCOPED" in occurrence.location or not keys or named_global
+                    or tokens - providers.keys() - external_ids
+                    or named_docs - set(material.document_map())
+                    or (named_docs and any(doc not in named_docs for doc, _ in keys))
+                    or (explicit and not set(explicit).issubset(keys))):
+                keys = None
+            bindings.append({"fingerprint": item.fingerprint, "state": item.state.value,
+                             "section_keys": [list(key) for key in keys] if keys else None})
+    if use_locations and bindings:
+        reviews = req_dir / "reviews"
+        try:
+            baseline = json.loads(_read_review_bytes(reviews / f"{stage}.review-baseline.json"))
+            receipt = _read_review_bytes(reviews / f"{stage}.review-receipt.json")
+            saved = load_versioned_review_request(_read_review_bytes(reviews / f"{stage}.review-request.json"))
+            sensor = _read_review_bytes(reviews / f"{stage}.issues.json")
+            if (isinstance(saved, ReviewRequestV2) and baseline.get("schema_version") == 2
+                    and baseline["accepted_full_request_digest"] == saved.request_digest
+                    and baseline["accepted_receipt_digest"] == hashlib.sha256(receipt).hexdigest()
+                    and baseline["accepted_sensor_digest"] == hashlib.sha256(sensor).hexdigest()):
+                known = {row["fingerprint"]: tuple(tuple(key) for key in row["section_keys"])
+                         if row["section_keys"] is not None else None for row in bindings}
+                located = review_issue_locations(saved, receipt.decode("utf-8"), material.snapshot, known)
+                for row in bindings:
+                    if row["fingerprint"] in located:
+                        row["section_keys"] = [list(key) for key in located[row["fingerprint"]]]
+        except (OSError, KeyError, TypeError, ValueError):
+            # Old, changed or unaccepted locators cannot shrink the next input.
+            pass
+    return tuple(bindings), tuple(sorted(external_ids)), lifecycle
+
+
+def _v2_progress(req_dir, stage, request, material, dynamic_state=None, *,
+                 lifecycle=None, receipt=None,
+                 material_parser: ReviewMaterialParser | None = None):
+    bindings, external_ids, loaded = _v2_review_bindings(req_dir, stage, material, dynamic_state,
+        lifecycle_snapshot=lifecycle, material_parser=material_parser)
+    loaded = lifecycle or loaded
+    if loaded is None:
+        return None, ()
+    claims_path = req_dir / "reviews" / f"{stage}.issue-claims.json"
+    claims_text = _read_review_bytes(claims_path).decode("utf-8") if claims_path.exists() or claims_path.is_symlink() else None
+    claims = pending_fix_claims(loaded, claims_text, dict(request.doc_hashes))
+    locations = {}
+    if receipt is not None:
+        known = {row["fingerprint"]: tuple(tuple(key) for key in row["section_keys"])
+                 if row["section_keys"] is not None else None for row in bindings}
+        locations = review_issue_locations(request, receipt, material.snapshot, known)
+        # A full receipt accepted by this gate becomes the next persisted
+        # baseline. Mirror its trusted bindings now so the progress digest
+        # matches the next invocation after that baseline is published.
+        for row in bindings:
+            if row["fingerprint"] in locations:
+                row["section_keys"] = [list(key) for key in
+                                       locations[row["fingerprint"]]]
+    return review_progress_digest(request, material.snapshot, bindings, external_ids,
+        material.document_map(), material.section_map(), claims), bindings
+
+
+def _build_review_request(req_dir: Path, stage: str, dynamic_state=None,
+                          schema_version: int = 1,
+                          material_parser: ReviewMaterialParser | None = None):
     spec = _effective_stage_spec(stage, dynamic_state)
     documents = {doc: _read(req_dir / doc) for doc in spec["docs"]}
     missing = [doc for doc, text in documents.items() if text is None]
     if missing:
         raise ValueError("阶段文档不可读: " + "、".join(missing))
-    dependency = _review_dependency_fingerprint(req_dir, stage, dynamic_state)
-    material = parse_review_documents(
+    dependency = _review_dependency_fingerprint(
+        req_dir, stage, dynamic_state, schema_version=schema_version)
+    material = (material_parser or ReviewMaterialParser()).parse(
         stage, {doc: text for doc, text in documents.items() if text is not None},
         dependency)
+    if schema_version == 2:
+        baseline_path = req_dir / "reviews" / f"{stage}.review-baseline.json"
+        baseline = (_read_review_bytes(baseline_path)
+                    if baseline_path.exists() or baseline_path.is_symlink() else None)
+        bindings, external_ids, _lifecycle = _v2_review_bindings(
+            req_dir, stage, material, dynamic_state,
+            material_parser=material_parser)
+        unresolved = {tuple(key) for row in bindings for key in (row["section_keys"] or [])}
+        return plan_review_v2(material.snapshot, baseline=baseline,
+            documents=material.document_map(), section_texts=material.section_map(),
+            supporting_context=_review_supporting_context(req_dir, stage, dynamic_state),
+            unresolved_sections=tuple(sorted(unresolved)),
+            external_ids=tuple(sorted(external_ids)), issue_bindings=tuple(bindings)), material
     reviews = req_dir / "reviews"
     baseline_path = reviews / f"{stage}.review-baseline.json"
     previous = material.snapshot
@@ -1172,7 +1367,8 @@ def _record_review_delivery(reviews: Path, stage: str, request,
                    separators=(",", ":")).encode("utf-8"))
 
 
-def cmd_review_input(req_dir: Path, stage: str, as_json: bool) -> int:
+def cmd_review_input(req_dir: Path, stage: str, as_json: bool,
+                     schema_version: int = 1) -> int:
     try:
         reviews = req_dir / "reviews"
         reviews.mkdir(parents=True, exist_ok=True)
@@ -1192,7 +1388,23 @@ def cmd_review_input(req_dir: Path, stage: str, as_json: bool) -> int:
             if checks.fails:
                 print(f"✗ {stage} 硬校验未过，不能生成评审输入")
                 return 1
-            request, material = _build_review_request(req_dir, stage, dynamic_state)
+            material_parser = ReviewMaterialParser()
+            request, material = _build_review_request(
+                req_dir, stage, dynamic_state, schema_version=schema_version,
+                material_parser=material_parser)
+            if isinstance(request, ReviewRequestV2):
+                progress, bindings = _v2_progress(
+                    req_dir, stage, request, material, dynamic_state,
+                    material_parser=material_parser)
+                gate_path = reviews / f"{stage}.gate.json"
+                previous_gate = json.loads(_read_review_bytes(gate_path)) if gate_path.exists() or gate_path.is_symlink() else {}
+                lifecycle = LifecycleGateStore(reviews, stage).recover()
+                if bindings and lifecycle is not None and (lifecycle.iteration >= lifecycle.max_iterations
+                        or progress == previous_gate.get("review_progress_digest")):
+                    print(json.dumps({"stage": stage, "status": previous_gate.get("status", "BLOCKED"),
+                        "reason": "NO_REVIEW_PROGRESS" if lifecycle.iteration < lifecycle.max_iterations else "REVIEW_ITERATION_LIMIT",
+                        "next": "保留未决问题；提供相关修复、合法定位或由维护者裁决后继续"}, ensure_ascii=False))
+                    return 1
             _atomic_review_write(
                 reviews / f"{stage}.review-request.json",
                 review_request_bytes(request))
@@ -1305,6 +1517,7 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
         print(f"✗ 阶段 {stage} 是必审阶段（review=True），不允许 --no-review")
         return 3
 
+    material_parser = ReviewMaterialParser()
     issues: list[dict] = []
     issues_text: str | None = None
     if not no_review:
@@ -1318,7 +1531,8 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
         else:
             issues_text = text
             issues, err = _validate_issues(
-                req_dir, stage, spec, text, dynamic_state)
+                req_dir, stage, spec, text, dynamic_state,
+                material_parser=material_parser)
             if issues is None:
                 if not checks.fails:
                     print(f"✗ 评审不可用: {err}")
@@ -1347,8 +1561,49 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
                            else None)
             if claims_path.is_symlink():
                 raise ValueError("issue claims 不能是符号链接")
+            verified_fingerprints = None
+            request_path = reviews_dir / f"{stage}.review-request.json"
+            request = (load_versioned_review_request(
+                _read_review_bytes(request_path))
+                if request_path.exists() or request_path.is_symlink() else None)
             dependency = _review_dependency_fingerprint(
-                req_dir, stage, dynamic_state)
+                req_dir, stage, dynamic_state,
+                schema_version=(request.schema_version if request is not None
+                                else 1))
+            receipt_text = None
+            if isinstance(request, ReviewRequestV2):
+                receipt_text = _read_review_bytes(
+                    reviews_dir / f"{stage}.review-receipt.json").decode("utf-8")
+                current_documents = {
+                    doc: _read(req_dir / doc) for doc in spec["docs"]
+                }
+                if any(value is None for value in current_documents.values()):
+                    raise ValueError("current review material is incomplete")
+                current_material = material_parser.parse(
+                    stage, current_documents, dependency)
+                current_bindings, _external_ids, _loaded = _v2_review_bindings(
+                    req_dir, stage, current_material, dynamic_state,
+                    lifecycle_snapshot=lifecycle_before,
+                    material_parser=material_parser)
+                known_sections = {
+                    row["fingerprint"]: (
+                        tuple(tuple(key) for key in row["section_keys"])
+                        if row["section_keys"] is not None else None)
+                    for row in current_bindings
+                }
+                locations = review_issue_locations(
+                    request, receipt_text, current_material.snapshot,
+                    known_sections)
+                selected = set(request.selected_sections)
+                covered = []
+                for row in current_bindings:
+                    keys = row["section_keys"]
+                    if keys is None and row["fingerprint"] in locations:
+                        keys = [list(key) for key in
+                                locations[row["fingerprint"]]]
+                    if keys and set(tuple(key) for key in keys).issubset(selected):
+                        covered.append(row["fingerprint"])
+                verified_fingerprints = tuple(sorted(covered))
             lifecycle = prepare_lifecycle(
                 lifecycle_before,
                 stage=stage,
@@ -1361,7 +1616,21 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
                 iteration=min(consecutive + 1, policy["max_iterations"]),
                 max_iterations=policy["max_iterations"],
                 claims_text=claims_text,
+                verified_fingerprints=verified_fingerprints,
             )
+            if isinstance(request, ReviewRequestV2):
+                progress, _bindings = _v2_progress(
+                    req_dir, stage, request, current_material, dynamic_state,
+                    lifecycle=lifecycle, receipt=receipt_text,
+                    material_parser=material_parser)
+                if progress is not None:
+                    # Persist the exact state compared by review-input before
+                    # it may emit the same request again.
+                    lifecycle_progress_digest = progress
+                else:
+                    lifecycle_progress_digest = None
+            else:
+                lifecycle_progress_digest = None
         except (LifecycleConflict, OSError, TypeError, ValueError) as exc:
             print(f"✗ Issue 生命周期不可用: {exc}")
             return 3
@@ -1426,6 +1695,8 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
                  else f"已连续 {policy['max_iterations']} 轮不达标——升级人工介入"
                  if not was_blocked else "BLOCKED 未解除：人工介入后需重新评审且判定 PASS"),
     }
+    if lifecycle is not None and lifecycle_progress_digest is not None:
+        gate["review_progress_digest"] = lifecycle_progress_digest
     if stage == "计划" and status == "PASS":
         gate["execution_baseline_hashes"] = _plan_baseline_hashes(req_dir)
     gate_file = reviews_dir / f"{stage}.gate.json"
@@ -1451,6 +1722,15 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
     with log_file.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"time": gate["time"], "stage": stage, "status": status,
                             "iteration": gate["iteration"]}, ensure_ascii=False) + "\n")
+
+    if issues_text is not None and not checks.fails:
+        try:
+            _publish_full_v2_material_baseline(
+                req_dir, stage, gate, dynamic_state,
+                material_parser=material_parser)
+        except (OSError, TypeError, ValueError) as exc:
+            print(f"✗ v2 材料基线不可用: {exc}")
+            return 3
 
     if as_json:
         print(json.dumps(gate, ensure_ascii=False, indent=2))
@@ -2150,20 +2430,20 @@ def _cmd_init_locked(repo: Path, name: str, as_json: bool) -> int:
 
 # ══════════════════════════ 子命令 ══════════════════════════
 
-def cmd_check(req_dir: Path, stage: str, as_json: bool) -> int:
+def cmd_check(req_dir: Path, stage: str, as_json: bool, summary: bool = False) -> int:
     try:
         reviews = req_dir / "reviews"
         reviews.mkdir(parents=True, exist_ok=True)
         with PlanStore(reviews).gate_snapshot() as snapshot:
             return _cmd_check_locked(
-                req_dir, stage, as_json, _dynamic_state_from_snapshot(snapshot))
+                req_dir, stage, as_json, _dynamic_state_from_snapshot(snapshot), summary=summary)
     except (OSError, PlanInvalid, TypeError, ValueError) as exc:
         print(f"✗ 文档门禁锁不可用: {exc}")
         return 3
 
 
 def _cmd_check_locked(req_dir: Path, stage: str, as_json: bool,
-                      dynamic_state=None) -> int:
+                      dynamic_state=None, *, summary: bool = False) -> int:
     if stage not in STAGES:
         print(f"✗ 未知阶段: {stage}（可选: {'、'.join(STAGES)}）")
         return 3
@@ -2173,10 +2453,17 @@ def _cmd_check_locked(req_dir: Path, stage: str, as_json: bool,
     checks = run_checks(req_dir, stage, dynamic_state)
     reviews_dir = req_dir / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
-    (reviews_dir / "hard-checks.json").write_text(
-        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
-    if as_json:
-        print(json.dumps(checks.to_dict(), ensure_ascii=False, indent=2))
+    result = checks.to_dict()
+    raw = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
+    _atomic_review_write(reviews_dir / "hard-checks.json", raw)
+    if summary:
+        print(json.dumps({"schema_version": 1, "stage": stage,
+            "status": "FAIL" if checks.fails else "PASS",
+            "summary": result["summary"], "failures": checks.fails,
+            "full_result_ref": "reviews/hard-checks.json",
+            "result_digest": hashlib.sha256(raw).hexdigest()}, ensure_ascii=False))
+    elif as_json:
+        print(raw.decode("utf-8"))
     else:
         print(f"硬校验 {stage}: {checks.to_dict()['summary']['pass']} 通过 / "
               f"{len(checks.fails)} 失败")
@@ -2561,6 +2848,12 @@ def main() -> int:
         p.add_argument("dir", help="需求目录（docs/01-需求/NNN-名称/）")
         p.add_argument("--stage", required=True, help=f"阶段: {'、'.join(STAGES)}")
         p.add_argument("--json", action="store_true")
+        if name == "check":
+            p.add_argument("--summary", action="store_true",
+                           help="简洁 JSON 预检结果，保留完整报告及摘要绑定")
+        if name == "review-input":
+            p.add_argument("--schema-version", type=int, choices=(1, 2), default=1,
+                           help="评审输入契约版本（默认 1，版本 2 显式启用）")
         if name == "gate":
             p.add_argument("--no-review", action="store_true",
                            help="跳过 AI 评审（仅硬校验判定——限 review=optional 阶段）")
@@ -2611,9 +2904,9 @@ def main() -> int:
         print(f"✗ 需求目录不存在: {req_dir}")
         return 3
     if args.cmd == "check":
-        return cmd_check(req_dir, args.stage, args.json)
+        return cmd_check(req_dir, args.stage, args.json, args.summary)
     if args.cmd == "review-input":
-        return cmd_review_input(req_dir, args.stage, args.json)
+        return cmd_review_input(req_dir, args.stage, args.json, args.schema_version)
     if args.cmd == "gate":
         return cmd_gate(req_dir, args.stage, args.no_review, args.json)
     if args.cmd == "freeze":

@@ -14,6 +14,24 @@ from aek.core.context.budget import resolve_context_budget
 
 
 class ContextServiceTests(unittest.TestCase):
+    def test_prior_stage_bytes_do_not_consume_execution_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            ledger = ContextLedger(Path(temp) / "events.jsonl")
+            budget = resolve_context_budget("bounded", "execution", "quick")
+            prior = ledger.append_text("x" * budget.stage_byte_limit,
+                route="bounded", stage="design", source_kind="document",
+                channel="document_loader", purpose="target_evidence", cache_hit=False,
+                session_id="test-session", subject_digest="a" * 64,
+                logical_path="docs/design.md")
+            delivered = record_context_delivery(ledger, budget, "y", source="target_code",
+                source_kind="code", channel="code_loader", event_purpose="route_required",
+                session_id="test-session", subject_digest="a" * 64, logical_path="src/code.py")
+            self.assertFalse(delivered.decision.over_budget)
+            self.assertEqual(delivered.event.previous_hash, prior.event_hash)
+            self.assertEqual(ledger.total_bytes(), budget.stage_byte_limit + 1)
+            self.assertEqual(ledger.total_bytes(stage="execution"), 1)
+            self.assertEqual(ledger.total_bytes(stage="design"), budget.stage_byte_limit)
+
     def test_budgeted_delivery_rejects_unreasoned_overflow(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             ledger = ContextLedger(Path(temp) / "events.jsonl")

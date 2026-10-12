@@ -16,6 +16,8 @@ from aek.core.review.incremental import ReviewSnapshot, SectionSnapshot
 
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*(?:\r?\n)?$")
+_UNSUPPORTED_HEADING = re.compile(
+    r"^(?:[ ]{1,3}#{1,6}(?:[ \t]|$)|[ ]{0,3}(?:=+|-+)[ \t]*(?:\r?\n)?$)")
 _FENCE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})")
 _ID = re.compile(r"(?<![A-Z0-9-])(?:TC-[0-9]+|[AFDT][0-9]+)(?![A-Z0-9-])")
 _HEADING_DEF = re.compile(r"^#{1,6}[ \t]+((?:TC-)?[AFDT]?[0-9]+)[：:]", re.M)
@@ -54,9 +56,9 @@ def extract_trace_ids(text: str) -> tuple[str, ...]:
     return tuple(sorted(set(_ID.findall(text))))
 
 
-def parse_review_documents(
+def _validate_review_sources(
     stage: str, documents: Mapping[str, str], dependency_fingerprint: str,
-) -> ReviewMaterial:
+) -> None:
     if (not isinstance(stage, str) or not stage
             or not isinstance(documents, Mapping) or not documents
             or not isinstance(dependency_fingerprint, str)
@@ -66,6 +68,38 @@ def parse_review_documents(
                    for name, text in documents.items())):
         raise ValueError("invalid Markdown review source")
 
+
+class ReviewMaterialParser:
+    """Reuse exact immutable materials during one preparation/validation.
+
+    The operation owns this instance and passes freshly read sources each time.
+    A hit only avoids parsing; it says nothing about delivery or approval.
+    """
+
+    def __init__(self) -> None:
+        self._materials: dict[
+            tuple[str, str, tuple[tuple[str, str], ...]], ReviewMaterial,
+        ] = {}
+
+    def parse(
+        self, stage: str, documents: Mapping[str, str],
+        dependency_fingerprint: str,
+    ) -> ReviewMaterial:
+        _validate_review_sources(stage, documents, dependency_fingerprint)
+        sources = tuple(sorted(documents.items()))
+        key = (stage, dependency_fingerprint, sources)
+        material = self._materials.get(key)
+        if material is None:
+            material = parse_review_documents(
+                stage, dict(sources), dependency_fingerprint)
+            self._materials[key] = material
+        return material
+
+
+def parse_review_documents(
+    stage: str, documents: Mapping[str, str], dependency_fingerprint: str,
+) -> ReviewMaterial:
+    _validate_review_sources(stage, documents, dependency_fingerprint)
     parsed_sections: list[SectionSnapshot] = []
     section_texts: list[tuple[str, str, str]] = []
     parse_complete = True
@@ -78,11 +112,13 @@ def parse_review_documents(
         offsets: list[tuple[int, int, str]] = []
         stack: list[tuple[int, str]] = []
         position = 0
+        trace_lines: list[str] = []
         fence_char = ""
         fence_size = 0
         for line in text.splitlines(keepends=True):
             fence = _FENCE.match(line)
             if fence:
+                trace_lines.append(re.sub(r"[^\r\n]", " ", line))
                 token = fence.group(1)
                 if not fence_char:
                     fence_char, fence_size = token[0], len(token)
@@ -90,7 +126,13 @@ def parse_review_documents(
                     fence_char, fence_size = "", 0
                 position += len(line)
                 continue
+            trace_lines.append(line if not fence_char
+                               else re.sub(r"[^\r\n]", " ", line))
             if not fence_char:
+                # Alternate Markdown heading forms can end an owner section.
+                # This subset does not resolve them, so it must fall back full.
+                if _UNSUPPORTED_HEADING.match(line):
+                    parse_complete = False
                 heading = _HEADING.match(line)
                 if heading:
                     level = len(heading.group(1))
@@ -111,16 +153,18 @@ def parse_review_documents(
         elif text[:offsets[0][0]].strip():
             offsets.insert(0, (0, 0, "<preamble>"))
 
+        trace_text = "".join(trace_lines)
         for index, (start, _level, logical) in enumerate(offsets):
             end = offsets[index + 1][0] if index + 1 < len(offsets) else len(text)
             body = text[start:end]
+            trace_body = trace_text[start:end]
             key = (document, logical)
             if key in seen_keys:
                 parse_complete = False
                 logical = f"{logical} <duplicate-{index + 1}>"
                 key = (document, logical)
             seen_keys.add(key)
-            raw_definitions = _definitions(body)
+            raw_definitions = _definitions(trace_body)
             duplicates = defined_globally.intersection(raw_definitions)
             if duplicates:
                 parse_complete = False
@@ -128,7 +172,7 @@ def parse_review_documents(
             definitions = tuple(item for item in raw_definitions
                                 if item not in defined_globally)
             defined_globally.update(definitions)
-            references = tuple(sorted(set(_ID.findall(body)) - set(definitions)))
+            references = tuple(sorted(set(_ID.findall(trace_body)) - set(definitions)))
             parsed_sections.append(SectionSnapshot(
                 document, logical, _sha(body), definitions, references))
             section_texts.append((document, logical, body))

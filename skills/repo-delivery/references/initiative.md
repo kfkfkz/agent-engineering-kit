@@ -12,7 +12,8 @@ Standard，不能因文件多或工具调用多而误升 Initiative。
 1. 完整 SDD 冻结目标、非目标、跨域能力、外部契约、数据流、风险和验收。
 2. 将计划拆成可独立交付、独立回退、带明确依赖的 WorkUnit；每单元保留自己的 Route Card、验证和回执。
 3. Standard 规则适用于每个 WorkUnit；共享决定只在一个权威位置维护，其他单元引用 digest/anchor。
-4. 每阶段维护 Context Capsule，只放摘要、anchor 和 source reference，不复制上游全文；来源变化即重建。
+4. 每阶段维护 Context Capsule，用摘要、anchor 和 source reference 组织材料；来源变化即重建。
+   实际送审仍交付机器规划的必要目标、背景与安全正文；缓存命中不证明接收方已读，不抵扣已发字节。
 5. 并行工作必须声明文件/模块所有权，不覆盖他人改动；跨单元接口先契约测试，再做集成门禁。
 6. 多会话中断使用 `task-handoff` 保存目标、状态、文件、验证、风险和唯一下一步。
 

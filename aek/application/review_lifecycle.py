@@ -96,6 +96,23 @@ def _claim_rows(
     return value["base_snapshot_digest"], tuple(rows)
 
 
+def pending_fix_claims(previous: LifecycleSnapshot, text: str | None,
+                       doc_hashes: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    """Validate current Author claims without inventing Reviewer observations."""
+    if text is None:
+        return ()
+    base, claims = _claim_rows(text, stage=previous.stage, doc_hashes=doc_hashes)
+    existing = {(event.fingerprint, event.input_digest) for event in previous.events
+                if event.authority == IssueAuthority.AUTHOR and event.to_state == IssueState.FIXED}
+    known = {item.fingerprint for item in previous.issues}
+    if any(fingerprint not in known for fingerprint, _digest_value in claims):
+        raise ValueError("issue claim references an unknown issue")
+    pending = tuple(row for row in claims if row not in existing)
+    if pending and base != previous.snapshot_digest:
+        raise ValueError("issue claim precondition snapshot changed")
+    return pending
+
+
 def prepare_lifecycle(
     previous: LifecycleSnapshot | None,
     *,
@@ -107,6 +124,7 @@ def prepare_lifecycle(
     iteration: int,
     max_iterations: int,
     claims_text: str | None = None,
+    verified_fingerprints: tuple[str, ...] | None = None,
 ) -> LifecycleSnapshot:
     """Apply Author claims, append Reviewer facts, then verify absent fixes.
 
@@ -115,6 +133,12 @@ def prepare_lifecycle(
     FIXED claim; it cannot create that claim or close the issue.
     """
     normalized = _normalize_issues(issues)
+    if (verified_fingerprints is not None and
+            (not isinstance(verified_fingerprints, tuple)
+             or any(not isinstance(item, str) or not _DIGEST.fullmatch(item)
+                    for item in verified_fingerprints)
+             or len(set(verified_fingerprints)) != len(verified_fingerprints))):
+        raise ValueError("review verification coverage is invalid")
     if previous is None:
         if claims_text is not None:
             raise ValueError("issue claims require an existing lifecycle")
@@ -156,7 +180,8 @@ def prepare_lifecycle(
                for row in item.occurrences)
     }
     for item in tuple(working.issues):
-        if item.state == IssueState.FIXED and item.fingerprint not in reported:
+        if (item.state == IssueState.FIXED and item.fingerprint not in reported
+                and (verified_fingerprints is None or item.fingerprint in verified_fingerprints)):
             working = transition_issue(
                 working, item.fingerprint, IssueState.VERIFIED,
                 IssueAuthority.REVIEWER, input_digest=request_digest)
