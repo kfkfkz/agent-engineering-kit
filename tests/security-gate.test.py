@@ -47,7 +47,7 @@ def original_103_loader():
     """Execute the unmodified pinned real functions, never a rewritten parser."""
     def source(path):
         return subprocess.run(["git", "show", f"{BASELINE}:{path}"],
-                              cwd=ROOT, check=True, text=True,
+                              cwd=ROOT, check=True,
                               capture_output=True).stdout
 
     module = types.ModuleType("_aek_103_real_requirements")

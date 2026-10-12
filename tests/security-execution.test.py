@@ -22,7 +22,7 @@ def execution_context(directory, *, boundaries=()):
     from aek.adapters.security_authority import BuiltinWorkflowAuthority
     from aek.adapters.security_evidence import BuiltinSourceEvidencePort
     from aek.core.security.authority import runtime_binding
-    root = Path(directory)
+    root = Path(directory).resolve()
     # Files created only within this test's managed TemporaryDirectory.
     (root / "src").mkdir()
     (root / "src/app.py").write_text("print('synthetic source')\n", encoding="utf-8")
@@ -35,12 +35,12 @@ def execution_context(directory, *, boundaries=()):
         " p.write_text(str(int(p.read_text()) + 1) if p.exists() else '1')\n"
         " print(json.dumps({'version':'1.180.0','results':[],'errors':[],"
         "'paths':{'scanned':['src/app.py'],'skipped':[]},'skipped_rules':[]}))\n", encoding="utf-8")
-    workflow, host, _fingerprint = fixture.workflow_fixture(directory)
+    workflow, host, _fingerprint = fixture.workflow_fixture(str(root))
     scanner = ScannerAdapter(root, "semgrep", (str(Path(sys.executable).resolve()), str(root / "stub.py")))
     identity = workflow.authority.current_identity
     probe = scanner.plan(identity_digest=identity.envelope_digest, canonical_scope_ref=workflow.authority.scope_ref,
                          action="version_probe", required_boundaries=())
-    probe_authority = BuiltinWorkflowAuthority(repository_ref=str(root), task_id="version-test", scope_ref=probe.scope_ref,
+    probe_authority = BuiltinWorkflowAuthority(repository_ref=probe.repository_ref, task_id="version-test", scope_ref=probe.scope_ref,
         current_identity=identity, author="author", host_source=host)
     binding = runtime_binding(**{k: getattr(probe, k) for k in (
         "plan_digest", "repository_ref", "scope_ref", "identity_digest", "tool_id", "executable_digest",
@@ -48,11 +48,11 @@ def execution_context(directory, *, boundaries=()):
     token = host.issue(probe_authority, "user-confirmation", "execute", binding)
     probe_grant = probe_authority.on_user_confirmation(token, binding=binding)
     capability = scanner.version_probe(probe, grant=probe_grant, authority=probe_authority)
-    assert capability.version_compatible is True
+    assert capability.version_compatible is True, capability.reason_codes
     plan = scanner.plan(("src/app.py",), identity_digest=identity.envelope_digest,
         configuration_path="rules.yml", required_boundaries=boundaries, canonical_scope_ref=workflow.authority.scope_ref)
     # The control-side authority is scoped to these exact authorized input bytes.
-    authority = BuiltinWorkflowAuthority(repository_ref=str(root), task_id="task", scope_ref=plan.scope_ref,
+    authority = BuiltinWorkflowAuthority(repository_ref=plan.repository_ref, task_id="task", scope_ref=plan.scope_ref,
         current_identity=identity, author="author", host_source=host, provenance_root=root / "provenance")
     workflow.authority = authority
     workflow.source_port = BuiltinSourceEvidencePort(authority, root=root / "sources")
@@ -76,6 +76,18 @@ def execution_context(directory, *, boundaries=()):
 
 
 class SecurityExecutionTests(unittest.TestCase):
+    def test_noncanonical_directory_spelling_uses_one_repository_binding_and_executes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "child").mkdir()
+            workflow, _host, _work, arguments = execution_context(str(root / "child" / ".."))
+            self.assertEqual(arguments["plan"].repository_ref, str(root))
+            self.assertEqual(workflow.authority.repository_ref, arguments["plan"].repository_ref)
+            outcome = workflow.execute(**arguments)
+            self.assertEqual(outcome["status"], "COMPLETE")
+            self.assertEqual(outcome["action"], "executed")
+            self.assertEqual((root / "invocations").read_text(), "1")
+
     def test_completed_reuse_rechecks_input_configuration_and_executable_bytes_without_replaying(self):
         for relative in ("src/app.py", "rules.yml", "stub.py"):
             with self.subTest(material=relative), tempfile.TemporaryDirectory() as directory:

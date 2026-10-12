@@ -122,7 +122,7 @@ archify 随 AEK 分发，需要 Node.js ≥18。业务流程图的交付链为�
 
 ## 安全审查与依赖治理
 
-1.0.4 候选版本扩展 `security-review`，按实际变更范围审查应用、Agent 配置和依赖。安全风险独立追加检查；存量全量审查需要明确范围请求。用户入口仍是 `/security-review` 或 `$security-review`。
+1.0.4 扩展 `security-review`，按实际变更范围审查应用、Agent 配置和依赖。安全风险独立追加检查；存量全量审查需要明确范围请求。用户入口仍是 `/security-review` 或 `$security-review`。
 
 依赖采用在设计阶段先核对准确包、拟版本、用途、作用域、适用公告、环境/API 兼容性及风险处置。真实解析或发布物尚未产生时，记录独立的交付待验项；交付再核对 RESOLVED/SHIPPED 清单、直接/传递关系和实际产物。缺可靠公告、清单或当前证据保持 PENDING，不能推导“无漏洞”。公告核验默认最长七天，项目策略可显式调整。
 
@@ -206,7 +206,7 @@ strict/lightweight 控制治理与回执形态，任务路线控制工作深度�
 
 ```bash
 git fetch --tags
-git switch --detach v1.0.3
+git switch --detach v1.0.4
 ./install.sh --update /path/to/project
 ./install.sh --doctor /path/to/project
 ```
@@ -239,6 +239,9 @@ doctor 还会比较团队治理规则与当前默认规则，列出缺失和不�
 ## 开发与验证
 
 [CI 工作流](.github/workflows/ci.yml) 是自动验证清单的来源，覆盖 Ubuntu 全量回归、ShellCheck、archify 实际执行和原生 Windows 生命周期。新增 Python 行为套件由测试运行器自动发现。
+
+固定版本兼容测试会读取历史提交源码。若使用 README 的浅克隆，开发回归前先运行
+`git fetch --unshallow` 取得完整历史；CI 使用 `fetch-depth: 0`。
 
 ```bash
 python3 tests/run-python-tests.py

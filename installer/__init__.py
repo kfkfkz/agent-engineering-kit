@@ -242,6 +242,12 @@ def _dispatch_install(a: CliArgs, repo: Path, codex: Optional[Path]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Both python -m and the trusted install.sh shim delegate here. Configure
+    # only when this CLI entry is invoked, not when the package is imported.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
     _check_python()
     a = _parse_args(list(sys.argv[1:] if argv is None else argv))
     repo = _validate(a)

@@ -4,10 +4,10 @@
 
 Agent Engineering Kit（AEK）是一套面向 **AI Coding Agent 与真实软件工程协作** 的仓库级工程控制体系。
 
-当前稳定版本为 **1.0.3**，**1.0.4 候选版本**正在验证。现有主链将 Task Route 与 Governance
+当前代码版本为 **1.0.4**。现有主链将 Task Route 与 Governance
 风险裁决分离，固定 Memory-first / Codebase-first 检索与新鲜度屏障，提供 Review Issue 生命周期、
-WorkUnit 恢复和身份绑定的 Delivery Gate。1.0.4 候选版本增加定向安全记录、依赖采用前置与交付复验，
-并明确真实宿主来源、独立证据和执行隔离的边界；发布状态见 [Changelog](CHANGELOG.md#unreleased)。
+WorkUnit 恢复和身份绑定的 Delivery Gate。1.0.4 增加定向安全记录、依赖采用前置与交付复验，
+并明确真实宿主来源、独立证据和执行隔离的边界；变更见 [Changelog](CHANGELOG.md)，正式发布以版本标签与 Releases 为准。
 
 AEK 不替代 Codex、Claude Code 等 Coding Agent，也不尝试重新实现一个 Agent Runtime。
 
@@ -1240,7 +1240,7 @@ REFACTOR
 
 ## 12.1 依赖采用与交付分别取证
 
-1.0.4 候选版本在依赖采用阶段核对准确包、拟版本、用途、作用域、适用公告和兼容性；尚未生成的
+1.0.4 在依赖采用阶段核对准确包、拟版本、用途、作用域、适用公告和兼容性；尚未生成的
 真实解析清单或发布物列为独立交付待验项。交付再核对 RESOLVED/SHIPPED 的当前版本与产物，
 保留直接/传递关系和覆盖缺口。已知受影响依赖不能因未看到 import 或无法复现 PoC 而消失。
 可靠证明缺失或过期时保持 PENDING；明确违反策略时拒绝采用。
@@ -1492,8 +1492,8 @@ AEK 将：
 ✓ Application Service / MCP 单路径调度与提交回执
 ✓ WorkUnit 七态、writer epoch/CAS 接管与 Workflow Recovery
 ✓ 非幂等提交状态核对；结果不明转人工，已提交动作不自动重做
-✓ 1.0.4 候选：版本化安全记录、只读机械入口和定向依赖治理
-✓ 1.0.4 候选：独立复验/审批/关闭的来源与材料绑定 SDK 接缝
+✓ 1.0.4：版本化安全记录、只读机械入口和定向依赖治理
+✓ 1.0.4：独立复验/审批/关闭的来源与材料绑定 SDK 接缝
 ```
 
 当前的 Workflow Recovery 根据持久化状态、当前身份和可查询回执决定复用、重验或转人工。

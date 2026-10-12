@@ -26,6 +26,15 @@ spec.loader.exec_module(data)
 
 
 class SecurityInstallTests(unittest.TestCase):
+    def test_common_main_entry_keeps_utf8_when_redirected_host_encoding_is_narrow(self):
+        self.install()
+        program = "import sys; from installer import main; raise SystemExit(main(sys.argv[1:]))"
+        result = subprocess.run([sys.executable, "-c", program, "--doctor", str(self.repository)],
+            env={**self.env, "PYTHONIOENCODING": "cp1252"}, cwd=ROOT, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr.decode("utf-8", errors="replace"))
+        self.assertEqual(result.stderr, b"")
+        self.assertIn("HEALTHY", result.stdout.decode("utf-8", errors="strict"))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -261,7 +270,7 @@ raise SystemExit(main(['--codex-root', sys.argv[3], '--link-strategy', 'copy', s
         sys.modules[module.__name__] = module
         self.addCleanup(sys.modules.pop, module.__name__, None)
         original = subprocess.run(["git", "show", "8641ce8ed16b3eee9cda00506a10434fa3bfbe66:installer/transaction.py"],
-                                  cwd=ROOT, text=True, capture_output=True, check=True).stdout
+                                  cwd=ROOT, capture_output=True, check=True).stdout
         exec(compile(original, "1.0.3/installer/transaction.py", "exec"), module.__dict__)
         legacy = current.ExternalStep("codex-link-security-review", "security-review", str(self.workspace),
                                       "content_matches", strategy="copy", expected_hash="a" * 64).to_dict()
@@ -318,17 +327,21 @@ def interrupt(target, step, tx_id):
     if sys.argv[5] == 'crash' and step.member_spec_id == 'skill-agents-security-review-reference-security-dependencies':
         os._exit(91)
 install.apply_copy_member = interrupt
-raise SystemExit(install.run_install(Path(sys.argv[2]), codex_root=Path(sys.argv[3]), link_strategy='copy'))
+from installer import main
+raise SystemExit(main(['--update', '--codex-root', sys.argv[3], '--link-strategy', 'copy', sys.argv[2]]))
 """
         argv = [sys.executable, "-c", program, str(ROOT), str(self.repository), str(self.workspace), str(kit)]
-        crash = subprocess.run([*argv, "crash"], env=self.env, cwd=ROOT, capture_output=True, timeout=30)
+        # The public entry point must configure UTF-8 even when the host uses
+        # a narrow redirected code page; do not bypass it in fault injection.
+        program_env = {**self.env, "PYTHONIOENCODING": "cp1252"}
+        crash = subprocess.run([*argv, "crash"], env=program_env, cwd=ROOT, capture_output=True, timeout=30)
         self.assertEqual(crash.returncode, 91, crash.stdout.decode() + crash.stderr.decode())
         copied = self.workspace / ".agents" / relative
         self.assertEqual(copied.read_bytes(), new)
         self.recover(self.repository, "rollback")
         self.assertEqual(copied.read_bytes(), old)
         self.assertEqual((self.repository / ".agents" / relative).read_bytes(), old)
-        updated = subprocess.run([*argv, "complete"], env=self.env, cwd=ROOT, capture_output=True, timeout=30)
+        updated = subprocess.run([*argv, "complete"], env=program_env, cwd=ROOT, capture_output=True, timeout=30)
         self.assertEqual(updated.returncode, 0, updated.stdout.decode() + updated.stderr.decode())
         self.assertEqual(copied.read_bytes(), new)
         self.assert_only_clean_transaction_history("rolled_back")
