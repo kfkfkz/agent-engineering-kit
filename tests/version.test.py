@@ -13,7 +13,7 @@ class VersionTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         expected = (root / "VERSION").read_text(encoding="ascii").strip()
         registry._KIT_VERSION = None
-        self.assertEqual(expected, "1.0.5")
+        self.assertEqual(expected, "1.0.6")
         self.assertEqual(registry.current_kit_version(), expected)
 
 

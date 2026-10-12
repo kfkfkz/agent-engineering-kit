@@ -222,6 +222,13 @@ def _skill_specs() -> list[ResourceSpec]:
             destination_path=f".agents/skills/{name}/SKILL.md",
             resource_type="owned_file", locator=None, merge_policy="replace",
             expected_mode=0o644))
+    for tree in ("claude", "agents"):
+        out.append(ResourceSpec(
+            id=f"skill-{tree}-design-pipeline-ui-reference-helper",
+            source_path="skills/design-pipeline/scripts/ui-reference.py",
+            destination_path=f".{tree}/skills/design-pipeline/scripts/ui-reference.py",
+            resource_type="owned_file", locator=None, merge_policy="replace",
+            expected_mode=0o644))
     return out
 
 

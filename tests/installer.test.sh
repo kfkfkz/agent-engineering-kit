@@ -78,6 +78,14 @@ check "空目录首次安装退出码 0" 0 $?
 [ -f "$P/docs/memory/README.md" ] && ok "seed README 已创建" || bad "seed README 缺失"
 [ -f "$P/.claude/skills/tdd/SKILL.md" ] && ok "staged 父目录（.claude/skills/tdd）已创建" || bad "技能目录缺失"
 [ -f "$P/.agents/skills/tdd/SKILL.md" ] && ok ".agents 技能已装" || bad ".agents 技能缺失"
+[ -f "$P/.claude/skills/design-pipeline/scripts/ui-reference.py" ] \
+  && [ -f "$P/.agents/skills/design-pipeline/scripts/ui-reference.py" ] \
+  && [ "$(sha256sum "$P/.claude/skills/design-pipeline/scripts/ui-reference.py" | cut -d' ' -f1)" = \
+       "$(sha256sum "$SRC/skills/design-pipeline/scripts/ui-reference.py" | cut -d' ' -f1)" ] \
+  && [ "$(sha256sum "$P/.agents/skills/design-pipeline/scripts/ui-reference.py" | cut -d' ' -f1)" = \
+       "$(sha256sum "$SRC/skills/design-pipeline/scripts/ui-reference.py" | cut -d' ' -f1)" ] \
+  && ok "UI reference helper 已按哈希安装到 Claude/Codex 技能目录" \
+  || bad "UI reference helper 安装或哈希异常"
 [ -f "$P/.repo-memory-kit/bin/agent-engineering-mcp" ] && ok "bin 工具已装" || bad "bin 工具缺失"
 [ -x "$P/.repo-memory-kit/bin/memory-build" ] && ok "bin 工具可执行（0755）" || bad "bin 工具不可执行"
 [ -f "$P/.repo-memory-kit/manifest.json" ] && ok "Manifest v2 已写" || bad "Manifest 缺失"

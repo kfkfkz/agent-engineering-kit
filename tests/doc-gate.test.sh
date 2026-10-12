@@ -32,6 +32,9 @@ PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/planning-servic
 PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/doc-gate-plan.test.py" \
     && ok "动态 Plan CLI 生命周期与 SKIP 失效传播" \
     || bad "动态 Plan CLI 生命周期失败"
+PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/ui-prototype-gate.test.py" \
+    && ok "UI 原型确认、内容摘要与资源边界门禁" \
+    || bad "UI 原型确认门禁失败"
 PYTHONPATH="$KIT${PYTHONPATH:+:$PYTHONPATH}" python3 "$KIT/tests/review-judge.test.py" \
     && ok "Review Judge 纯计算阈值和连续失败语义" \
     || bad "Review Judge 契约失败"

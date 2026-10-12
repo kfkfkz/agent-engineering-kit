@@ -12,6 +12,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = runpy.run_path(str(ROOT / "tests" / "review-v2.test.py"))
+from aek.adapters.review_markdown import parse_review_documents
 
 
 class ReviewConvergenceTests(unittest.TestCase):
@@ -62,7 +63,7 @@ class ReviewConvergenceTests(unittest.TestCase):
         for name, raw in original.items():
             self.assertEqual((self.reviews / name).read_bytes(), raw)
 
-    def _claim_fixed_and_return_clean_review(self, location):
+    def _claim_fixed_and_return_clean_review(self, location, *, include_locator=False):
         output = self.prepare()
         first_gate = self.observe(output, [self.issue(location)])
         self.assertEqual(first_gate.returncode, 1, first_gate.stdout + first_gate.stderr)
@@ -83,6 +84,20 @@ class ReviewConvergenceTests(unittest.TestCase):
         self.assertEqual(next_input.returncode, 0, next_input.stdout + next_input.stderr)
         next_output = json.loads(next_input.stdout)
         receipt = next_output["receipt"]
+        if include_locator:
+            material = parse_review_documents(
+                "概要设计", {"概要设计.md": (self.sdd / "概要设计.md").read_text(
+                    encoding="utf-8")}, next_output["request"]["dependency_fingerprint"])
+            issue = lifecycle["issues"][0]
+            owner_ids = set(issue["occurrences"][-1]["affected_ids"])
+            sections = [section for section in material.snapshot.sections
+                        if owner_ids.intersection(section.defines_ids)]
+            receipt["issue_locations"] = [{
+                "fingerprint": issue["fingerprint"],
+                "document": section.document,
+                "heading": section.heading,
+                "section_digest": section.digest,
+            } for section in sections]
         (self.reviews / "概要设计.review-receipt.json").write_text(
             json.dumps(receipt, ensure_ascii=False), encoding="utf-8")
         (self.reviews / "概要设计.issues.json").write_text(json.dumps({
@@ -106,6 +121,18 @@ class ReviewConvergenceTests(unittest.TestCase):
         self.assertEqual(gated.returncode, 0, gated.stdout + gated.stderr)
         lifecycle = json.loads((self.reviews / "概要设计.issue-lifecycle.json").read_text(encoding="utf-8"))
         self.assertEqual(lifecycle["issues"][0]["state"], "CLOSED")
+
+    def test_full_review_with_issue_locator_publishes_material_baseline_after_pass(self):
+        gated, output = self._claim_fixed_and_return_clean_review(
+            "UNSCOPED", include_locator=True)
+        self.assertEqual(output["request"]["mode"], "full")
+        self.assertEqual(gated.returncode, 0, gated.stdout + gated.stderr)
+        lifecycle = json.loads((self.reviews / "概要设计.issue-lifecycle.json").read_text(encoding="utf-8"))
+        self.assertEqual(lifecycle["issues"][0]["state"], "CLOSED")
+        baseline = json.loads((self.reviews / "概要设计.review-baseline.json").read_text(encoding="utf-8"))
+        self.assertEqual(baseline["accepted_full_request_digest"], output["request"]["request_digest"])
+        replayed = self.invoke("gate", "--stage", "概要设计", "--json")
+        self.assertEqual(replayed.returncode, 0, replayed.stdout + replayed.stderr)
 
 
 if __name__ == "__main__":

@@ -29,15 +29,18 @@
 from __future__ import annotations
 
 import argparse
+from html.parser import HTMLParser
 import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import sys
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from pathlib import PurePosixPath
 
 
 # Source checkout and installed target use different package roots. Resolve from
@@ -573,6 +576,16 @@ def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, st
             dynamic_state, _dynamic_snapshots(req_dir, dynamic_state))
         current = states.get(stage, "INVALID")
         if current == "BOUND":
+            if stage == "UI设计":
+                ui_doc = STAGES[stage]["docs"][0]
+                ui_text = _read(req_dir / ui_doc)
+                if ui_text is None:
+                    return "DRAFT", f"{ui_doc} 已不存在"
+                ui_checks = Checks(stage)
+                _check_ui_prototypes(ui_checks, req_dir, ui_text)
+                if ui_checks.fails:
+                    return "DRAFT", "原型/截图确认或依赖已失效：" + "；".join(
+                        item["detail"] or item["name"] for item in ui_checks.fails[:3])
             return "FROZEN", "ArtifactPlan binding 与当前门禁、文档及前置指纹一致"
         if current == "UNBOUND":
             return "NOT_GATED", "阶段尚未绑定到冻结 ArtifactPlan"
@@ -684,6 +697,16 @@ def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, st
                 return "DRAFT", f"{doc} 已不存在"
             if cur != want:
                 return "DRAFT", f"{doc} 冻结后有改动（哈希失配）"
+    if stage == "UI设计":
+        ui_doc = STAGES[stage]["docs"][0]
+        ui_text = _read(req_dir / ui_doc)
+        if ui_text is None:
+            return "DRAFT", f"{ui_doc} 已不存在"
+        ui_checks = Checks(stage)
+        _check_ui_prototypes(ui_checks, req_dir, ui_text)
+        if ui_checks.fails:
+            return "DRAFT", "原型/截图确认或依赖已失效：" + "；".join(
+                item["detail"] or item["name"] for item in ui_checks.fails[:3])
     # 上游指纹核验（第八轮审计 P1）：任一上游重冻结 → 本阶段失效，需重过门禁
     recorded = gate.get("upstream_fingerprints") or {}
     for up in STAGES[stage]["upstream"]:
@@ -734,6 +757,580 @@ def _check_placeholders(c: Checks, doc: str, text: str) -> None:
     ph = _placeholders(text)
     c.add("placeholder", f"占位符已替换：{doc}", not ph,
           f"残留 {len(ph)} 处: {'、'.join(ph[:3])}…" if ph else "")
+
+
+_PROTOTYPE_BLOCK = re.compile(r"(?ms)^```aek-prototypes\s*\n(.*?)^```\s*$")
+_PROTOTYPE_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_PROTOTYPE_MAX_BYTES = 5 * 1024 * 1024
+_SCREENSHOT_MAX_BYTES = 200 * 1024 * 1024
+
+
+class _SelfContainedHtml(HTMLParser):
+    """Conservative static check: the preview cannot load remote/local resources."""
+    _URL_ATTRS = {"src", "srcset", "imagesrcset", "attributionsrc", "poster", "data", "action", "formaction",
+                  "background", "ping", "lowsrc", "dynsrc", "longdesc", "codebase",
+                  "archive", "manifest"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.errors: list[str] = []
+        self._style_depth = 0
+
+    @staticmethod
+    def _safe_data_url(value: str) -> bool:
+        return bool(re.match(r"(?i)^data:image/(?:png|jpeg|gif|webp);base64,", value.strip()))
+
+    @staticmethod
+    def _unsafe_css(value: str) -> bool:
+        # This is deliberately not a CSS tokenizer. Reject comment delimiters
+        # instead of stripping them with a regex that could mistake text inside
+        # a quoted CSS string for a real comment and hide a later url().
+        if "/*" in value or "*/" in value:
+            return True
+        value = re.sub(r"\\(?:\r\n|\n|\r|\f)", "", value)
+        def unescape(match: re.Match[str]) -> str:
+            try:
+                return chr(int(match.group(1), 16))
+            except (ValueError, OverflowError):
+                return " "
+        value = re.sub(r"\\([0-9a-fA-F]{1,6})\s?", unescape, value)
+        value = re.sub(r"\\([^\r\n])", r"\1", value)
+        return bool(re.search(r"(?i)url\s*\(|@import", value))
+
+    def _attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_map = {name.lower(): (value or "") for name, value in attrs}
+        if len(attrs_map) != len(attrs):
+            self.errors.append(f"duplicate HTML attribute: {tag}")
+        if any(name.startswith("on") for name in attrs_map):
+            self.errors.append("event-handler attributes are not allowed")
+        if any(name in {"xlink:href", "xml:base"} for name in attrs_map):
+            self.errors.append("namespaced resource references are not allowed")
+        if tag.lower() in {"iframe", "frame", "object", "embed", "applet", "portal", "base", "form"}:
+            self.errors.append(f"forbidden resource element: {tag}")
+        if tag.lower() == "script":
+            self.errors.append("script execution is disabled in prototype previews")
+        if tag.lower() == "meta" and attrs_map.get("http-equiv", "").lower() == "refresh":
+            self.errors.append("automatic navigation is not allowed in prototype previews")
+        for name in self._URL_ATTRS:
+            value = attrs_map.get(name)
+            if value is None or not value.strip():
+                continue
+            if name == "src" and tag.lower() in {"img", "source"} and self._safe_data_url(value):
+                continue
+            self.errors.append(f"non-self-contained {name} attribute")
+        href = attrs_map.get("href")
+        if href and tag.lower() != "a":
+            self.errors.append("non-self-contained href attribute")
+        elif href and tag.lower() == "a" and not href.startswith("#"):
+            self.errors.append("external navigation is not allowed in prototype preview")
+        style = attrs_map.get("style", "")
+        if style and self._unsafe_css(style):
+            self.errors.append("CSS resource reference is not allowed")
+        if tag.lower() == "script" and "src" in attrs_map:
+            self.errors.append("external script is not allowed")
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._attrs(tag, attrs)
+        if tag.lower() == "style":
+            self._style_depth += 1
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self._attrs(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "style" and self._style_depth:
+            self._style_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self._style_depth and self._unsafe_css(data):
+            self.errors.append("CSS resource reference is not allowed")
+
+
+def _open_dir_nofollow(path: Path) -> int:
+    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or not os.supports_dir_fd:
+        raise OSError("safe handle-relative reads are unsupported")
+    absolute = Path(os.path.abspath(path))
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in absolute.parts[1:]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _read_beneath(root_fd: int, relative: str, limit: int) -> bytes:
+    path = PurePosixPath(relative)
+    if (path.is_absolute() or not path.parts or ".." in path.parts
+            or "\\" in relative or any(part in {"", "."} for part in path.parts)):
+        raise ValueError("path must remain below the approved root")
+    parent = os.dup(root_fd)
+    try:
+        for part in path.parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        fd = os.open(path.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+                raise ValueError("prototype must be a regular file within the size limit")
+            chunks = []
+            remaining = limit + 1
+            while remaining:
+                block = os.read(fd, min(64 * 1024, remaining))
+                if not block:
+                    break
+                chunks.append(block)
+                remaining -= len(block)
+            data = b"".join(chunks)
+            after = os.fstat(fd)
+            if len(data) > limit or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise ValueError("prototype changed during validation or exceeds the size limit")
+            return data
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
+
+
+def _hash_regular_beneath(root_fd: int, relative: str, limit: int) -> tuple[str, int]:
+    path = PurePosixPath(relative)
+    if (path.is_absolute() or not path.parts or ".." in path.parts
+            or "\\" in relative or any(part in {"", "."} for part in path.parts)):
+        raise ValueError("path must remain below the approved root")
+    parent = os.dup(root_fd)
+    try:
+        for part in path.parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            os.close(parent)
+            parent = child
+        fd = os.open(path.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or not 1 <= before.st_size <= limit:
+                raise ValueError("screenshot must be a regular non-empty file within the size limit")
+            digest = hashlib.sha256()
+            total = 0
+            while True:
+                block = os.read(fd, 1024 * 1024)
+                if not block:
+                    break
+                total += len(block)
+                if total > limit:
+                    raise ValueError("screenshot exceeds the size limit")
+                digest.update(block)
+            after = os.fstat(fd)
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                raise ValueError("screenshot changed during validation")
+            return digest.hexdigest(), total
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
+
+
+def _expected_ui_evidence_path(row: dict) -> str:
+    permissions = row.get("permissions")
+    if (not isinstance(permissions, dict) or set(permissions) != {"function_id", "data_id"}
+            or any(not isinstance(permissions[key], str)
+                   or not re.fullmatch(r"[A-Z][A-Z0-9_-]{0,31}", permissions[key])
+                   for key in permissions)):
+        raise ValueError("UI-EV permission identity is invalid")
+    ident, state = row.get("id"), row.get("state")
+    if not isinstance(ident, str) or not re.fullmatch(r"P[1-9][0-9]*", ident):
+        raise ValueError("UI-EV ID is invalid")
+    if state not in {"default", "loading", "empty", "error", "dialog", "drawer", "permission"}:
+        raise ValueError("UI-EV state is invalid")
+    parts = ["function", permissions["function_id"], "data", permissions["data_id"]]
+    for key in ("system_version", "viewport"):
+        if key in row:
+            value = row[key]
+            pattern = r"[A-Z][A-Z0-9_-]{0,31}" if key == "system_version" else r"[1-9][0-9]{1,4}x[1-9][0-9]{1,4}"
+            if not isinstance(value, str) or not re.fullmatch(pattern, value):
+                raise ValueError(f"UI-EV {key} is invalid")
+            parts.extend(("version" if key == "system_version" else "viewport", value))
+    filename = ident + ("" if state == "default" else "-" + state) + ".png"
+    return "/".join((*parts, filename))
+
+
+def _prototype_confirmation_digest(page_id: str, area_id: str,
+                                   prototype_digest: str, dependency_digest: str) -> str:
+    value = {"page_id": page_id, "area_id": area_id,
+             "prototype_sha256": prototype_digest,
+             "dependency_sha256": dependency_digest}
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _prototype_confirmation_path(page_id: str, area_id: str,
+                                 prototype_digest: str, dependency_digest: str) -> str:
+    if (not re.fullmatch(r"PAGE-[A-Z0-9_-]{1,56}", page_id)
+            or not re.fullmatch(r"AREA-[A-Z0-9_-]{1,56}", area_id)
+            or not _PROTOTYPE_DIGEST.fullmatch(prototype_digest)
+            or not _PROTOTYPE_DIGEST.fullmatch(dependency_digest)):
+        raise ValueError("invalid prototype confirmation identity")
+    return f"{page_id}--{area_id}--{prototype_digest}--{dependency_digest}.json"
+
+
+def _prototype_manifest(text: str) -> dict:
+    blocks = list(_PROTOTYPE_BLOCK.finditer(text))
+    if len(blocks) != 1:
+        raise ValueError("UI设计必须且只能包含一个 aek-prototypes JSON 区块")
+    manifest = json.loads(blocks[0].group(1), object_pairs_hook=_unique_json_object)
+    if (not isinstance(manifest, dict) or set(manifest) != {"schema_version", "prototypes"}
+            or manifest.get("schema_version") != 1 or not isinstance(manifest.get("prototypes"), list)):
+        raise ValueError("原型确认清单格式无效")
+    return manifest
+
+
+def _write_prototype_confirmation(req_dir: Path, page_id: str, area_id: str,
+                                  prototype_digest: str, dependency_digest: str,
+                                  reviewer: str, reviewed_at: str,
+                                  phrase: str) -> Path:
+    """Create immutable local confirmation evidence; never replace an existing receipt."""
+    confirmation_digest = _prototype_confirmation_digest(
+        page_id, area_id, prototype_digest, dependency_digest)
+    if phrase != f"ACCEPT {confirmation_digest[:12]}":
+        raise ValueError("confirmation phrase does not match prototype and dependency digests")
+    reviews = req_dir / "reviews"
+    reviews.mkdir(parents=True, exist_ok=True)
+    reviews_fd = _open_dir_nofollow(reviews)
+    try:
+        try:
+            os.mkdir("ui-prototype-confirmations", 0o700, dir_fd=reviews_fd)
+        except FileExistsError:
+            pass
+        receipts_fd = os.open("ui-prototype-confirmations",
+                              os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=reviews_fd)
+        try:
+            name = _prototype_confirmation_path(
+                page_id, area_id, prototype_digest, dependency_digest)
+            receipt = {
+                "schema_version": 1, "decision": "ACCEPTED", "page_id": page_id,
+                "area_id": area_id, "prototype_sha256": prototype_digest,
+                "dependency_sha256": dependency_digest, "reviewer": reviewer,
+                "reviewed_at": reviewed_at, "confirmation_method": "interactive_tty",
+                "confirmation_phrase": phrase,
+            }
+            data = (json.dumps(receipt, ensure_ascii=False, sort_keys=True,
+                               separators=(",", ":")) + "\n").encode("utf-8")
+            temporary = f".{name}.tmp-{secrets.token_hex(8)}"
+            try:
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=receipts_fd)
+                try:
+                    _write_all(fd, data)
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                # A same-directory hard link publishes a fully written inode atomically
+                # and fails if a receipt for this exact identity already exists.
+                os.link(temporary, name, src_dir_fd=receipts_fd,
+                        dst_dir_fd=receipts_fd, follow_symlinks=False)
+                if os.name != "nt":
+                    os.fsync(receipts_fd)
+                return reviews / "ui-prototype-confirmations" / name
+            finally:
+                try:
+                    os.unlink(temporary, dir_fd=receipts_fd)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(receipts_fd)
+    finally:
+        os.close(reviews_fd)
+
+
+def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
+                         require_confirmation: bool = True,
+                         dependency_out: dict | None = None) -> None:
+    """Re-read accepted UI prototypes and evidence at the existing UI stage gate."""
+    blocks = list(_PROTOTYPE_BLOCK.finditer(text))
+    required = "<!-- aek-prototypes:required -->" in text
+    if not blocks:
+        if required:
+            c.add("prototype", "原型确认清单存在", False, "缺少 aek-prototypes JSON 区块")
+        return
+    if len(blocks) != 1:
+        c.add("prototype", "原型确认清单唯一", False, "只能有一个 aek-prototypes JSON 区块")
+        return
+    try:
+        manifest = json.loads(blocks[0].group(1), object_pairs_hook=_unique_json_object)
+        if (not isinstance(manifest, dict) or set(manifest) != {"schema_version", "prototypes"}
+                or type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1
+                or not isinstance(manifest["prototypes"], list) or not manifest["prototypes"]):
+            raise ValueError("invalid prototype manifest schema")
+        repo_root = req_dir.parents[2]
+        approved_root = req_dir.relative_to(repo_root).as_posix()
+        root_fd = _open_dir_nofollow(req_dir)
+        material_fd = None
+        material_rel = f"docs/01-需求/{req_dir.name}/原始材料/ui-reference/截图索引.json"
+        try:
+            repo_fd = _open_dir_nofollow(repo_root)
+            try:
+                index = json.loads(_read_beneath(repo_fd, material_rel, 8 * 1024 * 1024).decode("utf-8"),
+                                   object_pairs_hook=_unique_json_object)
+            finally:
+                os.close(repo_fd)
+            if (not isinstance(index, dict) or index.get("schema_version") != 1
+                    or index.get("change_id") != req_dir.name
+                    or not isinstance(index.get("screenshots"), list)):
+                raise ValueError("screenshot index schema or change ID is invalid")
+            material_fd = _open_dir_nofollow(
+                repo_root / "docs" / "01-需求" / req_dir.name / "原始材料" / "ui-reference")
+            screenshots: dict[str, dict] = {}
+            for screenshot in index["screenshots"]:
+                if (not isinstance(screenshot, dict) or not isinstance(screenshot.get("id"), str)
+                        or screenshot["id"] in screenshots):
+                    raise ValueError("screenshot index has invalid or duplicate UI-EV IDs")
+                screenshots[screenshot["id"]] = screenshot
+            design_system = index.get("design_system")
+            if not isinstance(design_system, dict):
+                raise ValueError("截图索引缺少设计体系")
+            design_digest = hashlib.sha256(json.dumps(
+                design_system, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")).hexdigest()
+            requirements_text = _read_beneath(root_fd, "需求分析.md", 10 * 1024 * 1024).decode("utf-8")
+            overview_text = _read_beneath(root_fd, "概要设计.md", 10 * 1024 * 1024).decode("utf-8")
+            current_acceptance = parse_a_items(requirements_text)
+            current_features = parse_f_items(overview_text)
+            feature_blocks = {
+                match.group(1): _block(overview_text, match.start())
+                for match in re.finditer(r"^###\s*(F\d+)：", overview_text, re.M)
+            }
+            page_blocks = {
+                match.group(1): _block(text, match.start())
+                for match in re.finditer(r"^###\s*(PAGE-\d+)：", text, re.M)
+            }
+            seen: set[tuple[str, str]] = set()
+            errors: list[str] = []
+            for number, item in enumerate(manifest["prototypes"], 1):
+                where = f"prototypes[{number}]"
+                required_keys = {"prototype_path", "prototype_sha256", "page_id", "area_id",
+                                 "feature_ids", "acceptance_ids", "change_intent", "depends_on",
+                                 "artifact_plan_id", "gate_digest", "approved_root", "status",
+                                 "reviewer", "reviewed_at", "confirmation_source", "evidence_contexts",
+                                 "design_system_sha256", "dependency_sha256"}
+                if not isinstance(item, dict) or set(item) != required_keys:
+                    errors.append(f"{where}: schema mismatch")
+                    continue
+                if (item["status"] != "ACCEPTED" or item["confirmation_source"] != "maintainer_reply"
+                        or not isinstance(item["reviewer"], str)
+                        or not item["reviewer"].strip() or not isinstance(item["reviewed_at"], str)
+                        or not item["reviewed_at"].strip()):
+                    errors.append(f"{where}: ACCEPTED requires a named maintainer and timestamp")
+                    continue
+                try:
+                    reviewed_at = datetime.fromisoformat(item["reviewed_at"].replace("Z", "+00:00"))
+                except (ValueError, AttributeError):
+                    errors.append(f"{where}: invalid review timestamp")
+                    continue
+                if reviewed_at.tzinfo is None:
+                    errors.append(f"{where}: review timestamp must include a timezone")
+                    continue
+                path = item["prototype_path"]
+                page_id, area_id = item["page_id"], item["area_id"]
+                id_lists_ok = (isinstance(item["feature_ids"], list) and item["feature_ids"]
+                               and all(re.fullmatch(r"F[1-9][0-9]*", str(x)) for x in item["feature_ids"])
+                               and isinstance(item["acceptance_ids"], list) and item["acceptance_ids"]
+                               and all(re.fullmatch(r"A[1-9][0-9]*", str(x)) for x in item["acceptance_ids"]))
+                if ((page_id, area_id) in seen or item["approved_root"] != approved_root
+                        or not isinstance(page_id, str) or not re.fullmatch(r"PAGE-[A-Z0-9_-]+", page_id)
+                        or not isinstance(area_id, str) or not re.fullmatch(r"AREA-[A-Z0-9_-]+", area_id)
+                        or not id_lists_ok or not isinstance(item["change_intent"], str)
+                        or not item["change_intent"].strip()
+                        or not isinstance(path, str) or not path.lower().endswith(".html")
+                        or not _PROTOTYPE_DIGEST.fullmatch(str(item["prototype_sha256"]))
+                        or not _PROTOTYPE_DIGEST.fullmatch(str(item["gate_digest"]))
+                        or item["design_system_sha256"] != design_digest
+                        or not _PROTOTYPE_DIGEST.fullmatch(str(item["dependency_sha256"]))
+                        or not isinstance(item["depends_on"], list) or not item["depends_on"]
+                        or any(not isinstance(value, str) for value in item["depends_on"])
+                        or len(item["depends_on"]) != len(set(item["depends_on"]))
+                        or not isinstance(item["evidence_contexts"], list) or not item["evidence_contexts"]):
+                    errors.append(f"{where}: invalid identity, digest, dependency, or approved root")
+                    continue
+                if (not set(item["feature_ids"]) <= current_features.keys()
+                        or not set(item["acceptance_ids"]) <= current_acceptance.keys()):
+                    errors.append(f"{where}: feature/acceptance dependency is missing from current design")
+                    continue
+                page_block = page_blocks.get(page_id)
+                if page_block is None or not re.search(rf"\b{re.escape(area_id)}\b", page_block):
+                    errors.append(f"{where}: PAGE/AREA is not present in the current UI design")
+                    continue
+                seen.add((page_id, area_id))
+                try:
+                    raw = _read_beneath(root_fd, path, _PROTOTYPE_MAX_BYTES)
+                    actual_digest = hashlib.sha256(raw).hexdigest()
+                    if actual_digest != item["prototype_sha256"]:
+                        raise ValueError("prototype SHA-256 does not match the accepted preview")
+                    source = raw.decode("utf-8", errors="strict")
+                    parser = _SelfContainedHtml()
+                    parser.feed(source)
+                    parser.close()
+                    if parser.errors:
+                        raise ValueError(parser.errors[0])
+                    selected_contexts: dict[str, set[str]] = {}
+                    for pair in item["evidence_contexts"]:
+                        if (not isinstance(pair, dict) or set(pair) != {"evidence_id", "context_id"}
+                                or not isinstance(pair["evidence_id"], str)
+                                or not isinstance(pair["context_id"], str)
+                                or pair["evidence_id"] not in item["depends_on"]):
+                            raise ValueError("evidence_contexts contains an invalid UI-EV/context mapping")
+                        selected_contexts.setdefault(pair["evidence_id"], set()).add(pair["context_id"])
+                    if set(selected_contexts) != set(item["depends_on"]):
+                        raise ValueError("every UI-EV dependency must name at least one permission context")
+                    dependency_rows = []
+                    for evidence_id in item["depends_on"]:
+                        evidence = screenshots.get(evidence_id)
+                        if evidence is None:
+                            raise ValueError(f"unknown UI-EV: {evidence_id}")
+                        validation = evidence.get("validation", {})
+                        if not isinstance(validation, dict):
+                            raise ValueError(f"invalid UI-EV validation record: {evidence_id}")
+                        expected_path = _expected_ui_evidence_path(evidence)
+                        if evidence.get("path") != expected_path:
+                            raise ValueError(f"UI-EV path is not the derived material path: {evidence_id}")
+                        digest, actual_bytes = _hash_regular_beneath(
+                            material_fd, expected_path, _SCREENSHOT_MAX_BYTES)
+                        if (validation.get("status") != "valid"
+                                or validation.get("content_sha256") != digest
+                                or validation.get("bytes") != actual_bytes
+                                or evidence.get("placeholder_sha256") == digest):
+                            raise ValueError(f"UI-EV is not technically valid: {evidence_id}")
+                        semantic = {key: evidence.get(key) for key in (
+                            "page", "state", "purpose", "feature_ids", "acceptance_ids")}
+                        if any(not isinstance(semantic[key], str) or not semantic[key].strip()
+                               for key in ("page", "state", "purpose")):
+                            raise ValueError(f"invalid UI-EV semantic metadata: {evidence_id}")
+                        for key, prefix in (("feature_ids", "F"), ("acceptance_ids", "A")):
+                            values = semantic[key]
+                            if (not isinstance(values, list) or not values
+                                    or any(not isinstance(value, str)
+                                           or not re.fullmatch(rf"{prefix}[1-9][0-9]*", value)
+                                           for value in values)
+                                    or len(values) != len(set(values))):
+                                raise ValueError(f"invalid UI-EV {key}: {evidence_id}")
+                        semantic["feature_ids"] = sorted(semantic["feature_ids"])
+                        semantic["acceptance_ids"] = sorted(semantic["acceptance_ids"])
+                        contexts = evidence.get("applies_to", [])
+                        if not isinstance(contexts, list):
+                            raise ValueError(f"invalid UI-EV permission contexts: {evidence_id}")
+                        confirmed = []
+                        for context in contexts:
+                            if not isinstance(context, dict):
+                                continue
+                            review = context.get("content_review")
+                            freshness = context.get("freshness")
+                            if (isinstance(review, dict) and isinstance(freshness, dict)
+                                    and review.get("status") == "applicable"
+                                    and review.get("reviewed_sha256") == digest
+                                    and freshness.get("status") == "confirmed_current"
+                                    and freshness.get("confirmed_sha256") == digest):
+                                confirmed.append(context)
+                        confirmed_by_id = {context["context_id"]: context for context in confirmed
+                                           if isinstance(context.get("context_id"), str)}
+                        target_ids = selected_contexts[evidence_id]
+                        if not target_ids <= confirmed_by_id.keys():
+                            raise ValueError(f"UI-EV lacks current visual/context confirmation: {evidence_id}")
+                        dependency_rows.append({"id": evidence_id, "sha256": digest,
+                                                "semantic": semantic,
+                                                "contexts": [{"context_id": context_id,
+                                                              "permissions": confirmed_by_id[context_id].get("permissions"),
+                                                              "system_version": confirmed_by_id[context_id].get("system_version"),
+                                                              "viewport": confirmed_by_id[context_id].get("viewport"),
+                                                              "relation": confirmed_by_id[context_id].get("relation")}
+                                                             for context_id in sorted(target_ids)]})
+                        bound = evidence.get("prototype_refs", [])
+                        if not any(ref.get("prototype_path") == path
+                                   and ref.get("prototype_sha256") == actual_digest
+                                   and ref.get("page_id") == page_id and ref.get("area_id") == area_id
+                                   and ref.get("feature_ids") == item["feature_ids"]
+                                   and ref.get("acceptance_ids") == item["acceptance_ids"]
+                                   and ref.get("change_intent") == item["change_intent"]
+                                   and ref.get("depends_on") == item["depends_on"]
+                                   and ref.get("artifact_plan_id") == item["artifact_plan_id"]
+                                   and ref.get("gate_digest") == item["gate_digest"]
+                                   and ref.get("approved_root") == approved_root
+                                   for ref in bound if isinstance(ref, dict)):
+                            raise ValueError(f"UI-EV reverse reference is stale: {evidence_id}")
+                    dependency_snapshot = {
+                        "design_system_sha256": design_digest,
+                        "page_design_sha256": hashlib.sha256(page_block.encode("utf-8")).hexdigest(),
+                        "features": {ident: feature_blocks[ident] for ident in sorted(item["feature_ids"])},
+                        "acceptance": {ident: current_acceptance[ident]["text"]
+                                       for ident in sorted(item["acceptance_ids"])},
+                        "evidence": sorted(dependency_rows, key=lambda row: row["id"]),
+                    }
+                    dependency_digest = hashlib.sha256(json.dumps(
+                        dependency_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8")).hexdigest()
+                    if dependency_digest != item["dependency_sha256"]:
+                        raise ValueError(f"prototype dependency digest is stale (current {dependency_digest})")
+                    if dependency_out is not None:
+                        dependency_out[(page_id, area_id)] = dependency_digest
+                    if require_confirmation:
+                        confirmation_rel = _prototype_confirmation_path(
+                            page_id, area_id, actual_digest, dependency_digest)
+                        reviews_fd = _open_dir_nofollow(req_dir / "reviews")
+                        try:
+                            confirmations_fd = os.open(
+                                "ui-prototype-confirmations",
+                                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                                dir_fd=reviews_fd)
+                            try:
+                                confirmation = json.loads(
+                                    _read_beneath(confirmations_fd, confirmation_rel, 64 * 1024).decode("utf-8"),
+                                    object_pairs_hook=_unique_json_object)
+                            finally:
+                                os.close(confirmations_fd)
+                        finally:
+                            os.close(reviews_fd)
+                        identity_digest = _prototype_confirmation_digest(
+                            page_id, area_id, actual_digest, dependency_digest)
+                        if (not isinstance(confirmation, dict)
+                                or set(confirmation) != {"schema_version", "decision", "page_id", "area_id",
+                                                         "prototype_sha256", "dependency_sha256", "reviewer",
+                                                         "reviewed_at", "confirmation_method",
+                                                         "confirmation_phrase"}
+                                or type(confirmation.get("schema_version")) is not int
+                                or confirmation.get("schema_version") != 1
+                                or confirmation.get("decision") != "ACCEPTED"
+                                or confirmation.get("page_id") != page_id
+                                or confirmation.get("area_id") != area_id
+                                or confirmation.get("prototype_sha256") != actual_digest
+                                or confirmation.get("dependency_sha256") != dependency_digest
+                                or confirmation.get("reviewer") != item["reviewer"]
+                                or confirmation.get("reviewed_at") != item["reviewed_at"]
+                                or confirmation.get("confirmation_method") != "interactive_tty"
+                                or confirmation.get("confirmation_phrase") != f"ACCEPT {identity_digest[:12]}"):
+                            raise ValueError("prototype lacks matching interactive confirmation for current dependencies")
+                except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+                    errors.append(f"{where}: {exc}")
+            c.add("prototype", "原型确认与依赖摘要有效", not errors,
+                  "；".join(errors[:5]))
+        finally:
+            if material_fd is not None:
+                os.close(material_fd)
+            os.close(root_fd)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+        c.add("prototype", "原型确认与依赖摘要有效", False, str(exc))
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 def _effective_stage_spec(stage: str, dynamic_state=None) -> dict:
@@ -808,6 +1405,7 @@ def run_checks(req_dir: Path, stage: str, dynamic_state=None) -> Checks:
 
     if stage == "UI设计":
         text = _read(req_dir / "UI设计.md") or ""
+        _check_ui_prototypes(c, req_dir, text)
         pages = parse_page_items(text)
         c.add("id", "页面清单非空", bool(pages), "无 PAGE 项")
         bad_states = [p for p, v in pages.items() if not v["states_ok"]]
@@ -925,6 +1523,7 @@ def _validate_issues(req_dir: Path, stage: str, spec: dict,
             if isinstance(request, ReviewRequestV2):
                 bindings, _external, _lifecycle = _v2_review_bindings(
                     req_dir, stage, material, dynamic_state, use_locations=False,
+                    include_closed=True,
                     material_parser=material_parser)
                 known = {row["fingerprint"]: tuple(tuple(key) for key in row["section_keys"])
                          if row["section_keys"] is not None else None for row in bindings}
@@ -970,9 +1569,12 @@ def _publish_full_v2_material_baseline(req_dir: Path, stage: str, gate: dict,
     sensor = _read_review_bytes(reviews / f"{stage}.issues.json")
     material = (material_parser or ReviewMaterialParser()).parse(
         stage, dict(request.full_documents), request.dependency_fingerprint)
-    bindings, _external, _life = _v2_review_bindings(
+    # PASS publication closes verified issues before this cache is written.
+    # Keep their fingerprints available to validate the already-reviewed
+    # locator receipt; closed issues remain excluded from future review scope.
+    bindings, _external, _lifecycle = _v2_review_bindings(
         req_dir, stage, material, dynamic_state, use_locations=False,
-        material_parser=material_parser)
+        include_closed=True, material_parser=material_parser)
     known = {row["fingerprint"]: tuple(tuple(key) for key in row["section_keys"])
              if row["section_keys"] is not None else None for row in bindings}
     checked = validate_review_result(request, sensor.decode("utf-8"), receipt.decode("utf-8"),
@@ -1125,7 +1727,8 @@ def _review_dependency_fingerprint(req_dir: Path, stage: str,
 
 
 def _v2_review_bindings(req_dir, stage, material, dynamic_state=None, *,
-                        use_locations=True, lifecycle_snapshot=None,
+                        use_locations=True, include_closed=False,
+                        lifecycle_snapshot=None,
                         material_parser: ReviewMaterialParser | None = None):
     """Resolve all pending occurrences; explicit source conflicts stay unknown."""
     spec = _effective_stage_spec(stage, dynamic_state)
@@ -1146,7 +1749,7 @@ def _v2_review_bindings(req_dir, stage, material, dynamic_state=None, *,
     bindings = []
     if lifecycle is not None:
         for item in lifecycle.issues:
-            if item.state == IssueState.CLOSED:
+            if item.state == IssueState.CLOSED and not include_closed:
                 continue
             occurrence = item.occurrences[-1]
             tokens = set(re.findall(r"(?<![A-Za-z0-9_])(?:A|F|D|T|TC-)[1-9][0-9]*(?![A-Za-z0-9_])",
@@ -1195,7 +1798,8 @@ def _v2_review_bindings(req_dir, stage, material, dynamic_state=None, *,
 def _v2_progress(req_dir, stage, request, material, dynamic_state=None, *,
                  lifecycle=None, receipt=None,
                  material_parser: ReviewMaterialParser | None = None):
-    bindings, external_ids, loaded = _v2_review_bindings(req_dir, stage, material, dynamic_state,
+    bindings, external_ids, loaded = _v2_review_bindings(
+        req_dir, stage, material, dynamic_state, include_closed=receipt is not None,
         lifecycle_snapshot=lifecycle, material_parser=material_parser)
     loaded = lifecycle or loaded
     if loaded is None:
@@ -1583,6 +2187,7 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
                     stage, current_documents, dependency)
                 current_bindings, _external_ids, _loaded = _v2_review_bindings(
                     req_dir, stage, current_material, dynamic_state,
+                    include_closed=True,
                     lifecycle_snapshot=lifecycle_before,
                     material_parser=material_parser)
                 known_sections = {
@@ -1613,7 +2218,10 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
                     req_dir, stage, issues_text),
                 doc_hashes=doc_hashes,
                 issues=tuple(item for item in issues if not item.get("upstream")),
-                iteration=min(consecutive + 1, policy["max_iterations"]),
+                iteration=min(max(
+                    consecutive + 1,
+                    lifecycle_before.iteration if lifecycle_before is not None else 1,
+                ), policy["max_iterations"]),
                 max_iterations=policy["max_iterations"],
                 claims_text=claims_text,
                 verified_fingerprints=verified_fingerprints,
@@ -2840,6 +3448,82 @@ def cmd_plan_rollback(req_dir: Path, as_json: bool) -> int:
         return 3
 
 
+def cmd_prototype_confirm(req_dir: Path, page_id: str, area_id: str,
+                          reviewer: str) -> int:
+    """Require an interactive maintainer action for this exact prototype digest."""
+    try:
+        if not sys.stdin.isatty():
+            raise ValueError("原型确认必须在交互式终端中进行")
+        if not reviewer.strip() or len(reviewer) > 120:
+            raise ValueError("reviewer must be a non-empty name of at most 120 characters")
+        ui_doc = STAGES["UI设计"]["docs"][0]
+        root_fd = _open_dir_nofollow(req_dir)
+        try:
+            ui_text = _read_beneath(root_fd, ui_doc, 10 * 1024 * 1024).decode("utf-8")
+            manifest = _prototype_manifest(ui_text)
+            matches = [item for item in manifest["prototypes"]
+                       if isinstance(item, dict) and item.get("page_id") == page_id
+                       and item.get("area_id") == area_id]
+            if len(matches) != 1:
+                raise ValueError("PAGE/AREA must identify exactly one prototype record")
+            item = matches[0]
+            if (item.get("status") != "ACCEPTED"
+                    or item.get("confirmation_source") != "maintainer_reply"
+                    or item.get("reviewer") != reviewer):
+                raise ValueError("record must contain the maintainer's explicit ACCEPTED decision and reviewer")
+            digest = item.get("prototype_sha256")
+            if not isinstance(digest, str) or not _PROTOTYPE_DIGEST.fullmatch(digest):
+                raise ValueError("prototype SHA-256 is invalid")
+            path = item.get("prototype_path")
+            if not isinstance(path, str):
+                raise ValueError("prototype path is invalid")
+            raw = _read_beneath(root_fd, path, _PROTOTYPE_MAX_BYTES)
+            actual = hashlib.sha256(raw).hexdigest()
+            if actual != digest:
+                raise ValueError("prototype changed after the recorded preview")
+            source = raw.decode("utf-8", errors="strict")
+            parser = _SelfContainedHtml()
+            parser.feed(source)
+            parser.close()
+            if parser.errors:
+                raise ValueError(parser.errors[0])
+            dependency_hashes: dict = {}
+            validation = Checks("UI设计")
+            _check_ui_prototypes(validation, req_dir, ui_text,
+                                 require_confirmation=False,
+                                 dependency_out=dependency_hashes)
+            if validation.fails:
+                raise ValueError("当前原型或证据依赖未通过复验：" + "；".join(
+                    item["detail"] or item["name"] for item in validation.fails[:3]))
+            dependency_digest = dependency_hashes.get((page_id, area_id))
+            if not isinstance(dependency_digest, str):
+                raise ValueError("无法计算当前页面/区域依赖摘要")
+            identity_digest = _prototype_confirmation_digest(
+                page_id, area_id, digest, dependency_digest)
+            try:
+                reviewed_at = datetime.fromisoformat(item["reviewed_at"].replace("Z", "+00:00"))
+            except (KeyError, TypeError, ValueError, AttributeError) as exc:
+                raise ValueError("reviewed_at must be timezone-aware ISO-8601") from exc
+            if reviewed_at.tzinfo is None:
+                raise ValueError("reviewed_at must include a timezone")
+            print(f"请先在预览器中检查原型：{req_dir / path}")
+            print(f"PAGE/AREA: {page_id}/{area_id}")
+            print(f"原型 SHA-256: {digest}")
+            print(f"当前依赖 SHA-256: {dependency_digest}")
+            print("确认绑定原型与当前截图、权限、页面、F/A 及设计体系依赖；任一变化后须重新预览确认。")
+            phrase = input(f"若已查看实际预览并接受，请输入 ACCEPT {identity_digest[:12]}：").strip()
+            receipt = _write_prototype_confirmation(
+                req_dir, page_id, area_id, digest, dependency_digest, reviewer,
+                item["reviewed_at"], phrase)
+            print(f"✓ 已写入本地交互确认凭证: {receipt}")
+            return 0
+        finally:
+            os.close(root_fd)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        print(f"✗ 原型确认失败: {exc}")
+        return 3
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="doc-gate", description="需求文档流水线确定性门禁")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -2894,6 +3578,11 @@ def main() -> int:
     pr = sub.add_parser("plan-rollback")
     pr.add_argument("dir")
     pr.add_argument("--json", action="store_true")
+    ucp = sub.add_parser("prototype-confirm", help="交互式确认已预览的 UI 原型摘要")
+    ucp.add_argument("dir", help="需求目录（docs/03-SDD/NNN-名称/）")
+    ucp.add_argument("--page", required=True, help="页面 ID，如 PAGE-1")
+    ucp.add_argument("--area", required=True, help="区域 ID，如 AREA-1")
+    ucp.add_argument("--reviewer", required=True, help="实际查看预览并确认的维护者姓名")
     args = ap.parse_args()
 
     if args.cmd == "init":
@@ -2925,6 +3614,8 @@ def main() -> int:
         return cmd_plan_status(req_dir, args.base, args.json)
     if args.cmd == "plan-rollback":
         return cmd_plan_rollback(req_dir, args.json)
+    if args.cmd == "prototype-confirm":
+        return cmd_prototype_confirm(req_dir, args.page, args.area, args.reviewer)
     return cmd_status(req_dir, args.json)
 
 
