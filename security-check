@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Read-only security data entry point; consumes bounded UTF-8 JSON on stdin."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+_script_dir = Path(__file__).resolve().parent
+_installed = _script_dir.name == "bin" and _script_dir.parent.name == ".repo-memory-kit"
+_package_root = _script_dir.parent / "lib" if _installed else _script_dir
+sys.path.insert(0, str(_package_root))
+
+from aek.application.security_review import SecurityReviewService
+from aek.adapters.security_store import SecurityStore
+from aek.adapters.security_scanner import ScannerAdapter
+from aek.core.security.model import MAX_SECURITY_BYTES, SecurityInputError, decode_security_request
+
+
+def main() -> int:
+    try:
+        if len(sys.argv) != 1:
+            raise SecurityInputError()
+        raw = sys.stdin.buffer.read(MAX_SECURITY_BYTES + 1)
+        request = decode_security_request(raw)
+        if request.operation == "report":
+            record_ref = json.loads(request.payload_json)["record_ref"]
+            result = SecurityReviewService(record_port=SecurityStore(Path.cwd(), record_ref)).report(raw)
+        elif request.operation == "evaluate":
+            result = SecurityReviewService().evaluate(raw)
+        elif request.operation == "doctor":
+            tool_ids = json.loads(request.payload_json)["tool_ids"]
+            ports = {tool: ScannerAdapter(Path.cwd(), tool) for tool in tool_ids}
+            result = SecurityReviewService(scanner_ports=ports).doctor(raw)
+        else:
+            result = SecurityReviewService().plan(raw)
+    except (ValueError, OSError):
+        result = {"schema_version": 1, "status": "REJECTED",
+                  "reason_codes": ["INVALID_SECURITY_INPUT"]}
+        code = 3
+    else:
+        code = 0 if result["status"] == "COMPLETE" else 2
+    encoded = json.dumps(result, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode("utf-8")
+    try:
+        sys.stdout.buffer.write(encoded + b"\n")
+    except OSError:
+        return 3
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

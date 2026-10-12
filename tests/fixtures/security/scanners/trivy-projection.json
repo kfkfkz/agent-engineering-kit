@@ -1,0 +1,1 @@
+{"SchemaVersion":2,"ArtifactName":"synthetic-input","ArtifactType":"filesystem","Results":[{"Target":"app.py","Class":"lang-pkgs","Type":"npm","Packages":[{"Name":"example","Version":"1.0"}],"Vulnerabilities":[{"VulnerabilityID":"CVE-2026-0001","PkgName":"example","InstalledVersion":"1.0","Severity":"HIGH"}]}]}

@@ -7,26 +7,17 @@ description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移�
 
 ## 治理等级（governance profile）
 
-**第一步：读取 `.repo-memory-kit/governance`**——它决定本节的回执形态要求。
-
-- **strict**（默认）：所有非平凡变更必须落正式验证回执（`docs/delivery-receipts/`）
-- **lightweight**（`install.sh --lightweight` 启用）：仅**高风险变更**（数据库
-  schema、外部 API 契约、安全域）要求独立回执文件；低风险变更（文案/配置/
-  纯内部重构）允许在 commit message 或 PR 描述中含验证结论替代
-
-**lightweight 不降低验证标准，只放宽回执形式**：测试必须通过、行为变更
-必须可验证、高风险判定标准不变。本节优先于下方"必需产物"中的回执要求
-（冲突时以 governance marker 实际值为准）。
+第一步读取 `.repo-memory-kit/governance`：strict（默认）非平凡变更落正式回执；
+lightweight 仅数据库 schema、外部 API 契约、安全域等高风险变更要求独立文件，低风险
+文案/配置/内部重构可用 commit/PR 验证结论。marker 决定载体，优先于下文模板；
+lightweight 不降低风险判断和测试标准。
 
 ## 阶段一：路线复核、治理评估与最终 diff 审查
 
-需要项目历史、既有决定、坑点或旧回执时，先调用 `memory_recall` MCP 的预算化 context 契约；只在
-MCP 不可见/不兼容/调用开始前失败时内部降级 CLI，再失败才有界文本查找。不得在 MCP 成功后重复
-CLI/grep，也不得把无命中、截断或 degraded 解释成“没有相关约束”。
-
 ### 代码评审取证顺序
 
-代码评审前完整读取并执行 [取证规范](references/review-evidence.md)，不得仅凭摘要评审。
+代码评审前完整执行 [取证规范](references/review-evidence.md)：预算化 Memory MCP→
+有条件 CLI 降级→新鲜 graph/coverage→精确源码；成功不重复，缺口不解释为没有约束。
 
 1. 固定本次任务目标、验收条件、Route Card、基线和最终 diff；区分本次修改与用户已有改动。
 2. **路线与范围裁决**：运行
@@ -48,6 +39,10 @@ CLI/grep，也不得把无命中、截断或 degraded 解释成“没有相关�
    测试充分性、复杂度与维护性、文档/记忆一致性、**与冻结设计文档的偏离**
    （diff 超出 任务清单 预计修改范围 = 显式记录，静默超范围视作未声明范围蔓延）。
 5. 命中安全触发条件时调用 `security-review`，并把其结果纳入同一门禁。
+   完整读 [安全工作流](../security-review/references/workflow.md)（Catalog `security-workflow`），
+   按受控facts/真实阶段/政策把安全 requirements/provenance 与当前证据接原 Composer，不删其他要求。
+   未知/旧/缺/ERROR 技术证据 PENDING，硬违反 FAIL；风险接受不替代技术证明，NOT_APPLICABLE
+   不伪 PASS。仅可信原 READY + 同 VERIFIED 快照 closure_proof 能关闭，旧 PASS 仅适配参数。
 6. 专项检查含 `sql-performance-screen` 时只执行下方数据库初查；Route Card 含
    `performance_capacity` 或治理要求 `performance-review` 时才执行深度验证。
    未命中时不增加性能专项步骤。

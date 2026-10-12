@@ -4,10 +4,10 @@
 
 Agent Engineering Kit（AEK）是一套面向 **AI Coding Agent 与真实软件工程协作** 的仓库级工程控制体系。
 
-当前稳定版本为 **1.0.2（Product Refinement）**。这一版本把 Task Route 与 Governance 风险裁决
-真正解耦，固定 Memory-first / Codebase-first 检索与新鲜度屏障，并补齐 Review Issue 生命周期、
-WorkUnit 中断恢复和身份绑定的 Delivery Gate。重点不是增加更多 Skill，而是让现有主链减少重复读取、
-避免轻任务过度流程、在代码或策略变化后拒绝复用过期证据，并在异常中断后从可验证状态继续。
+当前稳定版本为 **1.0.3**，**1.0.4 候选版本**正在验证。现有主链将 Task Route 与 Governance
+风险裁决分离，固定 Memory-first / Codebase-first 检索与新鲜度屏障，提供 Review Issue 生命周期、
+WorkUnit 恢复和身份绑定的 Delivery Gate。1.0.4 候选版本增加定向安全记录、依赖采用前置与交付复验，
+并明确真实宿主来源、独立证据和执行隔离的边界；发布状态见 [Changelog](CHANGELOG.md#unreleased)。
 
 AEK 不替代 Codex、Claude Code 等 Coding Agent，也不尝试重新实现一个 Agent Runtime。
 
@@ -1236,7 +1236,37 @@ REFACTOR
 
 因此安全能力仍然遵循：
 
-> **按风险增加工程重量。**
+> **按风险追加审查、验证和凭证要求，工作量路线独立判断。**
+
+## 12.1 依赖采用与交付分别取证
+
+1.0.4 候选版本在依赖采用阶段核对准确包、拟版本、用途、作用域、适用公告和兼容性；尚未生成的
+真实解析清单或发布物列为独立交付待验项。交付再核对 RESOLVED/SHIPPED 的当前版本与产物，
+保留直接/传递关系和覆盖缺口。已知受影响依赖不能因未看到 import 或无法复现 PoC 而消失。
+可靠证明缺失或过期时保持 PENDING；明确违反策略时拒绝采用。
+
+## 12.2 发现、复验、审批与关闭分开
+
+SecurityRecord 以 revision/CAS 保存事件与状态。作者只能声明 FIXED，独立当前复验才能形成
+VERIFIED；误报需要反证，风险接受需要匹配范围与期限的真实直接用户审批。只有受控工作流取得原
+Delivery Gate Composer 的真实 READY，绑定同一 VERIFIED 快照并保留其他 requirements，才派生
+CLOSED。报告从同一 revision 派生，不反写状态。WorkUnit 恢复重新核对来源、当前身份、实际材料
+与历史提交；非幂等结果未知时转人工。
+
+日常保持定向范围；明确请求后才建立全量基线。未再次出现且覆盖不足的发现保留未核验状态。
+业务安全不变量需冻结需求/设计或可核验用户来源确认，模型推导仅为候选。
+
+## 12.3 当前执行边界
+
+`security-check` 提供只读 evaluate/report/doctor/plan，用户继续入口仍是 Skill。Trivy 0.75.0、
+Semgrep 1.180.0、Gitleaks 8.30.1 是可选固定协议基线，测试用原创合成投影及可执行替身验证参数、
+解析和拒绝路径，不证明真实检出能力。不自动安装、下载公告库/规则、上传或启用主动攻击。
+
+受控 SDK 接缝要求真实宿主事件来源、当前材料及授权。默认 HostEventSource 尚无真实宿主来源，
+内置进程执行器也不提供网络/文件系统隔离；计划所需隔离无法兑现即拒绝。现有 CLI/MCP 不授权
+扫描、审批或关闭，报告中的角色、verified/READY 字段和摘要不能提权。v2 策略为显式采用，已有
+v1 团队策略不会自动覆盖；工具可选也不能豁免当前 required evidence。Strix 主动扫描与 SARIF
+不属于 1.0.4 范围。配置与迁移示例见[使用指南](USAGE.md#安全审查与依赖治理)。
 
 ---
 
@@ -1462,11 +1492,16 @@ AEK 将：
 ✓ Application Service / MCP 单路径调度与提交回执
 ✓ WorkUnit 七态、writer epoch/CAS 接管与 Workflow Recovery
 ✓ 非幂等提交状态核对；结果不明转人工，已提交动作不自动重做
+✓ 1.0.4 候选：版本化安全记录、只读机械入口和定向依赖治理
+✓ 1.0.4 候选：独立复验/审批/关闭的来源与材料绑定 SDK 接缝
 ```
 
 当前的 Workflow Recovery 根据持久化状态、当前身份和可查询回执决定复用、重验或转人工。
 它不会恢复宿主 Agent 进程、工具连接或完整对话上下文。MCP Dispatch 的内存回执仅提供当前进程内
 的请求去重，不能替代跨进程的持久化外部提交证明。
+
+安全 SDK 接缝不代表默认 CLI/MCP 已完成自动扫描闭环；当前缺少真实宿主事件来源和内置网络/
+文件系统隔离，受限操作保持拒绝或待人工核验。
 
 ---
 

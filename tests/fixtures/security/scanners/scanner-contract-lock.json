@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "purpose": "Protocol compatibility baseline, not binary-install approval or live-scanner validation",
+  "checked_date": "2026-10-10",
+  "source_verification": "Official release metadata and read-only pinned source/golden shape and digest; no scanner binary executed",
+  "tools": [
+    {
+      "name": "trivy",
+      "version": "0.75.0",
+      "tag": "v0.75.0",
+      "published_at": "2026-10-01T13:34:13Z",
+      "sources": [
+        "https://github.com/aquasecurity/trivy/blob/v0.75.0/pkg/flag/scan_flags.go",
+        "https://github.com/aquasecurity/trivy/blob/v0.75.0/pkg/flag/db_flags.go"
+      ],
+      "fixture_url": "https://raw.githubusercontent.com/aquasecurity/trivy/v0.75.0/integration/testdata/bun.json.golden",
+      "fixture_sha256": "0d90436c81bea86e043c2090e44d1733fa6c29b49d0e212b38373395d7d61dd7",
+      "fixture_bytes": 10825,
+      "shape": "object",
+      "fields": [
+        "SchemaVersion",
+        "Trivy",
+        "ReportID",
+        "CreatedAt",
+        "ArtifactName",
+        "ArtifactType",
+        "Results"
+      ],
+      "row_fields": [
+        "Target",
+        "Class",
+        "Type",
+        "Packages",
+        "Vulnerabilities"
+      ],
+      "license": "Apache-2.0 (main project; individual data/rules must be checked separately)"
+    },
+    {
+      "name": "semgrep",
+      "version": "1.180.0",
+      "tag": "v1.180.0",
+      "published_at": "2026-10-07T23:17:11Z",
+      "sources": [
+        "https://github.com/semgrep/semgrep/blob/v1.180.0/cli/src/semgrep/commands/scan.py"
+      ],
+      "fixture_url": "https://raw.githubusercontent.com/semgrep/semgrep/v1.180.0/cli/tests/default/e2e/snapshots/test_output/test_additional_outputs_with_format_flag/--json/result.json.expected",
+      "fixture_sha256": "a622562f3482ee08ff0fb7e0d84d6b9d6e64b4a1398f881c4c0fe42d103c7601",
+      "fixture_bytes": 915,
+      "shape": "object",
+      "fields": [
+        "engine_requested",
+        "errors",
+        "paths",
+        "profiling_results",
+        "results",
+        "skipped_rules",
+        "time",
+        "version"
+      ],
+      "row_fields": [
+        "check_id",
+        "end",
+        "extra",
+        "path",
+        "start"
+      ],
+      "license": "LGPL-2.1 (main program; rule/license scope separately checked)"
+    },
+    {
+      "name": "gitleaks",
+      "version": "8.30.1",
+      "tag": "v8.30.1",
+      "published_at": "2026-03-21T02:17:58Z",
+      "sources": [
+        "https://github.com/gitleaks/gitleaks/blob/v8.30.1/cmd/root.go",
+        "https://github.com/gitleaks/gitleaks/blob/v8.30.1/README.md"
+      ],
+      "fixture_url": "https://raw.githubusercontent.com/gitleaks/gitleaks/v8.30.1/testdata/expected/report/json_simple.json",
+      "fixture_sha256": "009af704252257862ee56642a9711189b6f70ec039a3531255d154664968b7ba",
+      "fixture_bytes": 414,
+      "shape": "array",
+      "fields": [],
+      "row_fields": [
+        "RuleID",
+        "Description",
+        "StartLine",
+        "EndLine",
+        "StartColumn",
+        "EndColumn",
+        "Match",
+        "Secret",
+        "File",
+        "SymlinkFile",
+        "Commit",
+        "Entropy",
+        "Author",
+        "Email",
+        "Date",
+        "Message",
+        "Tags",
+        "Fingerprint"
+      ],
+      "license": "MIT (main project)"
+    }
+  ],
+  "limitations": [
+    "Fixture tag is source identity, not necessarily the masked/development version inside a fixture.",
+    "Own sanitized projections may test parser contracts; controlled executable doubles do not prove live tool correctness.",
+    "Unknown tool versions are unsupported until version-specific evidence and tests are added.",
+    "Actual executable provenance/security adoption and execution authorization must be verified separately.",
+    "No raw secret output or third-party binary/database is bundled by this document."
+  ]
+}

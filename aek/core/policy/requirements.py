@@ -120,3 +120,23 @@ def normalize_governance_actions(
         tuple(values["checks"]), tuple(values["reviews"]),
         tuple(values["receipts"]), tuple(values["artifacts"]),
         review_depth, receipt_mode, tuple(provenance), tuple(deprecated))
+
+
+def normalize_security_checks(
+    checks: list[str], *, stage: str,
+) -> GovernanceRequirements:
+    """Produce policy requirements without inventing reviews or receipts."""
+    if not isinstance(stage, str) or stage not in {"design", "execution", "closeout"}:
+        raise RequirementError("security requirement stage is invalid")
+    allowed = {"dependency-design-check", "dependency-delivery-check",
+               "security-review", "security-scan:trivy",
+               "security-scan:semgrep", "security-scan:gitleaks"}
+    if (not isinstance(checks, list)
+            or any(not isinstance(check, str) or check not in allowed
+                   for check in checks)):
+        raise RequirementError("security requirement check is invalid")
+    unique = tuple(dict.fromkeys(checks))
+    return GovernanceRequirements(
+        unique, (), (), (), "quick", "inline",
+        tuple(("checks", check, f"risk_overlay:security-policy:{stage}")
+              for check in unique), ())

@@ -1,0 +1,1 @@
+[{"RuleID":"own-test-rule","Description":"synthetic only","StartLine":1,"EndLine":1,"StartColumn":1,"EndColumn":25,"Match":"key=SIMULATED_SECRET_VALUE","Secret":"SIMULATED_SECRET_VALUE","File":"app.py","SymlinkFile":"","Commit":"","Entropy":0,"Author":"","Email":"","Date":"","Message":"","Tags":[],"Fingerprint":"synthetic"}]

@@ -12,7 +12,7 @@ jobs:
       - name: 语法检查（sh -n / py_compile）
         run: |
           sh -n install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/route-eval.test.sh tests/benchmark.test.sh
-          python3 -m py_compile memory-build spec-migrate memory-recall domain-check doc-gate governance-eval route-eval tests/benchmark/context.py tests/run-python-tests.py
+          python3 -m py_compile memory-build spec-migrate memory-recall domain-check doc-gate governance-eval route-eval security-check tests/benchmark/context.py tests/run-python-tests.py
           python3 -m compileall -q aek installer tests
       - name: ShellCheck
         run: |
@@ -61,6 +61,8 @@ jobs:
         run: python3 tests/change-scope.test.py
       - name: 全部 Python 行为套件（自动发现）
         run: python3 tests/run-python-tests.py
+      - name: 安全入口源码与安装副本（静态诊断/原生copy生命周期）
+        run: python3 tests/security-install.test.py
       - name: Benchmark 评测器回归测试
         run: sh tests/benchmark.test.sh
       - name: Windows 可导入性守卫（AST：fcntl/msvcrt/O_NOFOLLOW 隔离在 platform/）
@@ -80,13 +82,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - name: Windows Python 源码编译
         run: |
           python -m compileall -q aek installer tests
-          python -m py_compile doc-gate governance-eval route-eval domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
+          python -m py_compile doc-gate governance-eval route-eval security-check domain-check memory-build memory-recall spec-migrate agent-engineering-mcp
       - name: 全模块可导入（fcntl 已隔离在 platform/posix_fs）
         shell: pwsh
         run: |
@@ -122,6 +126,16 @@ jobs:
             "aek.application.governance",
             "aek.application.review", "aek.application.review_evidence",
             "aek.application.delivery_gate",
+            "aek.core.security", "aek.core.security.model",
+            "aek.core.security.policy", "aek.core.security.record",
+            "aek.core.security.authority", "aek.core.security.scanners",
+            "aek.core.security.dependencies",
+            "aek.core.security.delivery",
+            "aek.core.security.knowledge",
+            "aek.application.security_review", "aek.application.security_workflow",
+            "aek.adapters.security_authority", "aek.adapters.security_evidence",
+            "aek.adapters.security_store", "aek.adapters.security_scanner",
+            "aek.adapters.security_process",
             "aek.adapters.review_markdown",
             "aek.core.planning.facts", "aek.core.planning.policy",
             "aek.core.planning.sql_screen",
@@ -142,6 +156,8 @@ jobs:
           Write-Output "installer modules import OK on Windows"
       - name: Windows 全部 Python 行为套件（自动发现）
         run: python tests/run-python-tests.py
+      - name: Windows 安全入口源码与安装副本（不启动扫描器）
+        run: python tests/security-install.test.py
       - name: 原生 Windows copy 生命周期（install / update / doctor / uninstall）
         shell: pwsh
         run: |
@@ -190,6 +206,11 @@ jobs:
           & python $installedGovernance --help *> $null
           if ($LASTEXITCODE -ne 0) {
             Write-Output "::error title=Windows copy lifecycle::installed governance-eval cannot import package"
+            exit 1
+          }
+          $installedSecurity = Join-Path $repo ".repo-memory-kit/bin/security-check"
+          if (-not (Test-Path -LiteralPath $installedSecurity -PathType Leaf)) {
+            Write-Output "::error title=Windows copy lifecycle::security-check missing"
             exit 1
           }
           $copy = Join-Path $codex ".agents/skills/tdd/SKILL.md"
@@ -264,3 +285,20 @@ jobs:
             '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
             | python agent-engineering-mcp \
             | PYTHONIOENCODING=utf-8 python -c "import json,sys; rows=[json.loads(x) for x in sys.stdin]; assert len(rows) == 2 and len(rows[1]['result']['tools']) == 4"
+
+  python310-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Python 3.10 stdlib 安全模块编译与实际安装入口
+        run: |
+          python -m compileall -q aek installer tests
+          python -m py_compile security-check
+          python tests/security-install.test.py
+          python tests/security-gate.test.py
+          python tests/security-skill-routing.test.py

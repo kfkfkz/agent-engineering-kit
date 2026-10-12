@@ -41,6 +41,9 @@ from .transaction import (
     TransactionRecord,
     acquire_install_lock,
     backup_container,
+    prepare_copy_members,
+    backup_copy_member,
+    apply_copy_member,
     cleanup_staging,
     commit_one,
     recover,
@@ -296,11 +299,16 @@ def _resolve_orphan(parent_fd: int, iso_name: str,
         pass  # 孤儿处理失败不阻塞当前操作
 
 
-def execute_external_removal(target: Path, step: ExternalStep) -> None:
+def execute_external_removal(target: Path, step: ExternalStep, *, tx_id: str | None = None) -> None:
     """安全删除外部资源：符号链接（rename 隔离）或复制文件（hash 校验后
     逐文件删除，只删受管 SKILL.md，空目录才 rmdir——绝不 rmtree 可能混入
     用户文件的目录）。"""
     import hashlib as _h
+    if step.member_spec_id is not None:
+        if tx_id is None:
+            raise SecurityError("copy member removal needs a transaction")
+        apply_copy_member(target, step, tx_id)
+        return
     link_spec = CodexLinkSpec(skill_name=step.skill_name)
     link_spec.validate(Path(step.codex_root), target)
     link = link_spec.derive_link_path(Path(step.codex_root))
@@ -444,19 +452,40 @@ def _remove_external_links(target: Path, tx, external_specs, codex_root_cli):
     符号链接与复制模式都真实执行——copy 不再是"未触碰"的 no-op（P1 修复）。"""
     link_reports = []
     assert codex_root_cli is not None or not external_specs
-    for spec in external_specs:
-        step = plan_external_removal(target, codex_root_cli, spec)
+    pending = []
+    try:
+        for spec in external_specs:
+            step = plan_external_removal(target, codex_root_cli, spec)
+            if step.strategy == "copy" and step.prior_state == "content_matches":
+                pending.extend(prepare_copy_members(target, codex_root_cli, tx, spec, operation="remove"))
+            else:
+                pending.append(step)
+    except (OSError, SecurityError) as exc:
+        _fail_tx(target, tx)
+        print(f"✗ 外部成员移除计划拒绝，未删除任何成员: {exc}")
+        return None
+    # Every external intent is durable before the first removal, including later skills.
+    tx.external.extend(pending)
+    tx.write(target)
+    try:
+        for step in pending:
+            if step.member_spec_id is not None:
+                backup_copy_member(target, tx, step)
+    except (OSError, SecurityError) as exc:
+        tx.status = "failed"
+        tx.detail = f"外部成员备份失败，未移除任何成员: {exc}"
+        tx.write(target)
+        print(f"✗ {tx.detail}")
+        return None
+    for step in pending:
         if step.prior_state not in ("pointing_to_target", "content_matches"):
             step.state = "removed"
-            tx.external.append(step)
             tx.write(target)
-            link_reports.append(f"• {spec.id}: prior_state={step.prior_state}，未触碰")
+            link_reports.append(f"• {step.spec_id}: prior_state={step.prior_state}，未触碰")
             continue
-        tx.external.append(step)
-        tx.write(target)
         try:
-            execute_external_removal(target, step)
-        except OSError as e:
+            execute_external_removal(target, step, tx_id=tx.tx_id)
+        except (OSError, SecurityError) as e:
             failures = restore_external_links(target, tx)
             if failures:
                 tx.status = "needs_human"
@@ -471,9 +500,9 @@ def _remove_external_links(target: Path, tx, external_specs, codex_root_cli):
         step.state = "removed"
         tx.write(target)
         if step.prior_state == "content_matches":
-            link_reports.append(f"✓ 已删除 Codex workspace 技能副本 {spec.id}")
+            link_reports.append(f"✓ 已删除 Codex workspace 技能副本 {step.member_spec_id or step.spec_id}")
         else:
-            link_reports.append(f"✓ 已移除 Codex workspace 技能链接 {spec.id}")
+            link_reports.append(f"✓ 已移除 Codex workspace 技能链接 {step.spec_id}")
     return link_reports
 
 

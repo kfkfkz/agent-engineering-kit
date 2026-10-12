@@ -26,6 +26,8 @@ from .manifest import MANIFEST_SPEC_ID, Manifest, build_manifest_from_tx
 from .registry import (
     _SPEC_ORDER,
     CodexLinkSpec,
+    codex_copy_members,
+    codex_copy_member,
     SecurityError,
     derive_destination,
     derive_transaction_paths,
@@ -39,6 +41,8 @@ from .registry import (
     staged_rel,
     validate_tx_id,
     write_all,
+    trusted_canonical_hashes,
+    current_kit_hash,
 )
 
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -109,9 +113,11 @@ class ExternalStep:
     operation: Literal["create", "remove"] = "remove"
     strategy: Literal["symlink", "copy"] = "symlink"
     expected_hash: str | None = None
+    member_spec_id: str | None = None
+    prior_hash: str | None = None
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "spec_id": self.spec_id,
             "skill_name": self.skill_name,
             "codex_root": self.codex_root,
@@ -121,6 +127,10 @@ class ExternalStep:
             "strategy": self.strategy,
             "expected_hash": self.expected_hash,
         }
+        # Omitting new fields for legacy steps preserves their signed payload.
+        if self.member_spec_id is not None:
+            result.update(member_spec_id=self.member_spec_id, prior_hash=self.prior_hash)
+        return result
 
     @classmethod
     def from_dict(cls, data: Any) -> "ExternalStep":
@@ -135,7 +145,288 @@ class ExternalStep:
             operation=str(data.get("operation") or "remove"),  # type: ignore[arg-type]
             strategy=str(data.get("strategy") or "symlink"),    # type: ignore[arg-type]
             expected_hash=data.get("expected_hash"),
+            member_spec_id=data.get("member_spec_id"),
+            prior_hash=data.get("prior_hash"),
         )
+
+
+def _copy_paths(target: Path, step: ExternalStep):
+    parent = resolve_spec(step.spec_id)
+    if parent.resource_type != "codex_link" or parent.link_skill_name != step.skill_name:
+        raise SecurityError("copy parent does not match Registry")
+    member = codex_copy_member(step.skill_name, step.member_spec_id)
+    root = Path(step.codex_root)
+    CodexLinkSpec(step.skill_name).validate(root, target)
+    return root, member
+
+
+def _copy_bytes(root: Path, relative: str) -> bytes | None:
+    try:
+        fd = secure_open(root, relative, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return None
+    try:
+        if not stat_module.S_ISREG(os.fstat(fd).st_mode):
+            raise SecurityError("copy member is not a regular file")
+        chunks = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+
+
+def _copy_hash(raw: bytes | None) -> str | None:
+    return hashlib.sha256(raw).hexdigest() if raw is not None else None
+
+
+def _copy_isolation_name(member, tx_id: str) -> str:
+    return f".kit-copy-old-{tx_id}-{PurePosixPath(member.destination_path).name}"
+
+
+def settle_copy_isolation(root: Path, member, step, tx_id: str) -> None:
+    if _plat.security_level() != "strict":
+        return
+    relative = PurePosixPath(member.destination_path)
+    try:
+        fd = _plat.secure_walk_dir_fd(root, str(relative.parent))
+    except FileNotFoundError:
+        return
+    try:
+        isolation = _copy_isolation_name(member, tx_id)
+        try:
+            isolated = _hash_regular_at(fd, isolation)
+        except FileNotFoundError:
+            return
+        allowed = {step.prior_hash, step.expected_hash} - {None}
+        if isolated not in allowed:
+            raise SecurityError("copy isolation digest conflicts")
+        try:
+            current = _hash_regular_at(fd, relative.name)
+        except FileNotFoundError:
+            _plat.rename_noreplace(fd, isolation, fd, relative.name)
+        else:
+            if current not in allowed:
+                raise SecurityError("copy destination and isolation conflict")
+            os.unlink(isolation, dir_fd=fd)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _copy_backup_rel(tx_id: str, step: ExternalStep) -> str:
+    validate_tx_id(tx_id)
+    codex_copy_member(step.skill_name, step.member_spec_id)
+    return f".repo-memory-kit/tx/{tx_id}/external-backups/{step.member_spec_id}"
+
+
+def prepare_copy_members(target: Path, root: Path, tx, parent, *, operation="create",
+                         expected_contents: dict[str, bytes] | None = None) -> list[ExternalStep]:
+    """Plan each registered member without granting ownership from its name."""
+    CodexLinkSpec(parent.link_skill_name).validate(root, target)
+    steps = []
+    for member in codex_copy_members(parent.link_skill_name):
+        original_source = _copy_bytes(target, member.destination_path)
+        source = ((expected_contents or {}).get(member.id, original_source))
+        if source is None:
+            raise SecurityError("registered copy source is missing")
+        expected = _copy_hash(source)
+        prior = _copy_hash(_copy_bytes(root, member.destination_path))
+        if operation == "remove" and prior is None:
+            continue
+        trusted = trusted_canonical_hashes(member, target) | {current_kit_hash(member, target)}
+        if expected not in trusted:
+            raise SecurityError("copy source does not have kit lineage")
+        for internal in tx.plan:
+            if member.id in internal.spec_ids and _copy_hash(original_source) == internal.pre_container_hash:
+                # Internal plan is already selected through preflight lineage.
+                if internal.pre_container_hash is not None:
+                    trusted.add(internal.pre_container_hash)
+        for internal in tx.plan:
+            if member.id in internal.spec_ids and internal.pre_container_hash is not None:
+                # Its backup must prove the actual preflight-approved old bytes.
+                backup = _copy_bytes(target, f".repo-memory-kit/tx/{tx.tx_id}/backups/{internal.spec_id}")
+                if _copy_hash(backup) == internal.pre_container_hash:
+                    trusted.add(internal.pre_container_hash)
+        prior_state = "absent" if prior is None else "content_matches"
+        if prior is not None and prior not in trusted:
+            if operation == "remove":
+                raise SecurityError("copy member differs from proven kit content")
+            # Journal a conflict, with permission to create only after it is empty.
+            # Its user bytes are neither backed up nor authorized for replacement.
+            prior_state, prior = "other", None
+        steps.append(ExternalStep(parent.id, parent.link_skill_name, str(root),
+                                  prior_state,
+                                  operation=operation, strategy="copy",
+                                  expected_hash=expected if operation == "create" else prior,
+                                  member_spec_id=member.id, prior_hash=prior))
+    return steps
+
+
+def backup_copy_member(target: Path, tx, step: ExternalStep) -> None:
+    if step.prior_hash is None or (step.operation == "create" and step.prior_hash == step.expected_hash):
+        return
+    root, member = _copy_paths(target, step)
+    raw = _copy_bytes(root, member.destination_path)
+    if _copy_hash(raw) != step.prior_hash:
+        raise SecurityError("copy member changed before backup")
+    relative = _copy_backup_rel(tx.tx_id, step)
+    secure_mkdir(target, str(PurePosixPath(relative).parent))
+    old = _copy_bytes(target, relative)
+    if old is not None:
+        if _copy_hash(old) != step.prior_hash:
+            raise SecurityError("copy backup conflicts")
+        return
+    fd = secure_open(target, relative, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        write_all(fd, raw)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def resolve_empty_copy_conflict(target: Path, tx, step: ExternalStep) -> None:
+    if step.prior_state != "other" or step.operation != "create":
+        return
+    root, member = _copy_paths(target, step)
+    if _copy_bytes(root, member.destination_path) is None:
+        step.prior_state = "absent"
+        tx.write(target)  # New absence intent is durable before a formerly blocked create.
+
+
+def _write_copy_bytes(root: Path, member, raw: bytes, prior_hash: str | None, tx_id: str) -> None:
+    relative = member.destination_path
+    if _copy_hash(_copy_bytes(root, relative)) != prior_hash:
+        raise SecurityError("copy destination changed")
+    parent = str(PurePosixPath(relative).parent)
+    if not root.exists():
+        _plat.mkdirs_checked(Path(root.anchor), root.relative_to(root.anchor).as_posix())
+    secure_mkdir(root, parent)
+    tmp = str(PurePosixPath(parent) / f".kit-copy-{tx_id}-{PurePosixPath(relative).name}")
+    existing = _copy_bytes(root, tmp)
+    if existing is None:
+        fd = secure_open(root, tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, member.expected_mode or 0o644)
+        try:
+            write_all(fd, raw)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    elif existing != raw:
+        raise SecurityError("copy staged bytes conflict")
+    if _copy_hash(_copy_bytes(root, relative)) != prior_hash:
+        raise SecurityError("copy destination changed before publication")
+    if prior_hash is None:
+        if _plat.security_level() == "strict":
+            fd = _plat.secure_walk_dir_fd(root, parent)
+            try:
+                _plat.rename_noreplace(fd, PurePosixPath(tmp).name, fd, PurePosixPath(relative).name)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        else:
+            # Windows compatible uses native no-overwrite rename after safe path checks.
+            if not _plat.check_path_safe(root, tmp) or not _plat.check_path_safe(root, relative):
+                raise SecurityError("copy path is unsafe")
+            os.rename(root / tmp, root / relative)
+    else:
+        if _plat.security_level() == "strict":
+            fd = _plat.secure_walk_dir_fd(root, parent)
+            isolation = _copy_isolation_name(member, tx_id)
+            try:
+                _plat.rename_noreplace(fd, PurePosixPath(relative).name, fd, isolation)
+                if _hash_regular_at(fd, isolation) != prior_hash:
+                    _restore_delete_isolation(fd, isolation, PurePosixPath(relative).name)
+                    raise SecurityError("copy destination changed during isolation")
+                try:
+                    _plat.rename_noreplace(fd, PurePosixPath(tmp).name, fd, PurePosixPath(relative).name)
+                except OSError:
+                    _restore_delete_isolation(fd, isolation, PurePosixPath(relative).name)
+                    raise
+                os.unlink(isolation, dir_fd=fd)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        else:
+            secure_replace(root, tmp, relative)
+
+
+def _copy_delete_step(step: ExternalStep) -> CommitStep:
+    return CommitStep(step.member_spec_id, (step.member_spec_id,), "delete",
+                      step.expected_hash, None, 0o644)
+
+
+def apply_copy_member(target: Path, step: ExternalStep, tx_id: str) -> None:
+    validate_tx_id(tx_id)
+    root, member = _copy_paths(target, step)
+    settle_copy_isolation(root, member, step, tx_id)
+    current = _copy_hash(_copy_bytes(root, member.destination_path))
+    if step.prior_hash is not None and (step.operation == "remove" or step.prior_hash != step.expected_hash):
+        backup = _copy_bytes(target, _copy_backup_rel(tx_id, step))
+        if _copy_hash(backup) != step.prior_hash:
+            raise SecurityError("copy prior backup missing or changed")
+    if step.operation == "create":
+        if current == step.expected_hash:
+            return
+        source = _copy_bytes(target, member.destination_path)
+        if _copy_hash(source) != step.expected_hash:
+            raise SecurityError("copy source changed")
+        _write_copy_bytes(root, member, source, step.prior_hash, tx_id)
+    else:
+        deletion = _copy_delete_step(step)
+        if _plat.security_level() == "strict" and (root / member.destination_path).parent.exists():
+            failures = complete_internal_deletions(root, TransactionRecord(tx_id, "uninstall", "committing", plan=[deletion]))
+            if failures:
+                raise SecurityError("copy deletion isolation conflicts")
+        if current is None:
+            return
+        if current != step.expected_hash:
+            raise SecurityError("copy removal content changed")
+        if _plat.security_level() == "strict":
+            result = _commit_delete_strict(root, deletion, tx_id)
+            if result.status != "committed":
+                raise SecurityError("copy removal could not complete")
+        else:
+            secure_unlink(root, member.destination_path)
+        parent = PurePosixPath(member.destination_path).parent
+        boundary = PurePosixPath(f".agents/skills/{step.skill_name}")
+        while len(parent.parts) >= len(boundary.parts):
+            try:
+                secure_rmdir(root, str(parent))
+            except OSError:
+                break
+            parent = parent.parent
+
+
+def rollback_copy_member(target: Path, step: ExternalStep, tx_id: str) -> None:
+    root, member = _copy_paths(target, step)
+    settle_copy_isolation(root, member, step, tx_id)
+    if step.operation == "remove" and _plat.security_level() == "strict":
+        deletion = _copy_delete_step(step)
+        try:
+            isolation = _delete_isolation_hash(root, deletion, tx_id)
+        except FileNotFoundError:
+            isolation = None
+        if isolation is not None and not _restore_pending_delete(root, deletion, tx_id):
+            raise SecurityError("copy deletion isolation cannot be restored")
+    current = _copy_hash(_copy_bytes(root, member.destination_path))
+    if current == step.prior_hash:
+        return
+    if step.prior_hash is None:
+        if current != step.expected_hash:
+            if step.prior_state == "other" and step.state == "intent":
+                return  # Explicitly observed foreign pre-state was never owned.
+            raise SecurityError("copy rollback destination changed")
+        apply_copy_member(target, ExternalStep(**{**step.__dict__, "operation": "remove"}), tx_id)
+        return
+    backup = _copy_bytes(target, _copy_backup_rel(tx_id, step))
+    if _copy_hash(backup) != step.prior_hash:
+        raise SecurityError("copy rollback backup missing or changed")
+    allowed_current = step.expected_hash if step.operation == "create" else None
+    if current != allowed_current:
+        raise SecurityError("copy rollback destination changed")
+    _write_copy_bytes(root, member, backup, current, tx_id)
 
 
 @dataclass
@@ -401,6 +692,25 @@ def validate_tx_record(tx: TransactionRecord) -> list[str]:
         if step.strategy == "copy" and step.operation == "remove" \
                 and step.expected_hash is None:
             errors.append(f"{step.spec_id}: copy 删除步骤缺 expected_hash（血统凭证）")
+        if step.member_spec_id is not None:
+            try:
+                parent = resolve_spec(step.spec_id)
+                if (step.strategy != "copy" or parent.resource_type != "codex_link"
+                        or step.skill_name != parent.link_skill_name):
+                    raise SecurityError("copy member parent is invalid")
+                codex_copy_member(step.skill_name, step.member_spec_id)
+                for value in (step.expected_hash, step.prior_hash):
+                    if value is not None and (not isinstance(value, str) or not HEX64.fullmatch(value)):
+                        raise SecurityError("copy member digest is invalid")
+                if step.expected_hash is None:
+                    raise SecurityError("copy member expected digest is missing")
+                if (step.prior_state not in {"absent", "content_matches", "other"}
+                        or step.state not in {"intent", "applied", "removed"}
+                        or (step.prior_state in {"absent", "other"}) != (step.prior_hash is None)
+                        or step.operation != ("create" if tx.kind == "install" else "remove")):
+                    raise SecurityError("copy member state is invalid")
+            except SecurityError as exc:
+                errors.append(str(exc))
     # needs_human 也在可恢复集内（§11.9 人工恢复入口对其选择策略；
     # find_unresolved 的扫描集含 needs_human——v9）
     if tx.status not in ("planning", "staging", "committing", "needs_human"):
@@ -845,6 +1155,19 @@ def cleanup_staging(target: Path, tx: TransactionRecord) -> None:
     不对 needs_human 调用本函数）。全部路径从 plan + tx_id 派生（§7），
     绝不 scandir 事务目录按磁盘内容删文件。空目录残留（ENOTEMPTY）安全忽略。"""
     tx_dir = f".repo-memory-kit/tx/{tx.tx_id}"
+    for step in tx.external:
+        if step.member_spec_id is not None:
+            try:
+                secure_unlink(target, _copy_backup_rel(tx.tx_id, step))
+            except FileNotFoundError:
+                pass
+            root, member = _copy_paths(target, step)
+            relative = member.destination_path
+            tmp = str(PurePosixPath(relative).parent /
+                      f".kit-copy-{tx.tx_id}-{PurePosixPath(relative).name}")
+            tmp_hash = _copy_hash(_copy_bytes(root, tmp))
+            if tmp_hash is not None and tmp_hash in {step.expected_hash, step.prior_hash}:
+                secure_unlink(root, tmp)
     for step in tx.plan:
         try:
             secure_unlink(target, staged_rel(resolve_spec(step.spec_id), tx.tx_id))
@@ -859,7 +1182,7 @@ def cleanup_staging(target: Path, tx: TransactionRecord) -> None:
             secure_unlink(target, f"{tx_dir}/{extra}")
         except FileNotFoundError:
             pass
-    for rel in (f"{tx_dir}/backups", tx_dir):
+    for rel in (f"{tx_dir}/external-backups", f"{tx_dir}/backups", tx_dir):
         try:
             secure_rmdir(target, rel)
         except OSError:
@@ -931,6 +1254,14 @@ def complete_external_removals(target: Path, tx: TransactionRecord) -> list[str]
     for rec in tx.external:
         if rec.operation == "create":
             continue                              # 卸载事务只收尾 remove 步骤
+        if rec.member_spec_id is not None:
+            try:
+                resolve_empty_copy_conflict(target, tx, rec)
+                apply_copy_member(target, rec, tx.tx_id)
+                rec.state = "applied"
+            except (OSError, SecurityError) as exc:
+                failures.append(f"{rec.member_spec_id}: {exc}")
+            continue
         if rec.prior_state == "content_matches":
             # 复制模式补删（第七轮审计 P1：此处曾误放补偿重拷逻辑——roll-forward
             # 是完成删除，不是撤销它）：
@@ -1008,7 +1339,17 @@ def complete_external_creations(target: Path, tx: TransactionRecord) -> list[str
     import shutil as _shutil
     failures = []
     for rec in tx.external:
-        if rec.operation != "create" or rec.state in ("applied", "removed"):
+        if rec.operation != "create":
+            continue
+        if rec.member_spec_id is not None:
+            try:
+                resolve_empty_copy_conflict(target, tx, rec)
+                apply_copy_member(target, rec, tx.tx_id)
+                rec.state = "applied"
+            except (OSError, SecurityError) as exc:
+                failures.append(f"{rec.member_spec_id}: {exc}")
+            continue
+        if rec.state in ("applied", "removed"):
             continue
         try:
             spec = resolve_spec(rec.spec_id)
@@ -1091,6 +1432,9 @@ def restore_external_links(target: Path, tx: TransactionRecord) -> list[str]:
     failures = []
     for rec in tx.external:
         try:
+            if rec.member_spec_id is not None:
+                rollback_copy_member(target, rec, tx.tx_id)
+                continue
             spec = resolve_spec(rec.spec_id)
             if rec.skill_name != spec.link_skill_name:
                 failures.append(f"{rec.spec_id}: 记录的 skill_name 与 Registry 不符")
@@ -1163,16 +1507,15 @@ def _restore_marker_backup(target: Path, tx: TransactionRecord) -> None:
 
 def _finish_rollback(target: Path, tx: TransactionRecord,
                      final_status: TransactionStatus) -> RecoveryResult:
-    """planning/staging/无 NEW 的 committing 收尾：清理 → marker 恢复 →
-    外部补偿 → 状态落盘。"""
+    """Restore external pre-bytes before deleting their transaction backups."""
     _restore_marker_backup(target, tx)
-    cleanup_staging(target, tx)
     failures = restore_external_links(target, tx)
     if failures:
         tx.status = "needs_human"
         tx.detail = f"外部步骤补偿失败: {failures}"
         write_transaction_atomic(target, tx)
         return RecoveryResult("needs_human", detail=tx.detail)
+    cleanup_staging(target, tx)
     tx.status = final_status
     write_transaction_atomic(target, tx)
     return RecoveryResult(

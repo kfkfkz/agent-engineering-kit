@@ -46,6 +46,7 @@ from .registry import (
     STATE_REGISTRY,
     CodexLinkSpec,
     ResourceSpec,
+    SecurityError,
     compute_fragment_hashes,
     current_kit_version,
     file_sha256,
@@ -63,6 +64,10 @@ from .transaction import (
     TransactionRecord,
     acquire_install_lock,
     backup_container,
+    prepare_copy_members,
+    backup_copy_member,
+    apply_copy_member,
+    resolve_empty_copy_conflict,
     cleanup_staging,
     commit_one,
     recover,
@@ -388,6 +393,24 @@ def ensure_codex_links(target: Path, codex_root: Path,
         link_spec.validate(codex_root, target)
         link = link_spec.derive_link_path(codex_root)
         expected = link_spec.derive_target_path(target)
+        if strategy == "copy":
+            try:
+                members = [step for step in tx.external
+                           if step.member_spec_id is not None and step.spec_id == spec.id]
+                if not members:
+                    members = prepare_copy_members(target, codex_root, tx, spec)
+                    tx.external.extend(members)
+                    tx.write(target)
+                for member_step in members:
+                    resolve_empty_copy_conflict(target, tx, member_step)
+                    backup_copy_member(target, tx, member_step)
+                    apply_copy_member(target, member_step, tx.tx_id)
+                    member_step.state = "applied"
+                    tx.write(target)
+                reports.append(f"✓ 已复制受管技能成员到 Codex workspace {link}")
+            except (OSError, SecurityError) as exc:
+                failures.append(f"{spec.id}: {exc}")
+            continue
         source_md = expected / "SKILL.md"
         src_hash = (_hashlib.sha256(source_md.read_bytes()).hexdigest()
                     if source_md.is_file() else None)
@@ -598,6 +621,19 @@ def run_install(target: Path, *, repair: bool = False,
 
         # 步骤 6：Staging
         tx.plan = [gp.step for gp in plans]
+        if codex_root is not None and link_strategy == "copy":
+            expected_contents = {spec.id: gp.content for gp in plans for spec in gp.specs
+                                 if spec.resource_type == "owned_file"}
+            try:
+                for external_spec in preflight.external_set:
+                    tx.external.extend(prepare_copy_members(
+                        target, codex_root, tx, external_spec, expected_contents=expected_contents))
+            except (OSError, SecurityError) as exc:
+                tx.status = "failed"
+                tx.detail = str(exc)
+                tx.write(target)
+                print(f"✗ 外部copy计划拒绝，未修改受管资源: {exc}")
+                return 1
         tx.write(target)          # ★ 完整 plan 一次性原子写入（不变量 1）
         tx.status = "staging"
         tx.write(target)
@@ -625,6 +661,16 @@ def run_install(target: Path, *, repair: bool = False,
                 tx.status = "failed"
                 tx.write(target)
                 return 1
+
+        for member_step in tx.external:
+            if member_step.member_spec_id is not None:
+                try:
+                    backup_copy_member(target, tx, member_step)
+                except (OSError, SecurityError) as exc:
+                    tx.status = "needs_human"
+                    tx.detail = f"外部copy备份失败: {exc}"
+                    tx.write(target)
+                    return 1
 
         # 步骤 8.5：写 codex workspace marker（P1 回归——必须在 committing
         # 之前：首次安装的链接创建在 done 前发生，若在此处之前崩溃，

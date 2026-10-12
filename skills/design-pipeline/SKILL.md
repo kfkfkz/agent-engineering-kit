@@ -120,6 +120,13 @@ Agent 的工具调用中；仅当用户明确要求诊断底层命令时才展�
   - 测试方案：用例行 `| TC-1 | … | A1 | …`
 - 汇总矩阵（验收覆盖表/需求→任务映射）**不手写**——doc-gate 生成 traceability，双写必漂移。
 
+拟引入/变更依赖时，使用 `reuse-research` 并完整读取
+[依赖采用前置](../security-review/references/dependencies.md)（Catalog `security-dependencies`）；Memory
+context 的 stage 为 `design`，purpose=`target_evidence` 或审查的 `review_required`，不是文档中文阶段名。
+在本阶段既有取舍/详细设计载体留下准确拟包版本、适用公告时点/来源、环境/API兼容和当前风险处置。
+必要设计证据 PENDING 必须提交现有评审，不能继续冻结采纳；实际解析/发布物未生成可独立后补。
+未知匹配/来源不能猜 ADOPTABLE，模型候选安全不变量不变成已确认硬要求；无依赖影响须可信scope证明。
+
 ### 3. 硬校验循环
 
 ```bash

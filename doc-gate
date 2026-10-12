@@ -1032,6 +1032,9 @@ def _review_dependency_fingerprint(req_dir: Path, stage: str,
         "dynamic": dynamic,
         "rubric": "design-pipeline-review-v1",
     }
+    security = _review_security_context(req_dir, stage)
+    if security is not None:
+        payload["security_material_digest"] = hashlib.sha256(security.encode("utf-8")).hexdigest()
     return hashlib.sha256(json.dumps(
         payload, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -1086,12 +1089,46 @@ def _review_supporting_context(req_dir: Path, stage: str,
     hard_checks = _read(req_dir / "reviews" / "hard-checks.json")
     if hard_checks is not None:
         context["reviews/hard-checks.json"] = hard_checks
+    security = _review_security_context(req_dir, stage)
+    if security is not None:
+        context["security/design-preconditions.json"] = security
     for upstream in _effective_stage_spec(stage, dynamic_state)["upstream"]:
         for doc in _effective_stage_spec(upstream, dynamic_state)["docs"]:
             text = _read(req_dir / doc)
             if text is not None:
                 context[f"upstream/{upstream}/{doc}"] = text
     return context
+
+
+def _review_security_context(req_dir: Path, stage: str) -> str | None:
+    """Submit existing security material to the original reviewer, never approve it.
+
+    The CLI has no live host provenance channel. A saved ADOPTABLE/VERIFIED
+    flag is therefore accompanied by a fresh read-only PENDING evaluation,
+    not interpreted as a signed dependency precondition. Absence means no
+    approved carrier was supplied, not a proof of no dependency impact.
+    """
+    if stage not in {"概要设计", "详细设计"}:
+        return None
+    carrier = req_dir / "security"
+    path = carrier / "record.json"
+    if carrier.is_symlink() or path.is_symlink():
+        raise ValueError("security review carrier is a symlink")
+    if not path.exists():
+        return None
+    from aek.application.security_review import SecurityReviewService
+    from aek.core.security.record import load_security_record, record_as_dict
+    record = load_security_record(_read_review_bytes(path))
+    body = record_as_dict(record)
+    payload = {"schema_version": 1, "operation": "evaluate", "stage": "design", "scope": body["scope"],
+               "identity": body["identity"], "proposals": [row["proposal"] for row in body["dependency_decisions"]],
+               "surfaces": body["surfaces"], "findings": body["findings"], "inventories": body["inventories"],
+               "run_refs": [], "invariant_refs": []}
+    evaluated = SecurityReviewService().evaluate(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    return json.dumps({"record_digest": record.revision_digest, "record": body, "evaluation": evaluated,
+                       "authority_verified": False,
+                       "review_requirement": "Resolve pending design dependency evidence before adoption; delivery inventory may follow."},
+                      ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _record_review_delivery(reviews: Path, stage: str, request,

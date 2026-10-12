@@ -51,12 +51,24 @@ from aek.core.policy.requirements import (
     RequirementError,
     normalize_governance_actions,
 )
+from aek.core.security.policy import (
+    SecurityPolicy, SecurityPolicyError, decode_capability_guard,
+)
 
 
 PROFILE_DEFAULTS: dict[str, list[str]] = {
     "strict": ["receipt"],
     "lightweight": ["inline_review"],
 }
+
+
+def _closed_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise PolicyError("policy v2 contains duplicate JSON keys")
+        result[key] = value
+    return result
 
 
 def load_policy(governance_path: Path) -> dict[str, Any]:
@@ -75,25 +87,60 @@ def load_policy(governance_path: Path) -> dict[str, Any]:
     except OSError:
         pass
     rules: list[dict[str, Any]] = []
+    version = 1
+    security_review = None
     if governance_path.is_file():
         try:
-            data = json.loads(governance_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
+            raw = governance_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (json.JSONDecodeError, OSError, UnicodeError, RecursionError) as e:
             raise PolicyError(f"governance.json 存在但不可解析（fail-closed）: {e}")
         if not isinstance(data, dict):
             raise PolicyError("governance.json 顶层必须是对象")
+        version = data.get("version", 1)
+        if type(version) is not int or version not in {1, 2}:
+            raise PolicyError("unsupported governance policy version")
+        if version == 2:
+            data = json.loads(raw, object_pairs_hook=_closed_json_object)
+            if set(data) != {"version", "rules", "security_review"}:
+                raise PolicyError("policy v2 has unknown or missing fields")
+            try:
+                security_review = SecurityPolicy.from_dict(
+                    data["security_review"]).to_dict()
+            except SecurityPolicyError as exc:
+                raise PolicyError(str(exc)) from exc
+        elif "security_review" in data:
+            raise PolicyError("security_review requires policy v2")
         rules = data.get("rules", [])
         if not isinstance(rules, list):
             raise PolicyError("governance.json 的 rules 必须是数组")
         # 第八轮审计 P2：逐条规则 schema 校验——元素非法 → 受控 fail-closed，
         # 不在 evaluate_diff 里 traceback
+        guard_found = False
+        decoded_rules = []
+        rule_ids: set[str] = set()
         for i, rule in enumerate(rules):
             if not isinstance(rule, dict):
                 raise PolicyError(f"rules[{i}] 不是对象（得到 {type(rule).__name__}）")
+            if version == 2 and (set(rule) - {"id", "require", "match"}
+                                 or not {"id", "require"} <= set(rule)):
+                raise PolicyError("policy v2 rule has unknown or missing fields")
             rid = rule.get("id", f"rules[{i}]")
             if not isinstance(rule.get("id", ""), str):
                 raise PolicyError(f"{rid}: id 必须是字符串")
+            if version == 2:
+                if (not isinstance(rid, str)
+                        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", rid)
+                        or rid in rule_ids):
+                    raise PolicyError("policy v2 rule identity is invalid or duplicate")
+                rule_ids.add(rid)
             require = rule.get("require", [])
+            if version == 2 and isinstance(require, dict):
+                try:
+                    require = decode_capability_guard(require)
+                except SecurityPolicyError as exc:
+                    raise PolicyError(str(exc)) from exc
+                guard_found = True
             if not isinstance(require, list) or not all(
                     isinstance(a, str) for a in require):
                 raise PolicyError(f"{rid}: require 必须是字符串数组")
@@ -104,13 +151,22 @@ def load_policy(governance_path: Path) -> dict[str, Any]:
             match = rule.get("match", {})
             if not isinstance(match, dict):
                 raise PolicyError(f"{rid}: match 必须是对象")
+            if version == 2 and set(match) - {"paths", "files", "added_lines_regex"}:
+                raise PolicyError("policy v2 matcher has unknown fields")
             for key in ("paths", "files", "added_lines_regex"):
                 if key in match and not (
                         isinstance(match[key], list)
                         and all(isinstance(x, str) for x in match[key])):
                     raise PolicyError(f"{rid}: match.{key} 必须是字符串数组")
-    return {"version": 1, "profile": profile, "rules": rules,
-            "default": {"require": list(PROFILE_DEFAULTS[profile])}}
+            decoded_rules.append(rule if version == 1 else {**rule, "require": require})
+        if version == 2 and not guard_found:
+            raise PolicyError("policy v2 requires security capability guard")
+        rules = decoded_rules
+    result = {"version": version, "profile": profile, "rules": rules,
+              "default": {"require": list(PROFILE_DEFAULTS[profile])}}
+    if security_review is not None:
+        result["security_review"] = security_review
+    return result
 
 
 def _unquote_git_path(path: str) -> str:

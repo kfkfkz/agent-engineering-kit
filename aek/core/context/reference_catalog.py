@@ -101,3 +101,60 @@ REFERENCE_CATALOG = ReferenceCatalog((
         authority="repo-delivery.evidence.closeout",
     ),
 ))
+
+
+SECURITY_RISKS = ("dependencies", "application", "agent_configuration",
+                  "workflow", "baseline")
+SECURITY_STAGES = ("design", "execution", "closeout")
+
+
+@dataclass(frozen=True)
+class SecurityReferenceSpec:
+    id: str
+    source_path: str
+    risks: tuple[str, ...]
+    authority: str
+
+    def __post_init__(self) -> None:
+        parts = self.source_path.split("/")
+        if (not self.id or not self.authority or len(parts) != 4
+                or parts[:3] != ["skills", "security-review", "references"]
+                or any(part in {"", ".", ".."} for part in parts)
+                or "\\" in self.source_path or not self.source_path.endswith(".md")
+                or not self.risks or any(risk not in SECURITY_RISKS for risk in self.risks)):
+            raise ValueError("invalid security reference specification")
+
+
+class SecurityReferenceCatalog:
+    """Select only declared risk topics; selection grants no execution rights."""
+
+    def __init__(self, references: tuple[SecurityReferenceSpec, ...]) -> None:
+        by_id = {reference.id: reference for reference in references}
+        if (len(by_id) != len(references)
+                or len({item.authority for item in references}) != len(references)):
+            raise ValueError("duplicate security reference identity")
+        self.references: Mapping[str, SecurityReferenceSpec] = MappingProxyType(by_id)
+
+    def for_risks(self, risks: tuple[str, ...], stage: str) -> tuple[SecurityReferenceSpec, ...]:
+        if (not isinstance(stage, str) or stage not in SECURITY_STAGES
+                or not isinstance(risks, tuple)
+                or any(not isinstance(risk, str) or risk not in SECURITY_RISKS for risk in risks)):
+            raise ValueError("unknown security reference risk or stage")
+        return tuple(reference for reference in self.references.values()
+                     if set(reference.risks) & set(risks))
+
+
+SECURITY_REFERENCE_CATALOG = SecurityReferenceCatalog((
+    SecurityReferenceSpec("security-dependencies",
+                          "skills/security-review/references/dependencies.md",
+                          ("dependencies",), "security-review.dependencies"),
+    SecurityReferenceSpec("security-source",
+                          "skills/security-review/references/source-review.md",
+                          ("application", "agent_configuration"), "security-review.source"),
+    SecurityReferenceSpec("security-workflow",
+                          "skills/security-review/references/workflow.md",
+                          ("workflow",), "security-review.workflow"),
+    SecurityReferenceSpec("security-baseline",
+                          "skills/security-review/references/baseline.md",
+                          ("baseline",), "security-review.baseline"),
+))

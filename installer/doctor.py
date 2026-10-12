@@ -7,11 +7,13 @@ from __future__ import annotations
 import json
 import os
 import stat
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import platform as _plat
 from .governance import compare_governance_defaults
+from aek.core.security.policy import SCANNERS
 from .manifest import Manifest, ManifestCorruptError, read_manifest
 from .registry import (
     REGISTRY,
@@ -63,6 +65,26 @@ def governance_defaults_finding(target: Path) -> Finding:
         detail = ("schema/baseline=unknown；规则缺失、不可安全读取或格式不支持，"
                   "无法比较当前默认规则；未修改团队策略")
     return Finding("governance-defaults", rel, status, detail)
+
+
+def security_tool_findings() -> list[Finding]:
+    """Only inspect PATH/file presence; never launch optional executables."""
+    findings = []
+    for tool in SCANNERS:
+        candidate = shutil.which(tool)
+        installed = False
+        if candidate is not None:
+            path = Path(candidate)
+            installed = path.is_file() and not path.is_symlink()
+        findings.append(Finding(
+            f"security-tool-{tool}", "<host-PATH>",
+            "managed" if installed else "unverifiable",
+            f"configured={str(candidate is not None).lower()}; "
+            f"installed={str(installed).lower()}; version=UNKNOWN; "
+            "compatible=UNKNOWN; runnable=UNKNOWN; authorized=UNKNOWN; covered=UNKNOWN；"
+            "静态诊断未执行version probe或扫描；缺可选工具不影响基础安装，"
+            "政策必需检查仍须当前版本/授权/范围证据"))
+    return findings
 
 
 def run_doctor(target: Path, *, codex_root_cli: Path | None = None) -> int:
@@ -203,6 +225,7 @@ def run_doctor_checks(target: Path,
     # Informational only: custom policies are team-owned, not installation drift.
     # Do not change the six installation states or the doctor exit code.
     findings.append(governance_defaults_finding(target))
+    findings.extend(security_tool_findings())
 
     # 宿主 MCP 能力四态必须分别报告。doctor 只能证明配置文件，不能从本地
     # 安装状态推导当前 Agent 看得见工具、仓库已登记或索引已追平。

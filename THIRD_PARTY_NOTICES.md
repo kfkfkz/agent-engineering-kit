@@ -285,6 +285,24 @@ AEK 不因该兼容入口而捆绑 Spec Kit 的 CLI 或运行时。
 
 ---
 
+## 3.4 Optional Security Scanner Protocols
+
+1.0.4 候选版本提供以下可选外部扫描器的固定协议适配：
+
+| 外部项目 | 协议基线 | 协议锁记录的主项目许可证 |
+| --- | --- | --- |
+| [aquasecurity/trivy](https://github.com/aquasecurity/trivy) | 0.75.0 | Apache-2.0 |
+| [semgrep/semgrep](https://github.com/semgrep/semgrep) | 1.180.0 | LGPL-2.1 |
+| [gitleaks/gitleaks](https://github.com/gitleaks/gitleaks) | 8.30.1 | MIT |
+
+版本、固定上游 fixture 来源及摘要见公开的[扫描器契约测试说明](tests/fixtures/security/scanners/README.md)。这些基线用于协议兼容，不构成安装许可、工具安全背书或真实扫描验证。
+
+AEK 不分发这些扫描器的二进制、上游源码、规则或数据库，不自动安装或下载。仓库中的 JSON 投影和可执行替身是 AEK 原创、合成且脱敏的测试材料，只复现有限字段形状与参数契约，没有复制上游 fixture 内容。这些原创测试材料适用 AEK 自身许可证。
+
+主项目许可证不覆盖所有可独立选择的规则、公告数据库、商业组件或附加服务。实际采用时，用户需核对具体工具、版本与数据/规则的上游许可和使用条件；AEK 的 MIT License 不重新许可外部工具。
+
+---
+
 # 4. External Tools Used at Runtime
 
 AEK 的某些能力还可能依赖用户环境中已经安装的外部工具，例如：

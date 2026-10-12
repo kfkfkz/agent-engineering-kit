@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Literal, TypeVar
 
-from aek.core.context.reference_catalog import REFERENCE_CATALOG
+from aek.core.context.reference_catalog import REFERENCE_CATALOG, SECURITY_REFERENCE_CATALOG
 
 # ── kit 仓库根（installer/ 的父目录；安装器代码的一部分，目标仓库不可篡改）──
 KIT_DIR = Path(__file__).resolve().parent.parent
@@ -126,6 +126,7 @@ KIT_TOOLS = [
     "domain-check", "session-reminder", "agent-engineering-mcp",
     "doc-gate", "governance-eval", "route-eval",
     "codebase-context",
+    "security-check",
 ]
 
 
@@ -245,6 +246,14 @@ def _skill_reference_specs() -> list[ResourceSpec]:
                 destination_path=f".{tree}/skills/{skill}/references/{name}.md",
                 resource_type="owned_file", locator=None,
                 merge_policy="replace", expected_mode=0o644))
+    for reference in SECURITY_REFERENCE_CATALOG.references.values():
+        for tree in ("claude", "agents"):
+            out.append(ResourceSpec(
+                id=f"skill-{tree}-security-review-reference-{reference.id}",
+                source_path=reference.source_path,
+                destination_path=f".{tree}/{reference.source_path}",
+                resource_type="owned_file", locator=None,
+                merge_policy="replace", expected_mode=0o644))
     return out
 
 
@@ -270,6 +279,15 @@ AEK_PACKAGE_FILES = (
     "core/policy/__init__.py",
     "core/policy/evaluator.py",
     "core/policy/requirements.py",
+    "core/security/__init__.py",
+    "core/security/model.py",
+    "core/security/policy.py",
+    "core/security/record.py",
+    "core/security/authority.py",
+    "core/security/scanners.py",
+    "core/security/dependencies.py",
+    "core/security/delivery.py",
+    "core/security/knowledge.py",
     "core/dispatch.py",
     "core/codebase_context.py",
     "core/work_unit.py",
@@ -292,6 +310,8 @@ AEK_PACKAGE_FILES = (
     "application/work_unit.py",
     "application/routing.py",
     "application/governance.py",
+    "application/security_review.py",
+    "application/security_workflow.py",
     "adapters/__init__.py",
     "adapters/atomic_file.py",
     "adapters/capsule.py",
@@ -304,6 +324,11 @@ AEK_PACKAGE_FILES = (
     "adapters/review_lifecycle_store.py",
     "adapters/work_unit_store.py",
     "adapters/codebase_state.py",
+    "adapters/security_authority.py",
+    "adapters/security_evidence.py",
+    "adapters/security_store.py",
+    "adapters/security_scanner.py",
+    "adapters/security_process.py",
 )
 
 
@@ -1057,7 +1082,16 @@ def determine_status(target: Path, spec: ResourceSpec, entry,
                 import hashlib as _h
                 if (_h.sha256(skill_md.read_bytes()).hexdigest()
                         == _h.sha256(source_md.read_bytes()).hexdigest()):
-                    return "managed"      # 复制的 kit 内容，一致
+                    for member in codex_copy_members(spec.link_skill_name):
+                        rel = member.destination_path
+                        if not _fs().check_path_safe(target, rel) or not _fs().check_path_safe(codex_root_cli, rel):
+                            raise SecurityError("copy member path contains a symlink or junction")
+                        source = target / rel
+                        copied = codex_root_cli / rel
+                        if source.is_file() and (not copied.is_file()
+                                or file_sha256(source) != file_sha256(copied)):
+                            return "drifted"
+                    return "managed"      # Every currently installed managed member matches.
 
         if entry is None:
             return "conflict" if link.exists() else "managed"
@@ -1121,3 +1155,19 @@ class CodexLinkSpec:
             (link_path.parent.resolve() / link_path.name).relative_to(codex_root.resolve())
         except ValueError:
             raise SecurityError(f"codex link escapes workspace: {link_path}")
+
+
+def codex_copy_members(skill_name: str) -> tuple[ResourceSpec, ...]:
+    """Only statically registered owned members of this target-bound skill."""
+    if skill_name not in KIT_SKILLS:
+        raise SecurityError("unknown copy skill")
+    prefix = f".agents/skills/{skill_name}/"
+    return tuple(spec for spec in REGISTRY if spec.resource_type == "owned_file"
+                 and spec.destination_path.startswith(prefix))
+
+
+def codex_copy_member(skill_name: str, member_id: str) -> ResourceSpec:
+    members = {spec.id: spec for spec in codex_copy_members(skill_name)}
+    if not isinstance(member_id, str) or member_id not in members:
+        raise SecurityError("copy member is outside registered skill")
+    return members[member_id]

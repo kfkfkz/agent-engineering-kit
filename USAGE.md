@@ -120,6 +120,48 @@ archify 随 AEK 分发，需要 Node.js ≥18。业务流程图的交付链为�
 
 仅在 Node.js 缺失或版本不足、doctor 明确报告 DEGRADED 时允许披露后回退 Mermaid；路径、权限或渲染失败需要排查。图表校验通过不能代替架构或业务正确性评审。
 
+## 安全审查与依赖治理
+
+1.0.4 候选版本扩展 `security-review`，按实际变更范围审查应用、Agent 配置和依赖。安全风险独立追加检查；存量全量审查需要明确范围请求。用户入口仍是 `/security-review` 或 `$security-review`。
+
+依赖采用在设计阶段先核对准确包、拟版本、用途、作用域、适用公告、环境/API 兼容性及风险处置。真实解析或发布物尚未产生时，记录独立的交付待验项；交付再核对 RESOLVED/SHIPPED 清单、直接/传递关系和实际产物。缺可靠公告、清单或当前证据保持 PENDING，不能推导“无漏洞”。公告核验默认最长七天，项目策略可显式调整。
+
+安全记录带 revision 与 CAS，JSON/Markdown 报告从同一 revision 派生，报告不反写状态。作者声明 FIXED 后，需要匹配当前材料与来源的独立复验才能 VERIFIED；风险接受需要真实直接用户审批，误报需要独立反证。关闭须通过原 Delivery Gate Composer 的真实 READY，并绑定同一记录快照，保留其他交付要求。业务安全不变量仅在需求/设计或可核验用户来源确认后形成约束；模型推导保留为候选。基线没再次命中但覆盖不足时保持未核验。
+
+`security-check` 是 Agent 内部机械入口，仅接受有界 JSON 标准输入，提供只读 evaluate/report/doctor/plan。doctor 检查文件或 PATH 配置不启动版本探测，plan 不执行扫描。工具位置、报告中的角色/verified/READY 字段、姓名或摘要不能产生执行权、审批权或关闭权。
+
+可选协议基线为 Trivy 0.75.0、Semgrep 1.180.0、Gitleaks 8.30.1，使用固定参数数组、本地配置和受限环境；不自动安装、下载数据库/规则、上传或主动攻击。协议测试使用原创合成投影和可执行替身，不能证明真实扫描器检出能力。当前默认 SDK `HostEventSource` 没有真实宿主事件来源，内置进程执行器也不提供网络/文件系统隔离；需要隔离的计划会拒绝执行。因此现有 CLI/MCP 不授权扫描、审批或关闭。源码审查建议和缺口披露仍可通过 Skill 完成；Strix 主动扫描与 SARIF 不属于 1.0.4 范围。
+
+### 显式采用 v2 安全策略
+
+安装、更新、repair 和 doctor 都不会把团队已有 v1 `governance.json` 自动迁移为 v2。团队决定采用后，在 AEK 源码目录运行以下只读预览，保留原 rules，并追加当前安装器生成的 capability guard 与完整安全配置：
+
+```bash
+python3 - /path/to/project/.repo-memory-kit/governance.json <<'PY'
+import json
+import sys
+from pathlib import Path
+from installer.governance import (
+    compare_governance_defaults, default_security_governance_policy,
+)
+
+current = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if (not isinstance(current, dict) or set(current) != {"version", "rules"}
+        or type(current["version"]) is not int or current["version"] != 1
+        or not isinstance(current["rules"], list)):
+    raise SystemExit("需要人工核对当前策略；本例仅适用于标准 v1 结构")
+compare_governance_defaults(current)
+candidate = default_security_governance_policy()
+candidate["rules"] = [candidate["rules"][0], *current["rules"]]
+compare_governance_defaults(candidate)
+print(json.dumps(candidate, ensure_ascii=False, indent=2))
+PY
+```
+
+Windows 用 `python` 运行等价脚本。审阅候选后，手工更新团队策略并重跑安装 doctor。v2 顶层为 `version`、`rules`、`security_review`；guard 的 `require` 为 `{"schema_version":1,"capabilities":["security-review-v1"],"actions":[]}`，用于拒绝不认识该能力的旧加载器，不能简化成普通字符串数组。
+
+默认安全策略为 targeted、dynamic_verification=disabled、required_scanners=[]、optional_scanners=[trivy, semgrep, gitleaks]，预算为 300 秒、2,000,000 字节、10,000 项；未知或缺失配置字段拒绝解析。工具可选不等于治理要求的证据可选：一旦当前策略要求某项扫描或验证，缺工具、未运行、部分结果或过期材料仍需补验，不能视为 PASS。策略显式采用也不授予执行权限或补足宿主隔离能力。
+
 ## 安装产物与团队协作
 
 | 位置 | 用途与所有权 |
@@ -134,6 +176,8 @@ archify 随 AEK 分发，需要 Node.js ≥18。业务流程图的交付链为�
 | `.repo-memory-kit/` 中的 manifest、事务、索引与状态 | 每机派生物，不提交版本库 |
 
 更新和卸载依据 manifest 与内容血统操作。用户记忆不会被删除；被手工修改的受管文件会按冲突保护。卸载通常只移除容器中的 AEK 片段；若 manifest 证明根指引容器由 AEK 创建，且移除区块后没有用户内容，才删除该空容器。
+
+copy 安装的安全工具与 reference 也受相同生命周期保护；更新、repair 或卸载不能仅凭文件名覆盖用户修改或未知血统内容。
 
 strict/lightweight 控制治理与回执形态，任务路线控制工作深度。团队 `governance.json` 可以追加检查和凭证要求；非法规则会阻断，升级不会覆盖已有团队规则。SQL/ORM 变化先做数据库无关初查，确认目标方言、N+1、结果边界、索引和锁风险；涉及规模、热点或迁移风险时再要求专项性能证据。
 
