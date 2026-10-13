@@ -15,6 +15,10 @@ import unittest
 import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
+# Fixture completion bound, not a product latency requirement. Lifecycle
+# fixtures include disk-backed copy and transaction I/O; use the existing
+# install helper's 60-second bound consistently on loaded Windows CI runners.
+INSTALLER_TIMEOUT_SECONDS = 60
 sys.path.insert(0, str(ROOT))
 from installer.doctor import run_doctor_checks
 from installer.registry import AEK_PACKAGE_FILES
@@ -63,12 +67,13 @@ raise SystemExit(main(['--codex-root', sys.argv[3], '--link-strategy', 'copy', s
 """
         result = subprocess.run([sys.executable, "-c", program, str(ROOT), str(repository),
                                  str(workspace), member_id], env=self.env, cwd=ROOT,
-                                capture_output=True, timeout=30)
+                                capture_output=True, timeout=INSTALLER_TIMEOUT_SECONDS)
         self.assertEqual(result.returncode, 91, result.stdout.decode() + result.stderr.decode())
 
     def recover(self, repository, direction):
         result = subprocess.run([sys.executable, "-m", "installer", f"--recover={direction}",
-                                 str(repository)], env=self.env, cwd=ROOT, capture_output=True, timeout=30)
+                                 str(repository)], env=self.env, cwd=ROOT, capture_output=True,
+                                timeout=INSTALLER_TIMEOUT_SECONDS)
         self.assertEqual(result.returncode, 0, result.stdout.decode() + result.stderr.decode())
 
     def assert_only_clean_transaction_history(self, expected_status):
@@ -88,7 +93,8 @@ raise SystemExit(main(['--codex-root', sys.argv[3], '--link-strategy', 'copy', s
         result = subprocess.run([sys.executable, "-m", "installer", *flags,
                                  "--codex-root", str(self.workspace),
                                  "--link-strategy", "copy", str(self.repository)],
-                                cwd=ROOT, env=self.env, capture_output=True, timeout=60)
+                                cwd=ROOT, env=self.env, capture_output=True,
+                                timeout=INSTALLER_TIMEOUT_SECONDS)
         self.assertEqual(result.returncode, 0, result.stdout.decode() + result.stderr.decode())
         return result
 
@@ -252,7 +258,8 @@ raise SystemExit(main(['--codex-root', sys.argv[3], '--link-strategy', 'copy', s
         reference.write_bytes(b"team-owned replacement")
         result = subprocess.run([sys.executable, "-m", "installer", "--update", "--codex-root",
                                  str(self.workspace), "--link-strategy", "copy", str(self.repository)],
-                                env=self.env, cwd=ROOT, capture_output=True, timeout=30)
+                                env=self.env, cwd=ROOT, capture_output=True,
+                                timeout=INSTALLER_TIMEOUT_SECONDS)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(reference.read_bytes(), b"team-owned replacement")
         self.recover(self.repository, "rollback")
@@ -334,14 +341,16 @@ raise SystemExit(main(['--update', '--codex-root', sys.argv[3], '--link-strategy
         # The public entry point must configure UTF-8 even when the host uses
         # a narrow redirected code page; do not bypass it in fault injection.
         program_env = {**self.env, "PYTHONIOENCODING": "cp1252"}
-        crash = subprocess.run([*argv, "crash"], env=program_env, cwd=ROOT, capture_output=True, timeout=30)
+        crash = subprocess.run([*argv, "crash"], env=program_env, cwd=ROOT, capture_output=True,
+                               timeout=INSTALLER_TIMEOUT_SECONDS)
         self.assertEqual(crash.returncode, 91, crash.stdout.decode() + crash.stderr.decode())
         copied = self.workspace / ".agents" / relative
         self.assertEqual(copied.read_bytes(), new)
         self.recover(self.repository, "rollback")
         self.assertEqual(copied.read_bytes(), old)
         self.assertEqual((self.repository / ".agents" / relative).read_bytes(), old)
-        updated = subprocess.run([*argv, "complete"], env=program_env, cwd=ROOT, capture_output=True, timeout=30)
+        updated = subprocess.run([*argv, "complete"], env=program_env, cwd=ROOT, capture_output=True,
+                                 timeout=INSTALLER_TIMEOUT_SECONDS)
         self.assertEqual(updated.returncode, 0, updated.stdout.decode() + updated.stderr.decode())
         self.assertEqual(copied.read_bytes(), new)
         self.assert_only_clean_transaction_history("rolled_back")
@@ -389,7 +398,8 @@ raise SystemExit(main(['--update', '--codex-root', sys.argv[3], '--link-strategy
             self.skipTest("host does not permit directory symlinks")
         result = subprocess.run([sys.executable, "-m", "installer", "--update", "--codex-root",
                                  str(self.workspace), "--link-strategy", "copy", str(self.repository)],
-                                env=self.env, cwd=ROOT, capture_output=True, timeout=30)
+                                env=self.env, cwd=ROOT, capture_output=True,
+                                timeout=INSTALLER_TIMEOUT_SECONDS)
         self.assertEqual(canary.read_bytes(), b"outside user data")
         self.assertTrue(references.is_symlink())
         self.assertIn("路径", result.stdout.decode())
@@ -419,14 +429,14 @@ raise SystemExit(main(['--uninstall', '--codex-root', sys.argv[3], sys.argv[2]])
 """
         argv = [sys.executable, "-c", program, str(ROOT), str(self.repository), str(self.workspace)]
         before_commit = subprocess.run([*argv, "external"], env=self.env, cwd=ROOT,
-                                       capture_output=True, timeout=30)
+                                       capture_output=True, timeout=INSTALLER_TIMEOUT_SECONDS)
         self.assertEqual(before_commit.returncode, 92, before_commit.stdout.decode() + before_commit.stderr.decode())
         self.recover(self.repository, "rollback")
         for reference in SECURITY_REFERENCE_CATALOG.references.values():
             self.assertEqual((self.workspace / ".agents" / reference.source_path).read_bytes(),
                              (ROOT / reference.source_path).read_bytes())
         after_commit = subprocess.run([*argv, "internal"], env=self.env, cwd=ROOT,
-                                      capture_output=True, timeout=30)
+                                      capture_output=True, timeout=INSTALLER_TIMEOUT_SECONDS)
         self.assertEqual(after_commit.returncode, 93, after_commit.stdout.decode() + after_commit.stderr.decode())
         self.recover(self.repository, "roll-forward")
         for reference in SECURITY_REFERENCE_CATALOG.references.values():
