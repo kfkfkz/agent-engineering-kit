@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import ctypes
+import errno
 import queue
 import stat
 import struct
@@ -11,7 +12,8 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -19,8 +21,8 @@ from aek.adapters import ui_filesystem as fs
 
 
 class UiFilesystemTests(unittest.TestCase):
-    def test_windows_rename_abi_uses_absolute_destination_and_null_root(self):
-        destination = "\\\\?\\Volume{01234567-89ab-cdef-0123-456789abcdef}\\材料\\image-😀.png"
+    def test_windows_native_rename_abi_uses_leaf_and_null_root(self):
+        destination = "材料-image-😀.png"
         pointer_size = struct.calcsize("P")
         root_offset = 8 if pointer_size == 8 else 4
         length_offset = root_offset + pointer_size
@@ -34,7 +36,80 @@ class UiFilesystemTests(unittest.TestCase):
                 self.assertEqual(length, len(destination.encode("utf-16-le")))
                 self.assertEqual(raw[name_offset:name_offset + length].decode("utf-16-le"), destination)
                 self.assertEqual(raw[name_offset + length:name_offset + length + 2], b"\0\0")
-                self.assertGreaterEqual(len(raw), ctypes.sizeof(fs._Rename))
+                self.assertGreaterEqual(len(raw), ctypes.sizeof(fs._Rename) + length)
+
+    def test_windows_native_io_status_abi_preserves_pointer_width(self):
+        pointer_size = struct.calcsize("P")
+        self.assertEqual(ctypes.sizeof(fs._IOStatusBlock), pointer_size * 2)
+        self.assertEqual(fs._IOStatusBlock.information.offset, pointer_size)
+        block = fs._IOStatusBlock()
+        block.status = ctypes.c_int32(0xC0000035).value
+        block.information = 0x123456789ABCDEF0 if pointer_size == 8 else 0x12345678
+        raw = bytes(block)
+        self.assertEqual(struct.unpack_from("<I", raw)[0], 0xC0000035)
+        self.assertEqual(int.from_bytes(raw[pointer_size:pointer_size * 2], "little"), block.information)
+
+    def test_windows_rename_uses_native_syscall_with_pinned_same_parent(self):
+        parent = SimpleNamespace(path=PureWindowsPath("C:/material"), handle=11)
+        parent.require_open = lambda: parent
+        identity = SimpleNamespace(volume=7, index_hi=0, index_lo=9)
+        native = SimpleNamespace()
+        calls = []
+
+        def set_information(raw, iosb, buffer, length, information_class):
+            calls.append((raw, bytes(buffer), length, information_class))
+            return 0
+
+        native.NtSetInformationFile = set_information
+        kernel = SimpleNamespace(CloseHandle=lambda raw: None)
+        with patch.object(fs.os, "name", "nt"), patch.object(fs, "_native", native, create=True), \
+                patch.object(fs, "_kernel", kernel, create=True), \
+                patch.object(fs, "_DELETE", 0x10000, create=True), \
+                patch.object(fs, "_ATTR", 0x80, create=True), \
+                patch.object(fs, "_SYNCHRONIZE", 0x100000, create=True), \
+                patch.object(fs, "_info", return_value=identity, create=True), \
+                patch.object(fs, "_win_open", return_value=23, create=True):
+            fs.rename_noreplace(parent, "stage", parent, "published")
+        self.assertEqual(len(calls), 1)
+        raw, payload, length, information_class = calls[0]
+        self.assertEqual((raw, length, information_class), (23, len(payload), 10))
+        self.assertEqual(fs._Rename.from_buffer_copy(payload).root, None)
+        offset = fs._Rename.name.offset
+        self.assertEqual(payload[offset:offset + 18].decode("utf-16-le"), "published")
+
+    def test_windows_native_pending_rename_waits_and_maps_final_status(self):
+        collision = ctypes.c_int32(0xC0000035).value
+        observed = []
+
+        def pending(raw, completion, buffer, length, information_class):
+            ctypes.cast(completion, ctypes.POINTER(fs._IOStatusBlock)).contents.status = collision
+            return 0x103
+
+        def wait(raw, timeout):
+            observed.append(("wait", raw, timeout))
+            return 0
+
+        def mapped(status):
+            observed.append(("map", status))
+            return 80
+
+        def failure(path, *, error=None):
+            raise FileExistsError(error, "destination exists", path)
+
+        native = SimpleNamespace(NtSetInformationFile=pending, RtlNtStatusToDosError=mapped)
+        kernel = SimpleNamespace(WaitForSingleObject=wait)
+        with patch.object(fs, "_native", native, create=True), \
+                patch.object(fs, "_kernel", kernel, create=True), \
+                patch.object(fs, "_win_error", side_effect=failure, create=True):
+            with self.assertRaises(FileExistsError) as raised:
+                fs._windows_set_rename(23, "published", False)
+        self.assertEqual(raised.exception.filename, "published")
+        self.assertEqual(observed, [("wait", 23, 0xFFFFFFFF), ("map", collision)])
+
+    def test_windows_native_rename_buffer_refuses_absolute_and_traversal_names(self):
+        for name in ("../published", "C:\\published", "\\\\?\\Volume{guid}\\published", "a:stream"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                fs._windows_rename_buffer(name, False)
 
     def test_open_file_reads_regular_file_and_rejects_traversal(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,20 +180,44 @@ class UiFilesystemTests(unittest.TestCase):
     def test_publication_and_replace_are_atomic_and_do_not_overwrite_winner(self):
         with tempfile.TemporaryDirectory() as directory:
             root = fs.open_absolute_dir(Path(directory))
+            alias = fs.open_absolute_dir(Path(directory))
             try:
                 for name in ("first", "second"):
                     fs.mkdir(root, name)
-                fs.rename_noreplace(root, "first", root, "published")
+                    (Path(directory) / name / "identity").write_bytes(name.encode())
+                fs.rename_noreplace(root, "first", alias, "published")
                 with self.assertRaises(FileExistsError):
-                    fs.rename_noreplace(root, "second", root, "published")
-                self.assertTrue((Path(directory) / "second").is_dir())
+                    fs.rename_noreplace(root, "second", alias, "published")
+                self.assertEqual((Path(directory) / "second/identity").read_bytes(), b"second")
+                self.assertEqual((Path(directory) / "published/identity").read_bytes(), b"first")
                 (Path(directory) / "old").write_bytes(b"old")
                 (Path(directory) / "new").write_bytes(b"new")
-                fs.replace(root, "new", root, "old")
+                fs.replace(root, "new", alias, "old")
                 self.assertEqual(fs.read_at(root, "old", 10), b"new")
                 self.assertFalse((Path(directory) / "new").exists())
                 fs.fsync_dir(root)
             finally:
+                fs.close_dir(alias)
+                fs.close_dir(root)
+
+    def test_windows_cross_directory_publication_fails_without_moving_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            (base / "source").write_bytes(b"safe")
+            root = fs.open_absolute_dir(base)
+            target = fs.open_child_dir(root, "target", create=True)
+            try:
+                if os.name == "nt":
+                    with self.assertRaises(OSError) as raised:
+                        fs.rename_noreplace(root, "source", target, "published")
+                    self.assertEqual(raised.exception.errno, errno.ENOTSUP)
+                    self.assertEqual(fs.read_at(root, "source", 4), b"safe")
+                    self.assertFalse((base / "target/published").exists())
+                else:
+                    fs.rename_noreplace(root, "source", target, "published")
+                    self.assertEqual(fs.read_at(target, "published", 4), b"safe")
+            finally:
+                fs.close_dir(target)
                 fs.close_dir(root)
 
     def _child(self, code, *args):

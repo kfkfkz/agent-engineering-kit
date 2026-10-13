@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -118,6 +119,20 @@ class DynamicPlanCliTests(unittest.TestCase):
         proc = self.run_gate(
             "plan-status", str(self.req), "--base", self.base, "--json")
         return json.loads(proc.stdout)
+
+    def test_execution_projection_keeps_legacy_newline_identity_but_raw_evidence_does_not(self):
+        namespace = runpy.run_path(str(DOC_GATE))
+        tasks = "# tasks\n## 任务\n- [ ] T1：确认\n## 执行记录\n| T1 | 进行中 |\n## 完成标准\n完成。\n"
+        path = self.req / "任务清单.md"
+        path.write_bytes(tasks.encode("utf-8"))
+        baseline = namespace["_plan_baseline_hashes"](self.req)
+        original_raw = namespace["_sha256"](path)
+        for newline in ("\r\n", "\r"):
+            path.write_bytes(tasks.replace("\n", newline).encode("utf-8"))
+            self.assertEqual(namespace["_plan_baseline_hashes"](self.req), baseline)
+            self.assertNotEqual(namespace["_sha256"](path), original_raw)
+        path.write_bytes(tasks.replace("T1：确认", "T1：修改定义").encode("utf-8"))
+        self.assertNotEqual(namespace["_plan_baseline_hashes"](self.req), baseline)
 
     def test_prepare_freeze_bind_skip_invalidate_and_rollback(self) -> None:
         (self.req / "任务清单.md").write_text("""# tasks

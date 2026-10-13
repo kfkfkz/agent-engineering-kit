@@ -156,6 +156,14 @@ jobs:
             }
           }
           Write-Output "installer modules import OK on Windows"
+      - name: Windows UI 安全文件与中文需求端到端回归
+        shell: pwsh
+        run: |
+          foreach ($suite in @("tests/ui-filesystem.test.py", "tests/ui-prototype-gate.test.py",
+              "tests/ui-reference.test.py", "tests/ui-reference-e2e.test.py", "tests/doc-gate-plan.test.py")) {
+            & python $suite
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Windows 全部 Python 行为套件（自动发现）
         run: python tests/run-python-tests.py
       - name: Windows 安全入口源码与安装副本（不启动扫描器）

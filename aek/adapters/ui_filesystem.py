@@ -40,9 +40,19 @@ class _Rename(ctypes.Structure):
                 ("length", ctypes.c_uint32), ("name", ctypes.c_uint16 * 1)]
 
 
+class _StatusValue(ctypes.Union):
+    _fields_ = [("status", ctypes.c_int32), ("pointer", ctypes.c_void_p)]
+
+
+class _IOStatusBlock(ctypes.Structure):
+    _anonymous_ = ("value",)
+    _fields_ = [("value", _StatusValue), ("information", ctypes.c_size_t)]
+
+
 def _windows_rename_buffer(destination: str, overwrite: bool):
+    destination = _component(destination)
     encoded = destination.encode("utf-16-le")
-    buffer = ctypes.create_string_buffer(max(ctypes.sizeof(_Rename), _Rename.name.offset + len(encoded) + 2))
+    buffer = ctypes.create_string_buffer(ctypes.sizeof(_Rename) + len(encoded))
     info = _Rename.from_buffer(buffer)
     info.replace = overwrite
     info.root = None
@@ -51,16 +61,30 @@ def _windows_rename_buffer(destination: str, overwrite: bool):
     return buffer
 
 
+def _windows_set_rename(raw, destination: str, overwrite: bool):
+    buffer = _windows_rename_buffer(destination, overwrite)
+    completion = _IOStatusBlock()
+    status = _native.NtSetInformationFile(raw, ctypes.byref(completion), buffer, len(buffer), 10)
+    if status == 0x103:  # STATUS_PENDING: completion status is not final yet.
+        if _kernel.WaitForSingleObject(raw, 0xFFFFFFFF) != 0:
+            _win_error(destination)
+        status = completion.status
+    if ctypes.c_int32(status).value < 0:
+        _win_error(destination, error=_native.RtlNtStatusToDosError(status))
+
+
 if os.name == "nt":
     from ctypes import wintypes
     import msvcrt
 
     _kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    _native = ctypes.WinDLL("ntdll", use_last_error=True)
     _HANDLE = wintypes.HANDLE
     _INVALID = ctypes.c_void_p(-1).value
     _READ = 0x80000000
     _WRITE = 0x40000000
     _DELETE = 0x00010000
+    _SYNCHRONIZE = 0x00100000
     _ATTR = 0x80
     _REPARSE = 0x400
     _DIRECTORY = 0x10
@@ -96,9 +120,15 @@ if os.name == "nt":
     _kernel.WaitForSingleObject.restype = wintypes.DWORD
     _kernel.ReleaseMutex.argtypes = [_HANDLE]
     _kernel.ReleaseMutex.restype = wintypes.BOOL
+    _native.NtSetInformationFile.argtypes = [_HANDLE, ctypes.POINTER(_IOStatusBlock),
+                                           ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int]
+    _native.NtSetInformationFile.restype = ctypes.c_int32
+    _native.RtlNtStatusToDosError.argtypes = [ctypes.c_int32]
+    _native.RtlNtStatusToDosError.restype = ctypes.c_uint32
 
-    def _win_error(path=None):
-        error = ctypes.get_last_error()
+    def _win_error(path=None, *, error=None):
+        if error is None:
+            error = ctypes.get_last_error()
         # WinError maps ERROR_FILE_EXISTS/ALREADY_EXISTS to FileExistsError.
         exception = ctypes.WinError(error)
         if path is not None:
@@ -333,15 +363,19 @@ def rmdir(handle, name: str) -> None:
 def _rename(src_handle, src, dst_handle, dst, overwrite):
     src, dst = _component(src), _component(dst)
     if os.name == "nt":
-        raw = _win_open(src_handle.require_open().path / src, _DELETE | _ATTR)
+        source = _info(src_handle.require_open().handle)
+        target = _info(dst_handle.require_open().handle)
+        if ((source.volume, source.index_hi, source.index_lo)
+                != (target.volume, target.index_hi, target.index_lo)):
+            raise OSError(errno.ENOTSUP, "secure cross-directory rename unsupported on Windows")
+        raw = _win_open(src_handle.path / src, _DELETE | _ATTR | _SYNCHRONIZE)
         try:
-            # Win32's supported common form uses an absolute FileName and a
-            # NULL RootDirectory. The GUID/UNC destination and all ancestors
-            # remain pinned, so this path cannot be redirected mid-operation.
-            destination = str(dst_handle.require_open().path / dst)
-            buffer = _windows_rename_buffer(destination, overwrite)
-            if not _kernel.SetFileInformationByHandle(raw, 3, buffer, len(buffer)):
-                _win_error(dst)
+            # Native NULL-root + basename renames within Open.Link.ParentFile.
+            # Absolute names and non-NULL roots reopen the destination parent
+            # writable, conflicting with our deliberate no-write ancestor pins.
+            # Win32's wrapper converts a basename to an absolute path, so use
+            # the native syscall directly. UI publications all share a parent.
+            _windows_set_rename(raw, dst, overwrite)
         finally:
             _kernel.CloseHandle(raw)
         return

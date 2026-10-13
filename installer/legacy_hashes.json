@@ -784,6 +784,15 @@
       "bin-doc-gate": "canonical_sha256:8f6111749680fb91722bb5950b41b30474674c57826aa3ba4d1b2e07f7bf71a9",
       "bin-governance-eval": "canonical_sha256:884ec900f10f5a03e2ce0dd28100900ff408d74246ffb947c1b7d92361cd6f07"
     },
+    "b649c2c": {
+      "bin-doc-gate": "canonical_sha256:42302038c8ee6b860c496aeb95349c693351fac38580b9604ea5e23f2703a5f7",
+      "lib-aek-adapters-ui_filesystem-py": "canonical_sha256:f5c6152d07bcd36f23b5ab7975d81b83ac1a30655e2331b61c77e4f37a2fbfbc",
+      "req-tpl-ui": "canonical_sha256:e7737877b4b8ca357025e32a689fa8b4a117bd954fad5748c1c5d286982d0b6c",
+      "skill-agents-design-pipeline": "canonical_sha256:5bca15f7624a979ab508b2540181eb9e7e018be8a91d235a2bd828d651a9e838",
+      "skill-agents-design-pipeline-ui-reference-helper": "canonical_sha256:5173d695ad3056b8f27f99b9c66cadc6cbdda8f5c59a7e6e5d561c467003b9b6",
+      "skill-claude-design-pipeline": "canonical_sha256:5bca15f7624a979ab508b2540181eb9e7e018be8a91d235a2bd828d651a9e838",
+      "skill-claude-design-pipeline-ui-reference-helper": "canonical_sha256:5173d695ad3056b8f27f99b9c66cadc6cbdda8f5c59a7e6e5d561c467003b9b6"
+    },
     "b664ee2": {
       "bin-memory-build": "canonical_sha256:b09a0cadaf3c1cb137ef07e1d3ed98701cd2a5d03f96a06b02ebf7d5dbfe2e69"
     },

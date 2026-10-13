@@ -147,6 +147,10 @@ def _plan_baseline_text(doc: str, text: str) -> str:
     checkbox state and the body of the execution-record section are mutable;
     closeout later binds the complete final documents again.
     """
+    # This semantic execution projection historically used universal-newline
+    # text. Preserve those existing credentials while review/full-closeout
+    # hashes continue binding the original bytes.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     projected = re.sub(r"(?m)^(\s*[-*]\s*)\[[ xX]\]", r"\1[ ]", text)
     if doc == "任务清单.md":
         projected = re.sub(
