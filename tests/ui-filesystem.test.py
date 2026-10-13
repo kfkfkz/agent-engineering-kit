@@ -122,10 +122,56 @@ class UiFilesystemTests(unittest.TestCase):
                 fs.close_dir(root)
 
     def _child(self, code, *args):
+        environment = dict(os.environ, PYTHONIOENCODING="utf-8")
         return subprocess.Popen([sys.executable, "-u", "-c", code, *map(str, args)],
                                 cwd=Path(__file__).resolve().parents[1],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True)
+                                stderr=subprocess.PIPE, text=True, encoding="utf-8", env=environment)
+
+    def _signal_reader(self, child):
+        received = queue.Queue()
+
+        def read():
+            try:
+                received.put((child.stdout.readline(), None))
+            except Exception as error:
+                received.put((None, error))
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        return received, reader
+
+    def _stop_child(self, child, reader=None):
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+        if reader is not None:
+            reader.join(timeout=5)
+            self.assertFalse(reader.is_alive(), "readiness reader did not exit after child termination")
+        return child.communicate(timeout=5)
+
+    def _expect_signal(self, child, expected, *, timeout=15, pending=None):
+        received, reader = pending if pending is not None else self._signal_reader(child)
+        try:
+            value, error = received.get(timeout=timeout)
+        except queue.Empty:
+            out, err = self._stop_child(child, reader)
+            self.fail(f"child timed out after {timeout}s waiting for {expected!r}; "
+                      f"returncode={child.returncode}; stdout={out!r}; stderr={err!r}")
+        reader.join(timeout=5)
+        self.assertFalse(reader.is_alive(), "readiness reader did not exit after its signal")
+        if error is not None or value.strip() != expected:
+            out, err = self._stop_child(child)
+            self.fail(f"child expected {expected!r}, got {value!r}, reader_error={error!r}; "
+                      f"returncode={child.returncode}; stdout={out!r}; stderr={err!r}")
+
+    def _finish_child(self, child, *, timeout=15):
+        try:
+            return child.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            out, err = self._stop_child(child)
+            self.fail(f"child did not exit within {timeout}s; returncode={child.returncode}; "
+                      f"stdout={out!r}; stderr={err!r}")
 
     def test_independent_processes_have_exactly_one_publication_winner(self):
         code = '''
@@ -149,18 +195,16 @@ finally:
             children = [self._child(code, directory, name) for name in ("one", "two")]
             try:
                 for child in children:
-                    self.assertEqual(child.stdout.readline().strip(), "ready")
+                    self._expect_signal(child, "ready")
                 for child in children:
                     child.stdin.write("go\n")
                     child.stdin.flush()
-                results = [child.communicate(timeout=15) for child in children]
+                results = [self._finish_child(child) for child in children]
                 self.assertEqual(sorted(out.strip() for out, err in results), ["exists", "winner"])
                 self.assertEqual([child.returncode for child in children], [0, 0], results)
             finally:
                 for child in children:
-                    if child.poll() is None:
-                        child.kill()
-                    child.communicate()
+                    self._stop_child(child)
 
     def test_lock_serializes_processes_and_releases_after_exit(self):
         code = '''
@@ -178,28 +222,24 @@ finally:
         with tempfile.TemporaryDirectory() as directory:
             root = fs.open_absolute_dir(Path(directory))
             child = None
+            pending = None
             try:
                 with fs.exclusive_lock(root):
                     child = self._child(code, directory)
-                    self.assertEqual(child.stdout.readline().strip(), "ready")
-                    received = queue.Queue()
-                    reader = threading.Thread(target=lambda: received.put(child.stdout.readline()), daemon=True)
-                    reader.start()
+                    self._expect_signal(child, "ready")
+                    pending = self._signal_reader(child)
                     # The timeout checks the explicitly blocking lock contract;
                     # child readiness is signalled, rather than guessed by sleep.
                     with self.assertRaises(queue.Empty):
-                        received.get(timeout=0.25)
-                self.assertEqual(received.get(timeout=10).strip(), "acquired")
-                reader.join(timeout=10)
-                child.communicate(timeout=10)
+                        pending[0].get(timeout=0.25)
+                self._expect_signal(child, "acquired", pending=pending)
+                self._finish_child(child)
                 self.assertEqual(child.returncode, 0)
                 with fs.exclusive_lock(root):
                     pass
             finally:
                 if child is not None:
-                    if child.poll() is None:
-                        child.kill()
-                    child.communicate()
+                    self._stop_child(child, pending[1] if pending is not None else None)
                 fs.close_dir(root)
 
     def test_lock_is_recoverable_after_owner_process_dies(self):
@@ -246,21 +286,19 @@ finally:
             owner = self._child(holder_code, directory)
             successor = None
             try:
-                self.assertEqual(owner.stdout.readline().strip(), "acquired")
+                self._expect_signal(owner, "acquired")
                 successor = self._child(successor_code, directory)
-                self.assertEqual(successor.stdout.readline().strip(), "waiting")
+                self._expect_signal(successor, "waiting")
                 owner.kill()
-                owner.communicate(timeout=10)
-                out, err = successor.communicate(timeout=15)
+                self._finish_child(owner)
+                out, err = self._finish_child(successor)
                 self.assertEqual(successor.returncode, 0, err)
                 expected = ["abandoned", "acquired"] if os.name == "nt" else ["acquired"]
                 self.assertEqual(out.splitlines(), expected)
             finally:
                 for child in (owner, successor):
                     if child is not None:
-                        if child.poll() is None:
-                            child.kill()
-                        child.communicate()
+                        self._stop_child(child)
 
     def test_open_chain_cannot_be_redirected_by_ancestor_replacement(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -299,7 +337,7 @@ finally:
             if os.name == "nt":
                 # Junction creation works without symlink privilege/admin.
                 result = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(base / "outside")],
-                                        capture_output=True, text=True)
+                                        capture_output=True, text=True, timeout=15)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             else:
                 link.symlink_to(base / "outside", target_is_directory=True)
