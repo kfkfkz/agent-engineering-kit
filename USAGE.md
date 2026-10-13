@@ -110,6 +110,14 @@ docs/03-SDD/NNN-名称/
 
 计划首次通过时保存执行前基线。执行期可更新 checkbox 和执行记录；任务定义、预计范围或验证方式变化仍需重新评审。完成后统一 closeout，绑定任务清单和测试方案的完整终态哈希。
 
+### UI 截图与原型确认
+
+UI reference 与 `doc-gate init` 使用相同的 `NNN-名称` 需求目录。例如目录 `003-查询列表` 对应机器 ID `CHG-003`：截图请求 JSON 记录 `change_id: "CHG-003"` 和 `requirement_dir: "003-查询列表"`；后续 helper 命令同时传 `--change-id CHG-003 --requirement-dir 003-查询列表`。原型的批准目录仍为 `docs/03-SDD/003-查询列表`。旧 schema1 索引没有 `requirement_dir` 时继续使用 `change_id` 作为目录，不迁移已有材料。
+
+截图位于 `docs/01-需求/003-查询列表/原始材料/ui-reference/`。校验会分别报告技术有效性、视觉适用性、新鲜度和 Git 暂存风险；暂存提示是只读诊断，工具不会修改 Git 配置、索引或自动提交图片。原型确认仍须在交互终端绑定当前原型与依赖摘要。冻结 ArtifactPlan 要求 UI 原型时，文档删掉 marker 或确认清单仍会失败。
+
+UI 文件操作在 POSIX 使用 no-follow 目录句柄，在原生 Windows 使用固定祖先句柄、reparse-point 拒绝、二进制文件句柄、原子发布及进程锁。Windows 目录没有 POSIX 的 fsync 保证；映射的 SMB 盘符无法取得安全卷身份时会拒绝，需改用受支持的本地路径。网络文件系统与跨主机并发不在本次验证范围内。
+
 ### 中断恢复的边界
 
 WorkUnit 已支持工作流状态恢复与 CAS 接管，恢复后按当前身份和回执决定复用、重验或转人工；

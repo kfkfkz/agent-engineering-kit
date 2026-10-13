@@ -37,6 +37,7 @@ import re
 import secrets
 import stat
 import sys
+import unicodedata
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -58,6 +59,7 @@ from aek.core.artifact.plan import load_credential_bytes, load_plan_bytes
 from aek.core.artifact.registry import ARTIFACT_REGISTRY
 from aek.core.context.budget import resolve_context_budget
 from aek.adapters.change_scope import resolve_base_commit, scan_negative_risks
+from aek.adapters import ui_filesystem as _ui_fs
 from aek.adapters.telemetry import ContextLedger
 from aek.adapters.review_markdown import (
     ReviewMaterialParser, extract_trace_ids, parse_review_documents,
@@ -124,7 +126,9 @@ HUMAN_SIGNOFF = {
 
 def _read(path: Path) -> str | None:
     try:
-        return path.read_text(encoding="utf-8")
+        # Review hashes bind disk bytes, including CRLF on native Windows.
+        # Universal-newline text I/O would silently change the signed material.
+        return path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return None
 
@@ -582,7 +586,8 @@ def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, st
                 if ui_text is None:
                     return "DRAFT", f"{ui_doc} 已不存在"
                 ui_checks = Checks(stage)
-                _check_ui_prototypes(ui_checks, req_dir, ui_text)
+                _check_ui_prototypes(ui_checks, req_dir, ui_text,
+                                     dynamic_state=dynamic_state)
                 if ui_checks.fails:
                     return "DRAFT", "原型/截图确认或依赖已失效：" + "；".join(
                         item["detail"] or item["name"] for item in ui_checks.fails[:3])
@@ -846,20 +851,8 @@ class _SelfContainedHtml(HTMLParser):
             self.errors.append("CSS resource reference is not allowed")
 
 
-def _open_dir_nofollow(path: Path) -> int:
-    if os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or not os.supports_dir_fd:
-        raise OSError("safe handle-relative reads are unsupported")
-    absolute = Path(os.path.abspath(path))
-    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        for part in absolute.parts[1:]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = child
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
+def _open_dir_nofollow(path: Path):
+    return _ui_fs.open_absolute_dir(Path(os.path.abspath(path)))
 
 
 def _read_beneath(root_fd: int, relative: str, limit: int) -> bytes:
@@ -867,13 +860,13 @@ def _read_beneath(root_fd: int, relative: str, limit: int) -> bytes:
     if (path.is_absolute() or not path.parts or ".." in path.parts
             or "\\" in relative or any(part in {"", "."} for part in path.parts)):
         raise ValueError("path must remain below the approved root")
-    parent = os.dup(root_fd)
+    parent = _ui_fs.dup_dir(root_fd)
     try:
         for part in path.parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-            os.close(parent)
+            child = _ui_fs.open_child_dir(parent, part)
+            _ui_fs.close_dir(parent)
             parent = child
-        fd = os.open(path.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        fd = _ui_fs.open_file(parent, path.parts[-1], os.O_RDONLY)
         try:
             before = os.fstat(fd)
             if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
@@ -895,7 +888,7 @@ def _read_beneath(root_fd: int, relative: str, limit: int) -> bytes:
         finally:
             os.close(fd)
     finally:
-        os.close(parent)
+        _ui_fs.close_dir(parent)
 
 
 def _hash_regular_beneath(root_fd: int, relative: str, limit: int) -> tuple[str, int]:
@@ -903,13 +896,13 @@ def _hash_regular_beneath(root_fd: int, relative: str, limit: int) -> tuple[str,
     if (path.is_absolute() or not path.parts or ".." in path.parts
             or "\\" in relative or any(part in {"", "."} for part in path.parts)):
         raise ValueError("path must remain below the approved root")
-    parent = os.dup(root_fd)
+    parent = _ui_fs.dup_dir(root_fd)
     try:
         for part in path.parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
-            os.close(parent)
+            child = _ui_fs.open_child_dir(parent, part)
+            _ui_fs.close_dir(parent)
             parent = child
-        fd = os.open(path.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent)
+        fd = _ui_fs.open_file(parent, path.parts[-1], os.O_RDONLY)
         try:
             before = os.fstat(fd)
             if not stat.S_ISREG(before.st_mode) or not 1 <= before.st_size <= limit:
@@ -932,7 +925,7 @@ def _hash_regular_beneath(root_fd: int, relative: str, limit: int) -> tuple[str,
         finally:
             os.close(fd)
     finally:
-        os.close(parent)
+        _ui_fs.close_dir(parent)
 
 
 def _expected_ui_evidence_path(row: dict) -> str:
@@ -999,16 +992,13 @@ def _write_prototype_confirmation(req_dir: Path, page_id: str, area_id: str,
     if phrase != f"ACCEPT {confirmation_digest[:12]}":
         raise ValueError("confirmation phrase does not match prototype and dependency digests")
     reviews = req_dir / "reviews"
-    reviews.mkdir(parents=True, exist_ok=True)
-    reviews_fd = _open_dir_nofollow(reviews)
+    root_fd = _open_dir_nofollow(req_dir)
     try:
-        try:
-            os.mkdir("ui-prototype-confirmations", 0o700, dir_fd=reviews_fd)
-        except FileExistsError:
-            pass
-        receipts_fd = os.open("ui-prototype-confirmations",
-                              os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                              dir_fd=reviews_fd)
+        reviews_fd = _ui_fs.open_child_dir(root_fd, "reviews", create=True)
+    finally:
+        _ui_fs.close_dir(root_fd)
+    try:
+        receipts_fd = _ui_fs.open_child_dir(reviews_fd, "ui-prototype-confirmations", create=True)
         try:
             name = _prototype_confirmation_path(
                 page_id, area_id, prototype_digest, dependency_digest)
@@ -1023,37 +1013,43 @@ def _write_prototype_confirmation(req_dir: Path, page_id: str, area_id: str,
                                separators=(",", ":")) + "\n").encode("utf-8")
             temporary = f".{name}.tmp-{secrets.token_hex(8)}"
             try:
-                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o600, dir_fd=receipts_fd)
+                fd = _ui_fs.open_file(receipts_fd, temporary,
+                                      os.O_WRONLY | os.O_CREAT | os.O_EXCL)
                 try:
                     _write_all(fd, data)
                     os.fsync(fd)
                 finally:
                     os.close(fd)
-                # A same-directory hard link publishes a fully written inode atomically
-                # and fails if a receipt for this exact identity already exists.
-                os.link(temporary, name, src_dir_fd=receipts_fd,
-                        dst_dir_fd=receipts_fd, follow_symlinks=False)
-                if os.name != "nt":
-                    os.fsync(receipts_fd)
+                # Publish the complete receipt atomically without replacing an
+                # existing human confirmation, on both supported platforms.
+                _ui_fs.rename_noreplace(receipts_fd, temporary, receipts_fd, name)
+                _ui_fs.fsync_dir(receipts_fd)
                 return reviews / "ui-prototype-confirmations" / name
             finally:
                 try:
-                    os.unlink(temporary, dir_fd=receipts_fd)
+                    _ui_fs.unlink(receipts_fd, temporary)
                 except FileNotFoundError:
                     pass
         finally:
-            os.close(receipts_fd)
+            _ui_fs.close_dir(receipts_fd)
     finally:
-        os.close(reviews_fd)
+        _ui_fs.close_dir(reviews_fd)
 
 
 def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                          require_confirmation: bool = True,
-                         dependency_out: dict | None = None) -> None:
+                         dependency_out: dict | None = None,
+                         dynamic_state=None) -> None:
     """Re-read accepted UI prototypes and evidence at the existing UI stage gate."""
     blocks = list(_PROTOTYPE_BLOCK.finditer(text))
     required = "<!-- aek-prototypes:required -->" in text
+    if dynamic_state is not None:
+        if dynamic_state.state != "FROZEN" or dynamic_state.plan is None:
+            c.add("prototype", "原型要求的上游计划有效", False,
+                  "ArtifactPlan 未冻结或不可用")
+            return
+        # The reviewed document cannot opt out of its authoritative plan.
+        required = required or dynamic_state.plan.by_id("ui-design").classification == "required"
     if not blocks:
         if required:
             c.add("prototype", "原型确认清单存在", False, "缺少 aek-prototypes JSON 区块")
@@ -1078,11 +1074,20 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                 index = json.loads(_read_beneath(repo_fd, material_rel, 8 * 1024 * 1024).decode("utf-8"),
                                    object_pairs_hook=_unique_json_object)
             finally:
-                os.close(repo_fd)
+                _ui_fs.close_dir(repo_fd)
             if (not isinstance(index, dict) or index.get("schema_version") != 1
-                    or index.get("change_id") != req_dir.name
                     or not isinstance(index.get("screenshots"), list)):
                 raise ValueError("screenshot index schema or change ID is invalid")
+            # Legacy schema1 used change_id as its actual directory. New
+            # indexes retain a stable machine ID and bind the display directory.
+            dirname = index.get("requirement_dir", index.get("change_id"))
+            if dirname != req_dir.name:
+                raise ValueError("screenshot index requirement directory does not match this SDD")
+            if "requirement_dir" in index:
+                match = re.fullmatch(r"([0-9]{3})-.+", dirname)
+                if (len(dirname) > 180 or unicodedata.normalize("NFC", dirname) != dirname
+                        or not match or index.get("change_id") != "CHG-" + match.group(1)):
+                    raise ValueError("screenshot index machine ID does not match its requirement number")
             material_fd = _open_dir_nofollow(
                 repo_root / "docs" / "01-需求" / req_dir.name / "原始材料" / "ui-reference")
             screenshots: dict[str, dict] = {}
@@ -1281,18 +1286,16 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                             page_id, area_id, actual_digest, dependency_digest)
                         reviews_fd = _open_dir_nofollow(req_dir / "reviews")
                         try:
-                            confirmations_fd = os.open(
-                                "ui-prototype-confirmations",
-                                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                                dir_fd=reviews_fd)
+                            confirmations_fd = _ui_fs.open_child_dir(
+                                reviews_fd, "ui-prototype-confirmations")
                             try:
                                 confirmation = json.loads(
                                     _read_beneath(confirmations_fd, confirmation_rel, 64 * 1024).decode("utf-8"),
                                     object_pairs_hook=_unique_json_object)
                             finally:
-                                os.close(confirmations_fd)
+                                _ui_fs.close_dir(confirmations_fd)
                         finally:
-                            os.close(reviews_fd)
+                            _ui_fs.close_dir(reviews_fd)
                         identity_digest = _prototype_confirmation_digest(
                             page_id, area_id, actual_digest, dependency_digest)
                         if (not isinstance(confirmation, dict)
@@ -1318,8 +1321,8 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                   "；".join(errors[:5]))
         finally:
             if material_fd is not None:
-                os.close(material_fd)
-            os.close(root_fd)
+                _ui_fs.close_dir(material_fd)
+            _ui_fs.close_dir(root_fd)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
         c.add("prototype", "原型确认与依赖摘要有效", False, str(exc))
 
@@ -1405,7 +1408,7 @@ def run_checks(req_dir: Path, stage: str, dynamic_state=None) -> Checks:
 
     if stage == "UI设计":
         text = _read(req_dir / "UI设计.md") or ""
-        _check_ui_prototypes(c, req_dir, text)
+        _check_ui_prototypes(c, req_dir, text, dynamic_state=dynamic_state)
         pages = parse_page_items(text)
         c.add("id", "页面清单非空", bool(pages), "无 PAGE 项")
         bad_states = [p for p, v in pages.items() if not v["states_ok"]]
@@ -1622,7 +1625,8 @@ def _review_subject_digest(
 def _atomic_review_write(path: Path, content: bytes) -> None:
     """Publish non-authoritative review evidence without torn files."""
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_BINARY", 0), 0o600)
     try:
         remaining = content
         while remaining:
@@ -3518,7 +3522,7 @@ def cmd_prototype_confirm(req_dir: Path, page_id: str, area_id: str,
             print(f"✓ 已写入本地交互确认凭证: {receipt}")
             return 0
         finally:
-            os.close(root_fd)
+            _ui_fs.close_dir(root_fd)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError) as exc:
         print(f"✗ 原型确认失败: {exc}")
         return 3
@@ -3588,7 +3592,8 @@ def main() -> int:
     if args.cmd == "init":
         return cmd_init(Path(args.repo).resolve(), args.name, args.json)
 
-    req_dir = Path(args.dir).resolve()
+    # Keep reparse/symlink components visible to the UI filesystem boundary.
+    req_dir = Path(os.path.abspath(args.dir))
     if not req_dir.is_dir():
         print(f"✗ 需求目录不存在: {req_dir}")
         return 3

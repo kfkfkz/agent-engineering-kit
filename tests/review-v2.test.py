@@ -322,8 +322,11 @@ class ReviewV2Tests(unittest.TestCase):
             output = json.loads(explicit.stdout)
             self.assertEqual(output["request"]["schema_version"], 2)
             self.assertEqual(output["request"]["mode"], "full")
+            document_bytes = (sdd / "需求分析.md").read_bytes()
             self.assertEqual(dict(output["request"]["full_documents"]),
-                             {"需求分析.md": REQUIREMENTS})
+                             {"需求分析.md": document_bytes.decode("utf-8")})
+            self.assertEqual(dict(output["request"]["doc_hashes"]),
+                             {"需求分析.md": hashlib.sha256(document_bytes).hexdigest()})
             persisted = (sdd / "reviews" / "需求分析.review-request.json").read_bytes()
             self.assertEqual(review.load_versioned_review_request(persisted).schema_version, 2)
             self.assertEqual(output["receipt"]["schema_version"], 2)
@@ -337,15 +340,27 @@ class ReviewV2Tests(unittest.TestCase):
     def test_upstream_change_requires_new_freeze_and_full_review_even_without_target_edit(self):
         self._material_baseline_case("概要设计.md / F1", "incremental", change_upstream=True)
 
-    def _material_baseline_case(self, location, expected_mode, *, change_upstream=False):
+    def test_crlf_document_bytes_bind_review_gate_and_incremental_baseline(self):
+        self._material_baseline_case("概要设计.md / F1", "incremental",
+                                     document_newline="\r\n", change_upstream=True)
+
+    def _material_baseline_case(self, location, expected_mode, *, change_upstream=False,
+                                document_newline=None):
         with tempfile.TemporaryDirectory(prefix="aek-review-v2-baseline-") as directory:
             repo = Path(directory)
             (repo / ".git").mkdir()
             sdd = repo / "docs" / "03-SDD" / "001-review"
             sdd.mkdir(parents=True)
-            (sdd / "需求分析.md").write_text(
-                REQUIREMENTS.replace("冻结状态：未冻结", "冻结状态：已冻结"), encoding="utf-8")
-            (sdd / "概要设计.md").write_text(OUTLINE, encoding="utf-8")
+
+            def write_document(name, text):
+                path = sdd / name
+                if document_newline is None:
+                    path.write_text(text, encoding="utf-8")
+                else:
+                    path.write_bytes(text.replace("\n", document_newline).encode("utf-8"))
+
+            write_document("需求分析.md", REQUIREMENTS.replace("冻结状态：未冻结", "冻结状态：已冻结"))
+            write_document("概要设计.md", OUTLINE)
             env = {**os.environ, "PYTHONPATH": str(ROOT), "PYTHONIOENCODING": "utf-8"}
 
             def invoke(*arguments):
@@ -359,6 +374,10 @@ class ReviewV2Tests(unittest.TestCase):
             prepared = invoke("review-input", "--stage", "概要设计", "--schema-version", "2", "--json")
             self.assertEqual(prepared.returncode, 0, prepared.stdout + prepared.stderr)
             output = json.loads(prepared.stdout)
+            self.assertEqual(dict(output["request"]["doc_hashes"]), {
+                "概要设计.md": hashlib.sha256((sdd / "概要设计.md").read_bytes()).hexdigest()})
+            self.assertEqual(dict(output["request"]["full_documents"])["概要设计.md"],
+                             (sdd / "概要设计.md").read_bytes().decode("utf-8"))
             reviews = sdd / "reviews"
             self.assertFalse((reviews / "概要设计.review-baseline.json").exists())
             issue = {"id": "REV-1", "severity": "major", "category": "verifiability",
@@ -382,8 +401,7 @@ class ReviewV2Tests(unittest.TestCase):
             self.assertEqual(baseline["snapshot"]["doc_hashes"], output["request"]["doc_hashes"])
             lifecycle = json.loads((reviews / "概要设计.issue-lifecycle.json").read_text(encoding="utf-8"))
             self.assertEqual([row["state"] for row in lifecycle["issues"]], ["OPEN"])
-            (sdd / "概要设计.md").write_text(
-                OUTLINE.replace("执行查询", "校验后执行查询"), encoding="utf-8")
+            write_document("概要设计.md", OUTLINE.replace("执行查询", "校验后执行查询"))
             repeated = invoke("review-input", "--stage", "概要设计", "--schema-version", "2", "--json")
             self.assertEqual(repeated.returncode, 0, repeated.stdout + repeated.stderr)
             second = json.loads(repeated.stdout)["request"]
@@ -401,8 +419,8 @@ class ReviewV2Tests(unittest.TestCase):
             self.assertIn("UNRESOLVED_ISSUE", second["scope_proof"]["reason_codes"])
             if change_upstream:
                 path = sdd / "需求分析.md"
-                path.write_text(path.read_text(encoding="utf-8").replace(
-                    "旧查询仍可调用", "旧查询必须保持错误码"), encoding="utf-8")
+                write_document("需求分析.md", path.read_text(encoding="utf-8").replace(
+                    "旧查询仍可调用", "旧查询必须保持错误码"))
                 refused = invoke("review-input", "--stage", "概要设计", "--schema-version", "2", "--json")
                 self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
                 self.assertIn("硬校验未过", refused.stdout)

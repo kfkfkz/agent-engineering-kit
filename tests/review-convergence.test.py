@@ -86,8 +86,8 @@ class ReviewConvergenceTests(unittest.TestCase):
         receipt = next_output["receipt"]
         if include_locator:
             material = parse_review_documents(
-                "概要设计", {"概要设计.md": (self.sdd / "概要设计.md").read_text(
-                    encoding="utf-8")}, next_output["request"]["dependency_fingerprint"])
+                "概要设计", {"概要设计.md": (self.sdd / "概要设计.md").read_bytes().decode(
+                    "utf-8")}, next_output["request"]["dependency_fingerprint"])
             issue = lifecycle["issues"][0]
             owner_ids = set(issue["occurrences"][-1]["affected_ids"])
             sections = [section for section in material.snapshot.sections
@@ -133,6 +133,17 @@ class ReviewConvergenceTests(unittest.TestCase):
         self.assertEqual(baseline["accepted_full_request_digest"], output["request"]["request_digest"])
         replayed = self.invoke("gate", "--stage", "概要设计", "--json")
         self.assertEqual(replayed.returncode, 0, replayed.stdout + replayed.stderr)
+
+    def test_crlf_full_review_locator_closes_issue_with_original_section_bytes(self):
+        path = self.sdd / "概要设计.md"
+        path.write_bytes(FIXTURE["OUTLINE"].replace("\n", "\r\n").encode("utf-8"))
+        gated, output = self._claim_fixed_and_return_clean_review(
+            "UNSCOPED", include_locator=True)
+        self.assertEqual(dict(output["request"]["doc_hashes"]), {
+            "概要设计.md": hashlib.sha256(path.read_bytes()).hexdigest()})
+        self.assertEqual(gated.returncode, 0, gated.stdout + gated.stderr)
+        lifecycle = json.loads((self.reviews / "概要设计.issue-lifecycle.json").read_text(encoding="utf-8"))
+        self.assertEqual(lifecycle["issues"][0]["state"], "CLOSED")
 
 
 if __name__ == "__main__":

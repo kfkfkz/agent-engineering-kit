@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import contextlib
 import json
 import os
+import shutil
 import struct
 import subprocess
 import sys
@@ -53,6 +55,12 @@ def request() -> dict[str, object]:
     }
 
 
+def finish_process(process: subprocess.Popen[str]) -> None:
+    if process.poll() is None:
+        process.kill()
+        process.communicate(timeout=10)
+
+
 class UiReferenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -66,13 +74,15 @@ class UiReferenceTests(unittest.TestCase):
         return subprocess.run(
             [sys.executable, str(HELPER), *args, "--repo-root", str(self.repo)],
             input=None if payload is None else json.dumps(payload, ensure_ascii=False),
-            capture_output=True, text=True, check=False,
+            capture_output=True, text=True, encoding="utf-8", check=False,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
 
     def invoke_raw(self, *args: str, raw: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(HELPER), *args, "--repo-root", str(self.repo)],
-            input=raw, capture_output=True, text=True, check=False,
+            input=raw, capture_output=True, text=True, encoding="utf-8", check=False,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
 
     @property
@@ -90,6 +100,87 @@ class UiReferenceTests(unittest.TestCase):
         self.assertEqual(row["placeholder_sha256"], hashlib.sha256(b"").hexdigest())
         self.assertEqual(row["validation"]["status"], "pending")
         self.assertEqual(row["applies_to"][0]["content_review"]["status"], "unverified")
+
+    def test_chinese_requirement_directory_is_bound_to_machine_identity(self) -> None:
+        value = request()
+        value["change_id"] = "CHG-003"
+        value["requirement_dir"] = "003-中文需求名称"
+        result = self.invoke("scaffold", payload=value)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        root = self.repo / "docs/01-需求/003-中文需求名称/原始材料/ui-reference"
+        index_path = root / "截图索引.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        self.assertEqual(index["change_id"], "CHG-003")
+        self.assertEqual(index["requirement_dir"], "003-中文需求名称")
+        (root / index["screenshots"][0]["path"]).write_bytes(png_bytes())
+        validated = self.invoke("validate", "--change-id", "CHG-003",
+                                "--requirement-dir", "003-中文需求名称")
+        self.assertEqual(validated.returncode, 1, validated.stdout + validated.stderr)
+        review = {"schema_version": 1, "updates": [{
+            "screenshot_id": "P1", "context_id": "P1-CAPTURED",
+            "content_review": {"status": "applicable", "reviewer_type": "maintainer",
+                               "reviewer": "维护者", "reviewed_at": "2026-10-12T12:00:00Z",
+                               "rationale": "中文目录中的当前截图"},
+            "freshness": {"status": "confirmed_current", "confirmer_type": "maintainer",
+                          "confirmer": "维护者", "confirmed_at": "2026-10-12T12:00:00Z"},
+        }]}
+        updated = self.invoke("record-review", "--change-id", "CHG-003", "--requirement-dir",
+                              "003-中文需求名称", "--expected-index-sha256",
+                              hashlib.sha256(index_path.read_bytes()).hexdigest(), payload=review)
+        self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+        ready = self.invoke("validate", "--change-id", "CHG-003", "--requirement-dir", "003-中文需求名称")
+        self.assertEqual(ready.returncode, 0, ready.stdout + ready.stderr)
+        before = index_path.read_bytes()
+        wrong = self.invoke("validate", "--change-id", "CHG-002",
+                            "--requirement-dir", "003-中文需求名称")
+        self.assertEqual(wrong.returncode, 2)
+        self.assertEqual(index_path.read_bytes(), before)
+        self.assertFalse(self.material_root.exists())
+
+    def test_requirement_directory_rejects_traversal_windows_ambiguity_and_wrong_mapping(self) -> None:
+        for directory in ("../003-中文", "003-中文/child", "003-中文\\child", "C:中文",
+                          "003-中文.", "CON", "003-e\u0301", "003-中文"):
+            with self.subTest(directory=directory):
+                value = request()
+                value["requirement_dir"] = directory
+                result = self.invoke("scaffold", payload=value)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertFalse((self.repo / "docs").exists())
+
+    def test_stored_requirement_directory_cannot_be_rebound_by_copying_materials(self) -> None:
+        value = request()
+        value["change_id"] = "CHG-003"
+        value["requirement_dir"] = "003-中文需求名称"
+        self.assertEqual(self.invoke("scaffold", payload=value).returncode, 0)
+        original = self.repo / "docs/01-需求/003-中文需求名称"
+        copied = self.repo / "docs/01-需求/003-另一需求名称"
+        shutil.copytree(original, copied)
+        index = copied / "原始材料/ui-reference/截图索引.json"
+        before = index.read_bytes()
+        result = self.invoke("validate", "--change-id", "CHG-003", "--requirement-dir", copied.name)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("requirement_dir does not match", result.stdout)
+        self.assertEqual(index.read_bytes(), before)
+
+    def test_installed_helper_loads_kit_adapter_with_utf8_output(self) -> None:
+        shutil.copytree(ROOT / "aek", self.repo / ".repo-memory-kit/lib/aek")
+        value = request()
+        value["change_id"] = "CHG-003"
+        value["requirement_dir"] = "003-中文需求名称"
+        for surface in (".agents", ".claude"):
+            with self.subTest(surface=surface):
+                installed = self.repo / surface / "skills/design-pipeline/scripts/ui-reference.py"
+                installed.parent.mkdir(parents=True)
+                shutil.copy2(HELPER, installed)
+                result = subprocess.run(
+                    [sys.executable, str(installed), "scaffold", "--repo-root", str(self.repo)],
+                    input=json.dumps(value, ensure_ascii=False), capture_output=True,
+                    text=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "ascii"}, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(json.loads(result.stdout)["change_id"], "CHG-003")
+        index = self.repo / "docs/01-需求/003-中文需求名称/原始材料/ui-reference/截图索引.json"
+        self.assertTrue(index.is_file())
 
     def test_rejects_request_that_attempts_to_set_derived_path_before_writing(self) -> None:
         value = request()
@@ -248,6 +339,42 @@ class UiReferenceTests(unittest.TestCase):
         self.assertIn('"git_status": "tracked"', result.stdout)
         self.assertEqual(before, after)
 
+    def test_staged_image_diagnosis_is_read_only_and_uses_literal_chinese_path(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
+        subprocess.run(["git", "-C", str(self.repo), "config", "core.filemode", "false"], check=True)
+        value = request()
+        value["change_id"] = "CHG-003"
+        value["requirement_dir"] = "003-中文[截图]"
+        self.assertEqual(self.invoke("scaffold", payload=value).returncode, 0)
+        root = self.repo / "docs/01-需求/003-中文[截图]/原始材料/ui-reference"
+        image = root / "function/FP01/data/DP01/P1.png"
+        image.write_bytes(png_bytes())
+        subprocess.run(["git", "-C", str(self.repo), "--literal-pathspecs", "add", "--",
+                        image.relative_to(self.repo).as_posix()], check=True)
+        before_index = (self.repo / ".git/index").read_bytes()
+        before_config = (self.repo / ".git/config").read_bytes()
+        result = self.invoke("validate", "--change-id", "CHG-003",
+                             "--requirement-dir", "003-中文[截图]")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        row = json.loads(result.stdout)["screenshots"][0]
+        self.assertEqual(row["git_status"], "tracked")
+        self.assertEqual(row["git_staging"], "added")
+        stored = json.loads((root / "截图索引.json").read_text(encoding="utf-8"))["screenshots"][0]
+        self.assertIn("暂存", stored["git_warning"])
+        self.assertEqual((self.repo / ".git/index").read_bytes(), before_index)
+        self.assertEqual((self.repo / ".git/config").read_bytes(), before_config)
+        subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=UI test",
+                        "-c", "user.email=ui@example.invalid", "commit", "-q", "-m", "baseline"], check=True)
+        image.write_bytes(png_bytes(width=2))
+        subprocess.run(["git", "-C", str(self.repo), "--literal-pathspecs", "add", "--",
+                        image.relative_to(self.repo).as_posix()], check=True)
+        before_index = (self.repo / ".git/index").read_bytes()
+        modified = self.invoke("validate", "--change-id", "CHG-003",
+                               "--requirement-dir", "003-中文[截图]")
+        self.assertEqual(json.loads(modified.stdout)["screenshots"][0]["git_staging"], "modified")
+        self.assertEqual((self.repo / ".git/index").read_bytes(), before_index)
+        self.assertEqual((self.repo / ".git/config").read_bytes(), before_config)
+
     def test_concurrent_different_scaffolds_never_overwrite_the_winner_or_leave_staging(self) -> None:
         first = request()
         second = request()
@@ -256,14 +383,18 @@ class UiReferenceTests(unittest.TestCase):
         second["coverage"][0]["screenshot_ids"] = ["P2"]  # type: ignore[index]
         second["coverage"][1]["screenshot_ids"] = ["P2"]  # type: ignore[index]
         commands = []
-        for value in (first, second):
-            commands.append(subprocess.Popen(
-                [sys.executable, str(HELPER), "scaffold", "--repo-root", str(self.repo)],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True,
-            ))
-        outputs = [proc.communicate(json.dumps(value, ensure_ascii=False)) for proc, value in zip(commands, (first, second))]
-        codes = [proc.returncode for proc in commands]
+        with contextlib.ExitStack() as cleanup:
+            for value in (first, second):
+                proc = cleanup.enter_context(subprocess.Popen(
+                    [sys.executable, str(HELPER), "scaffold", "--repo-root", str(self.repo)],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                ))
+                cleanup.callback(finish_process, proc)
+                commands.append(proc)
+            outputs = [proc.communicate(json.dumps(value, ensure_ascii=False), timeout=10)
+                       for proc, value in zip(commands, (first, second))]
+            codes = [proc.returncode for proc in commands]
         self.assertEqual(sorted(codes), [0, 2], outputs)
         index = json.loads((self.material_root / "截图索引.json").read_text(encoding="utf-8"))
         self.assertIn(index["screenshots"][0]["id"], {"P1", "P2"})
@@ -287,12 +418,19 @@ class UiReferenceTests(unittest.TestCase):
         other_update["content_review"]["reviewer"] = "second"
         other_update["freshness"]["confirmer"] = "second"
         two = {"schema_version": 1, "updates": [other_update]}
-        processes = [subprocess.Popen(
-            [sys.executable, str(HELPER), "record-review", "--repo-root", str(self.repo),
-             "--change-id", "CHG-001", "--expected-index-sha256", index_sha],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        ) for _ in range(2)]
-        results = [proc.communicate(json.dumps(payload)) for proc, payload in zip(processes, (one, two))]
+        processes = []
+        with contextlib.ExitStack() as cleanup:
+            for _ in range(2):
+                proc = cleanup.enter_context(subprocess.Popen(
+                    [sys.executable, str(HELPER), "record-review", "--repo-root", str(self.repo),
+                     "--change-id", "CHG-001", "--expected-index-sha256", index_sha],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                ))
+                cleanup.callback(finish_process, proc)
+                processes.append(proc)
+            results = [proc.communicate(json.dumps(payload, ensure_ascii=False), timeout=10)
+                       for proc, payload in zip(processes, (one, two))]
         self.assertEqual(sorted(proc.returncode for proc in processes), [0, 2], results)
         saved = json.loads((self.material_root / "截图索引.json").read_text(encoding="utf-8"))
         self.assertIn(saved["screenshots"][0]["applies_to"][0]["content_review"]["reviewer"], {"first", "second"})

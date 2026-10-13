@@ -255,8 +255,13 @@ class ScannerTests(unittest.TestCase):
             pid = int(result.stdout.strip())
             if os.name == "posix":
                 proc = Path("/proc") / str(pid) / "stat"
-                if proc.exists():
-                    self.assertIn(proc.read_text().rsplit(")", 1)[1].strip()[0], {"Z", "X"})
+                try:
+                    state = proc.read_text().rsplit(")", 1)[1].strip()[0]
+                except FileNotFoundError:
+                    # A terminated child can be reaped between cleanup and this read.
+                    pass
+                else:
+                    self.assertIn(state, {"Z", "X"})
             elif os.name == "nt":
                 import subprocess
                 listing = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],

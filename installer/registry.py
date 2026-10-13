@@ -322,6 +322,7 @@ AEK_PACKAGE_FILES = (
     "application/security_workflow.py",
     "adapters/__init__.py",
     "adapters/atomic_file.py",
+    "adapters/ui_filesystem.py",
     "adapters/capsule.py",
     "adapters/telemetry.py",
     "adapters/memory.py",

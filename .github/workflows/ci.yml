@@ -2,6 +2,8 @@ name: ci
 on: [push, pull_request]
 env:
   PYTHONPATH: ${{ github.workspace }}
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
 jobs:
   test:
     runs-on: ubuntu-latest

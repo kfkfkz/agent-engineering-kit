@@ -771,6 +771,14 @@
       "memory-readme-seed": "canonical_sha256:2c728780b4fffe2c8f04adbaee90bed86c1776c9e2b788c1d575788a95fc7846",
       "memory-rules": "canonical_sha256:d99d45480d0f063f6511318889370e91ae523569fa19850d410394dfc7aba97d"
     },
+    "b077eda": {
+      "bin-doc-gate": "canonical_sha256:ee3729861905fe9a4b624934847f068d98760404c3caf5c8fcd62fde667e43f3",
+      "req-tpl-ui": "canonical_sha256:4801670d6bd01e93b0caeed0ebe511915a96cde0e69edc1da36a5bc6f44b5685",
+      "skill-agents-design-pipeline": "canonical_sha256:228aa8141950bc7a892151cb000fd6174867cb4038844e126641a68130df11b2",
+      "skill-agents-design-pipeline-ui-reference-helper": "canonical_sha256:95a1dae04d31172e72bae5c02197e65d16f7f8777414edac3ef4545053a81dd2",
+      "skill-claude-design-pipeline": "canonical_sha256:228aa8141950bc7a892151cb000fd6174867cb4038844e126641a68130df11b2",
+      "skill-claude-design-pipeline-ui-reference-helper": "canonical_sha256:95a1dae04d31172e72bae5c02197e65d16f7f8777414edac3ef4545053a81dd2"
+    },
     "b20de0b": {
       "bin-agent-engineering-mcp": "canonical_sha256:7724192a2e269acd24eca8da8ec0a19ec1e2b9cb4f89af46a57ef1efb17412c5",
       "bin-doc-gate": "canonical_sha256:8f6111749680fb91722bb5950b41b30474674c57826aa3ba4d1b2e07f7bf71a9",

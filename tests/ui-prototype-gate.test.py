@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from dataclasses import asdict
 from unittest.mock import patch
 from pathlib import Path
 
@@ -22,6 +23,24 @@ confirmation_digest = GATE["_prototype_confirmation_digest"]
 confirmation_path = GATE["_prototype_confirmation_path"]
 confirm_command = GATE["cmd_prototype_confirm"]
 stage_frozen = GATE["stage_frozen"]
+run_checks = GATE["run_checks"]
+
+
+def required_ui_state():
+    from aek.application.planning import DynamicPlanState
+    from aek.core.artifact.plan import build_plan, freeze_plan
+    from aek.core.planning.facts import FACT_CATALOG, FactObservation, merge_fact_observations
+    from aek.core.planning.policy import preview_plan
+    subject = "a" * 64
+    facts = {name: merge_fact_observations(name, subject, tuple(
+        FactObservation(name, producer, "false", subject, "b" * 64, True)
+        for producer in spec.required_producers)) for name, spec in FACT_CATALOG.items()}
+    plan = build_plan(preview_plan("standard", subject, facts,
+                     required_overlays=("ui-design",)), facts,
+                     required_overlays=("ui-design",))
+    credential = freeze_plan(plan, input_digest="c" * 64, generation_mode="native",
+                             frozen_at="2026-10-13T00:00:00Z")
+    return DynamicPlanState("FROZEN", "test validated plan", plan, credential)
 
 
 def canonical_digest(value: object) -> str:
@@ -83,8 +102,8 @@ class PrototypeGateTests(unittest.TestCase):
         self.requirements = "- [x] A1：用户可以查看预览确认结果\n"
         self.overview = "### F1：原型评审记录\n\n覆盖验收项：A1\n"
         self.ui_text = "## 页面清单\n\n### PAGE-1：列表\n\n- 区域映射：AREA-1 → UI-EV P1\n\n## 原型确认记录\n"
-        (self.req / "需求分析.md").write_text(self.requirements, encoding="utf-8")
-        (self.req / "概要设计.md").write_text(self.overview, encoding="utf-8")
+        (self.req / "需求分析.md").write_bytes(self.requirements.encode("utf-8"))
+        (self.req / "概要设计.md").write_bytes(self.overview.encode("utf-8"))
         page_block = self.ui_text[self.ui_text.index("### PAGE-1"):self.ui_text.index("\n## 原型确认记录")]
         snapshot = {
             "design_system_sha256": self.item["design_system_sha256"],
@@ -121,7 +140,7 @@ class PrototypeGateTests(unittest.TestCase):
 
     def _write_fixtures(self) -> None:
         (self.req / "prototypes").mkdir(exist_ok=True)
-        (self.req / "UI设计.md").write_text(self._full_ui_text(), encoding="utf-8")
+        (self.req / "UI设计.md").write_bytes(self._full_ui_text().encode("utf-8"))
         (self.req / self.path).write_bytes(self.html)
         screenshot_path = self.material / "function/FP01/data/DP01/P1.png"
         screenshot_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +160,58 @@ class PrototypeGateTests(unittest.TestCase):
     def test_current_human_acceptance_and_current_evidence_pass(self) -> None:
         checks = self._run()
         self.assertEqual(checks.fails, [])
+
+    def test_chinese_requirement_directory_binds_machine_identity(self) -> None:
+        name = "003-中文需求名称"
+        old_req = self.req
+        self.req = self.repo / "docs/03-SDD" / name
+        old_req.rename(self.req)
+        old_material = self.repo / "docs/01-需求/CHG-001"
+        old_material.rename(self.repo / "docs/01-需求" / name)
+        self.material = self.repo / "docs/01-需求" / name / "原始材料/ui-reference"
+        self.index.update(change_id="CHG-003", requirement_dir=name)
+        self.item["approved_root"] = "docs/03-SDD/" + name
+        self.index["screenshots"][0]["prototype_refs"][0]["approved_root"] = self.item["approved_root"]
+        self._write_fixtures()
+        self.assertEqual(self._run().fails, [])
+        self.index["change_id"] = "CHG-004"
+        self._write_fixtures()
+        self.assertTrue(self._run().fails)
+
+    def test_upstream_required_ui_plan_blocks_deleted_marker_and_manifest(self) -> None:
+        (self.req / "UI设计.md").write_bytes(self.ui_text.encode("utf-8"))
+        checks = run_checks(self.req, "UI设计", required_ui_state())
+        self.assertTrue(any(item["group"] == "prototype" for item in checks.fails),
+                        "required UI plan must survive removal of document-owned markers")
+
+    def test_bound_required_ui_stage_is_draft_after_manifest_removal(self) -> None:
+        (self.req / "UI设计.md").write_bytes(self.ui_text.encode("utf-8"))
+        state = required_ui_state()
+        from aek.core.artifact.registry import ARTIFACT_REGISTRY
+        with patch.dict(stage_frozen.__globals__, {
+                "evaluate_stage_states": lambda *_: {name: "BOUND" for name in ARTIFACT_REGISTRY.groups},
+                "_dynamic_snapshots": lambda *_: {}}):
+            self.assertEqual(stage_frozen(self.req, "UI设计", state)[0], "DRAFT")
+
+    def test_check_loads_persisted_plan_and_rejects_document_opt_out(self) -> None:
+        from aek.adapters.plan_transaction import PlanStore
+        state = required_ui_state()
+        store = PlanStore(self.req / "reviews")
+        _, expected = store.snapshot_with_digest()
+        store.publish({
+            "artifact-plan.json": json.dumps(asdict(state.plan), ensure_ascii=False,
+                sort_keys=True, separators=(",", ":")).encode("utf-8"),
+            "artifact-plan.gate.json": json.dumps(asdict(state.credential), ensure_ascii=False,
+                sort_keys=True, separators=(",", ":")).encode("utf-8"),
+        }, expected_consumers=expected)
+        (self.req / "UI设计.md").write_bytes(self.ui_text.encode("utf-8"))
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = GATE["cmd_check"](self.req, "UI设计", True)
+        self.assertEqual(result, 1, output.getvalue())
+        report = json.loads(output.getvalue())
+        self.assertTrue(any(item["group"] == "prototype" and item["status"] == "FAIL"
+                            for item in report["checks"]), report)
 
     def test_prototype_changed_after_acceptance_fails(self) -> None:
         (self.req / self.path).write_bytes(self.html + b"<!-- edited -->")
@@ -302,7 +373,7 @@ class PrototypeGateTests(unittest.TestCase):
         self.assertTrue(self._run().fails)
 
     def test_only_changed_requirement_dependencies_invalidate_the_record(self) -> None:
-        (self.req / "需求分析.md").write_text("- [x] A1：用户可以确认新的审批结果\n", encoding="utf-8")
+        (self.req / "需求分析.md").write_bytes("- [x] A1：用户可以确认新的审批结果\n".encode("utf-8"))
         self.assertTrue(self._run().fails)
 
 

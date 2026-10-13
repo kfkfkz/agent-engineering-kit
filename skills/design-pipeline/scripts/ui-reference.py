@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import ctypes
 import hashlib
 import json
 import os
@@ -14,10 +13,22 @@ import struct
 import subprocess
 import sys
 import time
+import unicodedata
 import uuid
 import zlib
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterator
+
+
+# Resolve only the source-kit or installed-kit package layout, never the caller's
+# working directory or an unbounded parent search.
+_KIT_ROOT = Path(__file__).resolve().parents[3]
+_PACKAGE_ROOT = (_KIT_ROOT.parent / ".repo-memory-kit" / "lib"
+                 if _KIT_ROOT.name in {".agents", ".claude"} else _KIT_ROOT)
+if not (_PACKAGE_ROOT / "aek" / "adapters" / "ui_filesystem.py").is_file():
+    raise ImportError("UI filesystem adapter is missing from the managed kit layout")
+sys.path.insert(0, str(_PACKAGE_ROOT))
+from aek.adapters import ui_filesystem as fs
 
 
 INDEX_NAME = "截图索引.json"
@@ -85,6 +96,24 @@ def _id(value: Any, where: str) -> str:
     return value
 
 
+def _requirement_dir(value: Any) -> str:
+    """Directory identity is a basename, independently of machine IDs."""
+    name = _text(value, "requirement_dir", maximum=180)
+    if (name in {".", ".."} or name[-1] in {".", " "}
+            or unicodedata.normalize("NFC", name) != name
+            or any(ch in name for ch in '/\\:<>"|?*')
+            or any(ord(ch) < 32 for ch in name)
+            or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?", name)):
+        fail("requirement_dir must be a safe single directory basename")
+    return name
+
+
+def _validate_requirement_identity(change_id: str, requirement_dir: str) -> None:
+    numbered = re.fullmatch(r"([0-9]{3})-.+", requirement_dir)
+    if numbered and change_id != "CHG-" + numbered.group(1):
+        fail("numbered requirement_dir must map to change_id CHG-NNN")
+
+
 def _ids(value: Any, where: str, prefix: str | None = None) -> list[str]:
     if (not isinstance(value, list) or not value
             or any(not isinstance(item, str) for item in value)
@@ -134,7 +163,7 @@ def _parse_context(value: Any, captured: dict[str, Any], where: str) -> dict[str
 
 
 def validate_request(value: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    root = _keys(value, {"schema_version", "change_id", "design_system", "coverage", "screenshots"}, set(), "request")
+    root = _keys(value, {"schema_version", "change_id", "design_system", "coverage", "screenshots"}, {"requirement_dir"}, "request")
     if type(root["schema_version"]) is not int or root["schema_version"] != 1:
         fail("schema_version must be integer 1")
     change_id = _id(root["change_id"], "change_id")
@@ -264,85 +293,46 @@ def validate_request(value: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     normalized = {"schema_version": 1, "change_id": change_id,
                   "design_system": design_system, "coverage": coverage,
                   "screenshots": screenshots}
+    if "requirement_dir" in root:
+        normalized["requirement_dir"] = _requirement_dir(root["requirement_dir"])
+        _validate_requirement_identity(change_id, normalized["requirement_dir"])
     return normalized, screenshots
 
 
-def _fs_supported() -> None:
-    required = (os.open, os.mkdir, os.stat, os.unlink, os.rename)
-    if (os.name != "posix" or not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY")
-            or any(func not in os.supports_dir_fd for func in required)):
-        fail("secure handle-relative filesystem operations are unavailable on this runtime; failing closed")
-
-
-def _open_absolute_dir(path: Path) -> int:
-    _fs_supported()
-    if not path.is_absolute() or ".." in path.parts:
-        fail("repo root must be absolute and contain no parent traversal")
-    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try:
-        for part in path.parts[1:]:
-            if part in {"", "."}:
-                continue
-            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            os.close(fd)
-            fd = next_fd
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
-
-
-def _open_child_dir(parent_fd: int, name: str, *, create: bool = False) -> int:
-    if name in {"", ".", ".."} or "/" in name or "\\" in name:
-        fail("unsafe directory component")
-    if create:
-        try:
-            os.mkdir(name, 0o700, dir_fd=parent_fd)
-        except FileExistsError:
-            pass
-    return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+_open_absolute_dir = fs.open_absolute_dir
+_open_child_dir = fs.open_child_dir
 
 
 @contextlib.contextmanager
-def _material_parent(repo_fd: int, change_id: str, *, create: bool) -> Iterator[tuple[int, int]]:
-    current = os.dup(repo_fd)
+def _material_parent(repo_fd: Any, change_id: str, *, create: bool) -> Iterator[tuple[Any, Any]]:
+    current = fs.dup_dir(repo_fd)
     try:
         for part in (*MATERIAL_PARTS, change_id, "原始材料"):
             child = _open_child_dir(current, part, create=create)
-            os.close(current)
+            fs.close_dir(current)
             current = child
-        yield current, os.dup(current)
+        yield current, fs.dup_dir(current)
     finally:
-        os.close(current)
+        fs.close_dir(current)
 
 
 def _read_fd(fd: int, limit: int) -> bytes:
-    info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
-        fail("expected a regular file within size limit")
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        data = os.read(fd, min(1024 * 1024, limit + 1 - total))
-        if not data:
-            break
-        chunks.append(data)
-        total += len(data)
-        if total > limit:
-            fail("file exceeds size limit")
-    return b"".join(chunks)
+    try:
+        return fs.read_fd(fd, limit)
+    except ValueError as exc:
+        fail(str(exc))
 
 
-def _read_at(dir_fd: int, name: str, limit: int) -> bytes:
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+def _read_at(dir_fd: Any, name: str, limit: int) -> bytes:
+    fd = fs.open_file(dir_fd, name, os.O_RDONLY)
     try:
         return _read_fd(fd, limit)
     finally:
         os.close(fd)
 
 
-def _write_exclusive(dir_fd: int, name: str, data: bytes, mode: int = 0o600) -> None:
-    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode, dir_fd=dir_fd)
+def _write_exclusive(dir_fd: Any, name: str, data: bytes, mode: int = 0o600) -> None:
+    fd = fs.open_file(dir_fd, name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
         view = memoryview(data)
         while view:
@@ -357,52 +347,20 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _rename_noreplace(src_fd: int, src: str, dst_fd: int, dst: str) -> None:
-    """Use an OS atomic no-replace primitive; never emulate with a prior stat."""
-    encoded_src, encoded_dst = os.fsencode(src), os.fsencode(dst)
-    libc = ctypes.CDLL(None, use_errno=True)
-    if sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
-        fn = libc.renameat2
-        fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        fn.restype = ctypes.c_int
-        result = fn(src_fd, encoded_src, dst_fd, encoded_dst, 1)  # RENAME_NOREPLACE
-    elif sys.platform == "darwin" and hasattr(libc, "renameatx_np"):
-        fn = libc.renameatx_np
-        fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        fn.restype = ctypes.c_int
-        result = fn(src_fd, encoded_src, dst_fd, encoded_dst, 0x00000004)  # RENAME_EXCL
-    else:
-        fail("atomic no-replace directory publication is unsupported; failing closed")
-    if result != 0:
-        error = ctypes.get_errno()
-        if error == 17:  # EEXIST
-            raise FileExistsError(error, os.strerror(error), dst)
-        raise OSError(error, os.strerror(error), dst)
-
-
-@contextlib.contextmanager
-def _exclusive_lock(root_fd: int) -> Iterator[None]:
-    try:
-        import fcntl
-    except ImportError:
-        fail("secure inter-process locking is unavailable; failing closed")
-    # Lock the already-open material-root directory itself. This avoids a
-    # persistent lock artifact in user-owned source material and lock-file races.
-    fcntl.flock(root_fd, fcntl.LOCK_EX)
-    try:
-        yield
-    finally:
-        fcntl.flock(root_fd, fcntl.LOCK_UN)
+_rename_noreplace = fs.rename_noreplace
+_exclusive_lock = fs.exclusive_lock
 
 
 def _index_bytes(index: dict[str, Any]) -> bytes:
     return (json.dumps(index, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def _validate_stored_index(index: Any, change_id: str) -> dict[str, Any]:
-    root = _keys(index, {"schema_version", "change_id", "design_system", "coverage", "screenshots"}, set(), "index")
+def _validate_stored_index(index: Any, change_id: str, requirement_dir: str) -> dict[str, Any]:
+    root = _keys(index, {"schema_version", "change_id", "design_system", "coverage", "screenshots"}, {"requirement_dir"}, "index")
     if type(root["schema_version"]) is not int or root["schema_version"] != 1 or root["change_id"] != change_id:
         fail("index schema_version or change_id is invalid")
+    if _requirement_dir(root.get("requirement_dir", root["change_id"])) != requirement_dir:
+        fail("index requirement_dir does not match its actual requirement directory")
     if not isinstance(root["screenshots"], list):
         fail("index screenshots must be a list")
     source_rows: list[dict[str, Any]] = []
@@ -410,7 +368,7 @@ def _validate_stored_index(index: Any, change_id: str) -> dict[str, Any]:
         where = f"index.screenshots[{number}]"
         _keys(row, {"id", "page", "state", "purpose", "feature_ids", "acceptance_ids", "permissions",
                     "path", "placeholder_sha256", "validation", "prototype_refs", "applies_to"},
-              {"system_version", "viewport", "git_status", "git_warning"}, where)
+              {"system_version", "viewport", "git_status", "git_staging", "git_warning"}, where)
         src = {key: row[key] for key in ("id", "page", "state", "purpose", "feature_ids", "acceptance_ids", "permissions")}
         for key in ("system_version", "viewport"):
             if key in row:
@@ -475,6 +433,8 @@ def _validate_stored_index(index: Any, change_id: str) -> dict[str, Any]:
             _parse_time(validation["validated_at"], where + ".validation.validated_at")
         if row.get("git_status", "unknown") not in {"tracked", "untracked", "unknown"}:
             fail(f"{where}.git_status is invalid")
+        if row.get("git_staging", "unknown") not in {"added", "modified", "renamed", "copied", "deleted", "unmerged", "none", "unknown"}:
+            fail(f"{where}.git_staging is invalid")
         if "git_warning" in row:
             _text(row["git_warning"], where + ".git_warning", maximum=500)
         if not isinstance(row["prototype_refs"], list):
@@ -498,6 +458,8 @@ def _validate_stored_index(index: Any, change_id: str) -> dict[str, Any]:
     request = {"schema_version": 1, "change_id": change_id,
                "design_system": root["design_system"], "coverage": root["coverage"],
                "screenshots": source_rows}
+    if "requirement_dir" in root:
+        request["requirement_dir"] = root["requirement_dir"]
     expected, _ = validate_request(request)
     for actual, derived in zip(root["screenshots"], expected["screenshots"]):
         for key in ("id", "page", "state", "purpose", "feature_ids", "acceptance_ids",
@@ -511,25 +473,25 @@ def _validate_stored_index(index: Any, change_id: str) -> dict[str, Any]:
     return root
 
 
-def _replace_index(root_fd: int, data: bytes) -> None:
+def _replace_index(root_fd: Any, data: bytes) -> None:
     temp_name = ".index-tmp-" + uuid.uuid4().hex
     _write_exclusive(root_fd, temp_name, data)
     try:
-        os.rename(temp_name, INDEX_NAME, src_dir_fd=root_fd, dst_dir_fd=root_fd)
-        os.fsync(root_fd)
+        fs.replace(root_fd, temp_name, root_fd, INDEX_NAME)
+        fs.fsync_dir(root_fd)
     except BaseException:
         with contextlib.suppress(FileNotFoundError):
-            os.unlink(temp_name, dir_fd=root_fd)
+            fs.unlink(root_fd, temp_name)
         raise
 
 
-def _load_index(root_fd: int, change_id: str) -> tuple[dict[str, Any], bytes]:
+def _load_index(root_fd: Any, change_id: str, requirement_dir: str) -> tuple[dict[str, Any], bytes]:
     raw = _read_at(root_fd, INDEX_NAME, 8 * 1024 * 1024)
     try:
         index = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=_unique_object)
     except (UnicodeError, json.JSONDecodeError) as exc:
         fail(f"截图索引无法解析: {exc}")
-    return _validate_stored_index(index, change_id), raw
+    return _validate_stored_index(index, change_id, requirement_dir), raw
 
 
 def _png_validate_fd(fd: int, file_size: int) -> tuple[int, int]:
@@ -690,8 +652,8 @@ def _png_validate_fd(fd: int, file_size: int) -> tuple[int, int]:
     return ihdr[0], ihdr[1]
 
 
-def _validate_image_at(dir_fd: int, name: str) -> tuple[bytes, int, int, int]:
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+def _validate_image_at(dir_fd: Any, name: str) -> tuple[bytes, int, int, int]:
+    fd = fs.open_file(dir_fd, name, os.O_RDONLY)
     try:
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode) or before.st_size > MAX_FILE_BYTES:
@@ -714,92 +676,106 @@ def _validate_image_at(dir_fd: int, name: str) -> tuple[bytes, int, int, int]:
         os.close(fd)
 
 
-def _git_status(repo_root: Path, relative_path: str) -> str:
+def _git_status(repo_root: Path, relative_path: str) -> tuple[str, str]:
+    # Literal pathspecs and optional-lock suppression make this diagnosis safe
+    # for requirement names containing Git metacharacters and keep the index untouched.
+    prefix = ["git", "--no-optional-locks", "--literal-pathspecs", "-C", str(repo_root)]
     try:
-        result = subprocess.run(["git", "-C", str(repo_root), "ls-files", "--error-unmatch", "--", relative_path],
+        result = subprocess.run([*prefix, "ls-files", "--error-unmatch", "--", relative_path],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 timeout=3, check=False)
+        if result.returncode not in {0, 1}:
+            return "unknown", "unknown"
+        status = subprocess.run([*prefix, "status", "--porcelain=v1", "-z", "--untracked-files=normal",
+                                 "--", relative_path], capture_output=True, timeout=3, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
-    if result.returncode == 0:
-        return "tracked"
-    if result.returncode == 1:
-        return "untracked"
-    return "unknown"
+        return "unknown", "unknown"
+    tracked = "tracked" if result.returncode == 0 else "untracked"
+    if status.returncode != 0:
+        return tracked, "unknown"
+    if not status.stdout:
+        return tracked, "none"
+    code = status.stdout[:2].decode("ascii", errors="replace")
+    if "U" in code or code in {"AA", "DD"}:
+        staging = "unmerged"
+    else:
+        staging = {"A": "added", "M": "modified", "T": "modified", "R": "renamed",
+                   "C": "copied", "D": "deleted", " ": "none", "?": "none"}.get(code[0], "unknown")
+    return tracked, staging
 
 
-def _material_root(repo_fd: int, change_id: str, *, create: bool = False) -> tuple[int, int]:
-    parent = os.dup(repo_fd)
+def _material_root(repo_fd: Any, change_id: str, *, create: bool = False) -> tuple[Any, Any]:
+    parent = fs.dup_dir(repo_fd)
     try:
         for part in (*MATERIAL_PARTS, change_id, "原始材料"):
             child = _open_child_dir(parent, part, create=create)
-            os.close(parent)
+            fs.close_dir(parent)
             parent = child
         return parent, _open_child_dir(parent, "ui-reference", create=create)
     except BaseException:
-        os.close(parent)
+        fs.close_dir(parent)
         raise
 
 
-def _mkdir_path(root_fd: int, relative: str) -> int:
-    current = os.dup(root_fd)
+def _mkdir_path(root_fd: Any, relative: str) -> Any:
+    current = fs.dup_dir(root_fd)
     try:
         for part in PurePosixPath(relative).parts:
             child = _open_child_dir(current, part, create=True)
-            os.close(current)
+            fs.close_dir(current)
             current = child
         return current
     except BaseException:
-        os.close(current)
+        fs.close_dir(current)
         raise
 
 
-def _remove_tree_at(parent_fd: int, name: str) -> None:
+def _remove_tree_at(parent_fd: Any, name: str) -> None:
     """Remove only our private staging tree without following inserted links."""
     try:
-        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        info = fs.stat_at(parent_fd, name)
     except FileNotFoundError:
         return
     if not stat.S_ISDIR(info.st_mode):
-        os.unlink(name, dir_fd=parent_fd)
+        fs.unlink(parent_fd, name)
         return
-    child_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    child_fd = _open_child_dir(parent_fd, name)
     try:
-        for child in os.listdir(child_fd):
+        for child in fs.listdir(child_fd):
             _remove_tree_at(child_fd, child)
     finally:
-        os.close(child_fd)
-    os.rmdir(name, dir_fd=parent_fd)
+        fs.close_dir(child_fd)
+    fs.rmdir(parent_fd, name)
 
 
-def _create_staging(parent_fd: int, index: dict[str, Any]) -> None:
+def _create_staging(parent_fd: Any, index: dict[str, Any]) -> None:
     stage_name = ".kit-stage-" + uuid.uuid4().hex
-    os.mkdir(stage_name, 0o700, dir_fd=parent_fd)
-    stage_fd = os.open(stage_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    fs.mkdir(parent_fd, stage_name, 0o700)
+    stage_fd = _open_child_dir(parent_fd, stage_name)
     try:
         for row in index["screenshots"]:
             dir_fd = _mkdir_path(stage_fd, str(PurePosixPath(row["path"]).parent))
             try:
                 _write_exclusive(dir_fd, PurePosixPath(row["path"]).name, b"")
             finally:
-                os.close(dir_fd)
+                fs.close_dir(dir_fd)
         _write_exclusive(stage_fd, INDEX_NAME, _index_bytes(index))
-        os.fsync(stage_fd)
+        fs.fsync_dir(stage_fd)
     except BaseException:
-        os.close(stage_fd)
+        fs.close_dir(stage_fd)
         _remove_tree_at(parent_fd, stage_name)
         raise
-    os.close(stage_fd)
+    fs.close_dir(stage_fd)
     try:
         _rename_noreplace(parent_fd, stage_name, parent_fd, "ui-reference")
-        os.fsync(parent_fd)
+        fs.fsync_dir(parent_fd)
     except FileExistsError:
         try:
-            existing_fd = os.open("ui-reference", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            existing_fd = _open_child_dir(parent_fd, "ui-reference")
             try:
                 existing = _read_at(existing_fd, INDEX_NAME, 8 * 1024 * 1024)
             finally:
-                os.close(existing_fd)
+                fs.close_dir(existing_fd)
         finally:
             _remove_tree_at(parent_fd, stage_name)
         if existing == _index_bytes(index):
@@ -814,31 +790,33 @@ def _scaffold(repo_root: Path, request: Any) -> dict[str, Any]:
     index, _ = validate_request(request)
     repo_fd = _open_absolute_dir(repo_root)
     try:
-        parent = os.dup(repo_fd)
+        parent = fs.dup_dir(repo_fd)
         try:
-            for part in (*MATERIAL_PARTS, index["change_id"], "原始材料"):
+            for part in (*MATERIAL_PARTS, index.get("requirement_dir", index["change_id"]), "原始材料"):
                 child = _open_child_dir(parent, part, create=True)
-                os.close(parent)
+                fs.close_dir(parent)
                 parent = child
             _create_staging(parent, index)
         finally:
-            os.close(parent)
+            fs.close_dir(parent)
         return {"change_id": index["change_id"], "status": "created_or_identical",
                 "screenshots": [{"id": row["id"], "path": row["path"], "status": "pending"}
                                 for row in index["screenshots"]]}
     finally:
-        os.close(repo_fd)
+        fs.close_dir(repo_fd)
 
 
-def _validate_command(repo_root: Path, change_id: str) -> tuple[dict[str, Any], int]:
+def _validate_command(repo_root: Path, change_id: str, requirement_dir: str | None = None) -> tuple[dict[str, Any], int]:
     change_id = _id(change_id, "change_id")
+    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id)
+    _validate_requirement_identity(change_id, requirement_dir)
     repo_fd = _open_absolute_dir(repo_root)
     try:
-        parent_fd, root_fd = _material_root(repo_fd, change_id)
-        os.close(parent_fd)
+        parent_fd, root_fd = _material_root(repo_fd, requirement_dir)
+        fs.close_dir(parent_fd)
         try:
             with _exclusive_lock(root_fd):
-                index, old_raw = _load_index(root_fd, change_id)
+                index, old_raw = _load_index(root_fd, change_id, requirement_dir)
                 result_rows = []
                 pending = False
                 for row in index["screenshots"]:
@@ -846,11 +824,11 @@ def _validate_command(repo_root: Path, change_id: str) -> tuple[dict[str, Any], 
                     parts = PurePosixPath(path).parts
                     if not parts or path.startswith("/") or ".." in parts or "\\" in path:
                         fail("index contains an unsafe screenshot path")
-                    image_dir = os.dup(root_fd)
+                    image_dir = fs.dup_dir(root_fd)
                     try:
                         for part in parts[:-1]:
                             child = _open_child_dir(image_dir, part)
-                            os.close(image_dir)
+                            fs.close_dir(image_dir)
                             image_dir = child
                         try:
                             image_hash, width, height, file_bytes = _validate_image_at(image_dir, parts[-1])
@@ -870,16 +848,18 @@ def _validate_command(repo_root: Path, change_id: str) -> tuple[dict[str, Any], 
                             validation = {"status": "invalid", "reason": "missing_file"}
                             pending = True
                     finally:
-                        os.close(image_dir)
+                        fs.close_dir(image_dir)
                     previous_hash = row.get("validation", {}).get("content_sha256")
                     if validation.get("content_sha256") != previous_hash:
                         for context in row.get("applies_to", []):
                             context["content_review"] = {"status": "unverified"}
                             context["freshness"] = {"status": "unknown"}
                     row["validation"] = validation
-                    row["git_status"] = _git_status(repo_root, "docs/01-需求/" + change_id
-                                                    + "/原始材料/ui-reference/" + path)
-                    if row["git_status"] == "tracked":
+                    row["git_status"], row["git_staging"] = _git_status(
+                        repo_root, "docs/01-需求/" + requirement_dir + "/原始材料/ui-reference/" + path)
+                    if row["git_staging"] not in {"none", "unknown"}:
+                        row["git_warning"] = "原始截图存在 Git 暂存变更（" + row["git_staging"] + "）；工具仅诊断，不改写 Git 索引或配置"
+                    elif row["git_status"] == "tracked":
                         row["git_warning"] = "原始截图已由 Git 跟踪；工具不会改写 Git 状态"
                     else:
                         row.pop("git_warning", None)
@@ -895,16 +875,16 @@ def _validate_command(repo_root: Path, change_id: str) -> tuple[dict[str, Any], 
                             pending = True
                     result_rows.append({"id": row.get("id"), "path": path,
                                         "validation": validation["status"],
-                                        "git_status": row["git_status"]})
+                                        "git_status": row["git_status"], "git_staging": row["git_staging"]})
                 new_raw = _index_bytes(index)
                 if new_raw != old_raw:
                     _replace_index(root_fd, new_raw)
                 return ({"change_id": change_id, "status": "pending" if pending else "ready",
                          "screenshots": result_rows}, 1 if pending else 0)
         finally:
-            os.close(root_fd)
+            fs.close_dir(root_fd)
     finally:
-        os.close(repo_fd)
+        fs.close_dir(repo_fd)
 
 
 def _parse_time(value: Any, where: str) -> str:
@@ -914,16 +894,20 @@ def _parse_time(value: Any, where: str) -> str:
     return text
 
 
-def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: Any, operation: str) -> dict[str, Any]:
+def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: Any, operation: str,
+                  requirement_dir: str | None = None) -> dict[str, Any]:
+    change_id = _id(change_id, "change_id")
+    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id)
+    _validate_requirement_identity(change_id, requirement_dir)
     if not DIGEST_RE.fullmatch(expected_sha):
         fail("--expected-index-sha256 must be lowercase SHA-256")
     repo_fd = _open_absolute_dir(repo_root)
     try:
-        parent, root_fd = _material_root(repo_fd, change_id)
-        os.close(parent)
+        parent, root_fd = _material_root(repo_fd, requirement_dir)
+        fs.close_dir(parent)
         try:
             with _exclusive_lock(root_fd):
-                index, old_raw = _load_index(root_fd, change_id)
+                index, old_raw = _load_index(root_fd, change_id, requirement_dir)
                 if _sha(old_raw) != expected_sha:
                     fail("index CAS conflict: expected SHA-256 does not match current index")
                 # Every update validates current referenced file bytes before mutation.
@@ -931,13 +915,13 @@ def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: A
                     path = PurePosixPath(str(row.get("path", "")))
                     if path.is_absolute() or ".." in path.parts or "\\" in str(path):
                         fail("index contains an unsafe path")
-                    fd = os.dup(root_fd)
+                    fd = fs.dup_dir(root_fd)
                     try:
                         for part in path.parts[:-1]:
                             child = _open_child_dir(fd, part)
-                            os.close(fd)
+                            fs.close_dir(fd)
                             fd = child
-                        image_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                        image_fd = fs.open_file(fd, path.name, os.O_RDONLY)
                         try:
                             info = os.fstat(image_fd)
                             if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
@@ -952,7 +936,7 @@ def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: A
                         finally:
                             os.close(image_fd)
                     finally:
-                        os.close(fd)
+                        fs.close_dir(fd)
                     if image_hash != row.get("validation", {}).get("content_sha256"):
                         fail("referenced screenshot changed; run validate and retry with its new index SHA")
                 if operation == "record-review":
@@ -1032,9 +1016,9 @@ def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: A
                 return {"change_id": change_id, "status": "updated", "operation": operation,
                         "index_sha256": _sha(_index_bytes(index))}
         finally:
-            os.close(root_fd)
+            fs.close_dir(root_fd)
     finally:
-        os.close(repo_fd)
+        fs.close_dir(repo_fd)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1045,12 +1029,15 @@ def _parser() -> argparse.ArgumentParser:
         sub.add_argument("--repo-root", required=True, type=Path)
         if name != "scaffold":
             sub.add_argument("--change-id", required=True)
+            sub.add_argument("--requirement-dir")
         if name in {"record-review", "bind-prototype"}:
             sub.add_argument("--expected-index-sha256", required=True)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
     parser = _parser()
     args = parser.parse_args(argv)
     try:
@@ -1058,10 +1045,10 @@ def main(argv: list[str] | None = None) -> int:
             output = _scaffold(args.repo_root, read_json_stdin())
             status = 0
         elif args.command == "validate":
-            output, status = _validate_command(args.repo_root, args.change_id)
+            output, status = _validate_command(args.repo_root, args.change_id, args.requirement_dir)
         else:
             output = _update_index(args.repo_root, args.change_id, args.expected_index_sha256,
-                                   read_json_stdin(), args.command)
+                                   read_json_stdin(), args.command, args.requirement_dir)
             status = 0
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))
         return status

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Precheck summaries retain complete, current, accessible evidence."""
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS = """# 需求分析：查询
@@ -34,6 +38,41 @@ REQUIREMENTS = """# 需求分析：查询
 
 
 class ReviewSummaryTests(unittest.TestCase):
+    def test_summary_digest_binds_report_bytes_with_windows_text_mode_writes(self):
+        namespace = runpy.run_path(str(ROOT / "doc-gate"))
+        binary_flag = getattr(os, "O_BINARY", 0x8000)
+        real_open, real_write = os.open, os.write
+        evidence_modes = {}
+
+        def crt_open(path, flags, *args, **kwargs):
+            # Emulate the CRT on Linux; keep real Windows descriptors binary
+            # so this boundary simulation performs newline translation once.
+            native_flags = flags | binary_flag if os.name == "nt" else flags & ~binary_flag
+            fd = real_open(path, native_flags, *args, **kwargs)
+            if Path(path).name.startswith(".hard-checks.json.tmp-"):
+                evidence_modes[fd] = bool(flags & binary_flag)
+            return fd
+
+        def crt_write(fd, content):
+            if fd in evidence_modes and not evidence_modes[fd]:
+                real_write(fd, content.replace(b"\n", b"\r\n"))
+                return len(content)
+            return real_write(fd, content)
+
+        with tempfile.TemporaryDirectory() as directory:
+            sdd = Path(directory)
+            (sdd / "需求分析.md").write_bytes(REQUIREMENTS.replace("\n", "\r\n").encode("utf-8"))
+            output = io.StringIO()
+            with mock.patch.object(os, "O_BINARY", binary_flag, create=True), \
+                    mock.patch.object(os, "open", side_effect=crt_open), \
+                    mock.patch.object(os, "write", side_effect=crt_write), redirect_stdout(output):
+                code = namespace["_cmd_check_locked"](sdd, "需求分析", True, summary=True)
+            self.assertEqual(code, 0, output.getvalue())
+            summary = json.loads(output.getvalue())
+            raw = (sdd / summary["full_result_ref"]).read_bytes()
+            self.assertIn(b"\n", raw)
+            self.assertEqual(summary["result_digest"], hashlib.sha256(raw).hexdigest())
+
     def test_failed_summary_retains_every_failure_and_current_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             sdd = Path(directory)
