@@ -796,6 +796,10 @@
     "b664ee2": {
       "bin-memory-build": "canonical_sha256:b09a0cadaf3c1cb137ef07e1d3ed98701cd2a5d03f96a06b02ebf7d5dbfe2e69"
     },
+    "b6d9f88": {
+      "bin-doc-gate": "canonical_sha256:607eaf2538ebbbe7de5b2d6f87ddb2c5fb05979caa619a81643a355b2c45ebcc",
+      "lib-aek-adapters-ui_filesystem-py": "canonical_sha256:2d3f2b6b68f39f2ace73b43a09437bc0f8cbec6bc9f9afb20ead7f5ddad482da"
+    },
     "b8bc3ff": {
       "bin-doc-gate": "canonical_sha256:279c5fd5543e4c7aca9126027de57b00b6e92ae8dad28addd1f6c3a7305aaa03",
       "req-tpl-analysis": "canonical_sha256:519f381fa0d3fe1bb0ab007824e4d2949beb28be59d179b69f3ab8ed309d7c88",
