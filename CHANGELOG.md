@@ -8,7 +8,7 @@
 
 - 修复 v1.0.6 中文需求目录与 UI reference 的身份冲突：`NNN-名称` 目录通过 `requirement_dir` 绑定稳定的 `CHG-NNN` 机器 ID，保留旧 schema1 索引与 ASCII 目录。
 - 截图与原型确认共用安全文件适配层：原生 Windows 保留目录句柄、拒绝 reparse point，使用原子发布与进程锁；保留 POSIX 的 no-follow 和并发保护。中文 JSON 测试显式使用 UTF-8。
-- 修复 Windows Review 的 CRLF 读取与 CRT 文本模式写入造成的摘要失配；Linux 扫描器回归正确处理已被回收的子进程，保留活进程泄漏断言。
+- 修复 Windows Review 的 CRLF 读取与 CRT 文本模式写入造成的摘要失配，保留历史计划执行投影的换行身份；Linux 扫描器回归正确处理 ENOENT / ESRCH 两种进程回收竞态，保留活进程、权限和 I/O 错误断言。
 - UI 原型要求来自已冻结的 ArtifactPlan，删除文档中的 required marker 或原型区块不能绕过检查。
 - 截图校验只读诊断 Git 暂存的新增、修改、重命名等变更并提示风险，保持用户的 Git 索引与配置不变。
 - 补齐真实中文需求目录的已安装版本端到端回归：占位、图片替换、技术与视觉校验、原型绑定、交互确认、冻结及证据变化后的失效。

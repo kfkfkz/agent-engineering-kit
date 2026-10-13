@@ -21,6 +21,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck >/dev/null
           shellcheck install.sh validate-memory.sh tests/installer.test.sh tests/install.test.sh tests/build.test.sh tests/spec-migrate.test.sh tests/skill-sync.test.sh tests/mcp.test.sh tests/doc-gate.test.sh tests/route-eval.test.sh tests/benchmark.test.sh
+      - name: 安全扫描器进程生命周期回归
+        run: python3 tests/security-scanners.test.py
       - name: 安装器测试
         run: |
           set +e

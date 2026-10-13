@@ -3,8 +3,20 @@ import sys
 import unittest
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+
+def assert_proc_terminated(test_case, proc):
+    try:
+        state = proc.read_text().rsplit(")", 1)[1].strip()[0]
+    except (FileNotFoundError, ProcessLookupError):
+        # Reaping can remove the path before open (ENOENT) or its process
+        # after open but before the stat data is read (ESRCH).
+        pass
+    else:
+        test_case.assertIn(state, {"Z", "X"})
 
 
 def grant_for(plan, *, revoke_after_validation=False):
@@ -242,6 +254,37 @@ class ScannerTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "SCANNER_SYMLINK_REFUSED"):
                     adapter.plan(("link.py",), identity_digest="a" * 64, configuration_path="rules.yml")
 
+    def test_proc_probe_accepts_disappearance_before_or_during_read(self):
+        import errno
+        proc = Path("/proc/12345/stat")
+        for error in (FileNotFoundError(errno.ENOENT, "process already reaped"),
+                      ProcessLookupError(errno.ESRCH, "process reaped during read")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(Path, "read_text", side_effect=error) as read:
+                assert_proc_terminated(self, proc)
+                read.assert_called_once_with()
+        for state in ("Z", "X"):
+            with self.subTest(state=state), mock.patch.object(
+                    Path, "read_text", return_value=f"12345 (child) {state} 1 2 3"):
+                assert_proc_terminated(self, proc)
+
+    def test_proc_probe_rejects_a_child_that_is_still_running(self):
+        for state in ("R", "S"):
+            with self.subTest(state=state), mock.patch.object(
+                    Path, "read_text", return_value=f"12345 (child) {state} 1 2 3"):
+                with self.assertRaises(AssertionError):
+                    assert_proc_terminated(self, Path("/proc/12345/stat"))
+
+    def test_proc_probe_does_not_swallow_permission_or_io_errors(self):
+        import errno
+        for error in (PermissionError(errno.EACCES, "permission denied"),
+                      OSError(errno.EIO, "unexpected I/O failure")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(Path, "read_text", side_effect=error):
+                with self.assertRaises(type(error)) as raised:
+                    assert_proc_terminated(self, Path("/proc/12345/stat"))
+                self.assertIs(raised.exception, error)
+
     def test_descendant_holding_pipe_is_stopped_and_not_completed(self):
         import os
         import tempfile
@@ -255,13 +298,7 @@ class ScannerTests(unittest.TestCase):
             pid = int(result.stdout.strip())
             if os.name == "posix":
                 proc = Path("/proc") / str(pid) / "stat"
-                try:
-                    state = proc.read_text().rsplit(")", 1)[1].strip()[0]
-                except FileNotFoundError:
-                    # A terminated child can be reaped between cleanup and this read.
-                    pass
-                else:
-                    self.assertIn(state, {"Z", "X"})
+                assert_proc_terminated(self, proc)
             elif os.name == "nt":
                 import subprocess
                 listing = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
