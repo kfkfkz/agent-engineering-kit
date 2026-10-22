@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import io
 import importlib.util
@@ -23,6 +24,132 @@ spec.loader.exec_module(data)
 
 
 class PrototypeV2Tests(unittest.TestCase):
+    def test_crlf_disk_bytes_bind_public_prepare_confirm_check_and_receipt_recovery(self):
+        self.save()
+        target = ('PAGE-1', 'AREA-1', 'default', self.f.context_id)
+        lf = data.GATE['_prepare_prototype_selection'](self.f.req, [target])
+        for name in ('需求分析.md', '概要设计.md', 'UI设计.md'):
+            path = self.f.req / name
+            path.write_bytes(path.read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'))
+            self.assertIn(b'\r\n', path.read_bytes())
+        command = [sys.executable, str(ROOT / 'doc-gate')]
+        options = dict(capture_output=True, encoding='utf-8', timeout=15)
+        def prepare():
+            return subprocess.run(command + ['prototype-prepare', str(self.f.req),
+                '--target', '/'.join(target), '--json'], **options)
+        result = prepare()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        prepared = json.loads(result.stdout)
+        self.assertNotEqual(prepared['per_item'][0]['dependency_sha256'], lf['per_item'][0]['dependency_sha256'])
+        body = {key: prepared[key] for key in ('schema_version', 'status', 'per_item')}
+        self.assertEqual(prepared['prepare_sha256'], data.canonical_digest(body))
+        class Terminal(io.StringIO):
+            def isatty(self):
+                return True
+        arguments = ['doc-gate', 'prototype-confirm', str(self.f.req), '--schema-version', '2',
+            '--target', '/'.join(target), '--prepared-sha256', prepared['prepare_sha256'], '--reviewer', 'protocol-test']
+        with patch.object(sys, 'argv', arguments), patch.object(sys, 'stdin', Terminal()), \
+                redirect_stdout(Terminal()), patch('builtins.input',
+                return_value='ACCEPT ' + prepared['prepare_sha256'][:12]) as choose:
+            self.assertEqual(data.GATE['main'](), 0)
+        self.assertEqual(choose.call_count, 1)
+        receipts = {path.name: path.read_bytes() for path in
+            (self.f.req / 'reviews/ui-prototype-confirmations').glob('v2-*.json')}
+        self.assertEqual(len(receipts), 1)
+        receipt = json.loads(next(iter(receipts.values())))
+        self.assertEqual(receipt['selection'], prepared)
+        def check_prototype_status():
+            checked = subprocess.run(command + ['check', str(self.f.req), '--stage', 'UI设计', '--json'], **options)
+            # This focused fixture is not a complete UI document. Assert the
+            # actual public report's prototype checks without declaring its
+            # unrelated document requirements satisfied.
+            report = json.loads(checked.stdout)
+            statuses = {row['status'] for row in report['checks'] if row['group'] == 'prototype'}
+            self.assertTrue(statuses)
+            return statuses
+        self.assertEqual(check_prototype_status(), {'PASS'})
+        with patch.object(sys, 'argv', arguments), patch.object(sys, 'stdin', Terminal()), \
+                redirect_stdout(Terminal()), patch('builtins.input', side_effect=AssertionError('must recover')):
+            self.assertEqual(data.GATE['main'](), 0)
+        self.assertEqual(receipts, {path.name: path.read_bytes() for path in
+            (self.f.req / 'reviews/ui-prototype-confirmations').glob('v2-*.json')})
+        html = self.f.req / self.f.path
+        html.write_bytes(self.f.html + b'changed')
+        self.assertEqual(prepare().returncode, 3)
+        self.assertIn('FAIL', check_prototype_status())
+        html.write_bytes(self.f.html)
+        overview = self.f.req / '概要设计.md'
+        overview.write_bytes(overview.read_bytes().replace('原型评审记录'.encode(), '变更后的业务依赖'.encode()))
+        updated = prepare()
+        self.assertEqual(updated.returncode, 0, updated.stdout + updated.stderr)
+        self.assertNotEqual(json.loads(updated.stdout)['prepare_sha256'], prepared['prepare_sha256'])
+        self.assertIn('FAIL', check_prototype_status())
+        self.assertEqual(receipts, {path.name: path.read_bytes() for path in
+            (self.f.req / 'reviews/ui-prototype-confirmations').glob('v2-*.json')})
+
+    @unittest.skipUnless(os.name == 'posix', 'kernel PTY driver seam')
+    def test_pty_reader_accepts_eio_before_exit_status_but_rejects_other_io_errors(self):
+        import pty
+        import select
+        self.save()
+        original_open, original_read = pty.openpty, os.read
+        for error in (errno.EIO, errno.EINVAL):
+            with self.subTest(error=error):
+                descriptors = {}
+                class Process:
+                    returncode = None
+                    def __init__(self):
+                        self.waits = []
+                    def poll(self):
+                        return self.returncode
+                    def wait(self, timeout):
+                        self.waits.append(timeout)
+                        self.returncode = 0
+                        return 0
+                    def kill(self):
+                        self.returncode = -9
+                process = Process()
+                def opened():
+                    master, slave = original_open()
+                    descriptors['master'] = master
+                    return master, slave
+                blocks = iter((b'{"status":"fixture-complete"}\n', OSError(error, 'controlled PTY close')))
+                def read(fd, size):
+                    if fd != descriptors.get('master'):
+                        return original_read(fd, size)
+                    block = next(blocks)
+                    if isinstance(block, OSError):
+                        self.assertIsNone(process.poll(), 'the wait status is intentionally not visible yet')
+                        raise block
+                    return block
+                with patch.object(pty, 'openpty', opened), patch.object(os, 'read', read), \
+                        patch.object(select, 'select', side_effect=lambda readable, *_args: (readable, [], [])), \
+                        patch.object(subprocess, 'Popen', return_value=process):
+                    if error == errno.EIO:
+                        rc, payload, decisions, _ = self.drive_pty(
+                            [('PAGE-1', 'AREA-1', 'default', self.f.context_id)], lambda *_args: 'CANCEL')
+                        self.assertEqual((rc, payload, decisions), (0, {'status': 'fixture-complete'}, 0))
+                        self.assertEqual(process.waits, [2])
+                    else:
+                        with self.assertRaises(OSError) as raised:
+                            self.drive_pty([('PAGE-1', 'AREA-1', 'default', self.f.context_id)], lambda *_args: 'CANCEL')
+                        self.assertEqual(raised.exception.errno, errno.EINVAL)
+                        self.assertEqual(process.waits, [5])
+                with self.assertRaises(OSError):
+                    os.fstat(descriptors['master'])
+
+    def test_fixture_text_matches_disk_even_when_native_text_writes_translate_crlf(self):
+        original = Path.write_text
+        def crlf_write(path, text, *args, **kwargs):
+            kwargs.setdefault('newline', '\r\n')
+            return original(path, text, *args, **kwargs)
+        with patch.object(Path, 'write_text', crlf_write):
+            text = self.save()
+        self.assertEqual((self.f.req / 'UI设计.md').read_bytes(), text.encode('utf-8'))
+        checks = data.Checks('UI设计')
+        data.check_prototypes(checks, self.f.req, text, require_confirmation=False)
+        self.assertEqual(checks.fails, [])
+
     def drive_pty(self, targets, choose):
         """Real kernel PTY, synthetic protocol response; never business approval."""
         import pty
@@ -47,8 +174,11 @@ class PrototypeV2Tests(unittest.TestCase):
                 if select.select([master], [], [], 0.1)[0]:
                     try:
                         block = os.read(master, 65536)
-                    except OSError:
-                        if process.poll() is not None:
+                    except OSError as exc:
+                        # A closed PTY slave reports EIO before wait status
+                        # necessarily becomes visible; wait/reap below still
+                        # verifies exit status and the complete JSON response.
+                        if exc.errno == errno.EIO:
                             break
                         raise
                     if not block:
@@ -154,7 +284,9 @@ class PrototypeV2Tests(unittest.TestCase):
         (f.material / '截图索引.json').write_text(json.dumps(f.index), encoding='utf-8')
         text = f.ui_text + '```aek-prototypes\n' + json.dumps(
             {'schema_version': 2, 'prototypes': self.items}) + '\n```\n'
-        (f.req / 'UI设计.md').write_text(text, encoding='utf-8')
+        # Direct gate calls consume this exact text; disk revalidation must see
+        # the same UTF-8 bytes rather than platform-translated newlines.
+        (f.req / 'UI设计.md').write_bytes(text.encode('utf-8'))
         return text
 
     def add_context(self):
@@ -519,7 +651,7 @@ class PrototypeV2Tests(unittest.TestCase):
         shutil.copytree(self.f.repo, clone)
         req = clone / self.f.req.relative_to(self.f.repo)
         checks = data.Checks('UI设计')
-        data.check_prototypes(checks, req, (req / 'UI设计.md').read_text(encoding='utf-8'))
+        data.check_prototypes(checks, req, (req / 'UI设计.md').read_bytes().decode('utf-8'))
         self.assertTrue(checks.fails)
 
     def test_revoked_context_does_not_invalidate_an_independent_current_context(self):
@@ -632,14 +764,14 @@ class PrototypeV2Tests(unittest.TestCase):
         original = data.check_prototypes.__globals__['_read_beneath']
         for suffix in ('```aek-ui-baseline\n' + json.dumps(baseline) + '\n```\n', '```aek-ui-baseline\n'):
             with self.subTest(suffix=suffix):
-                (self.f.req / 'UI设计.md').write_text(text, encoding='utf-8')
+                (self.f.req / 'UI设计.md').write_bytes(text.encode('utf-8'))
                 changed = False
                 def read_then_add(handle, path, limit):
                     nonlocal changed
                     raw = original(handle, path, limit)
                     if str(path).startswith('v2-') and not changed:
                         changed = True
-                        (self.f.req / 'UI设计.md').write_text(text + '\n## 源码基线\n' + suffix, encoding='utf-8')
+                        (self.f.req / 'UI设计.md').write_bytes((text + '\n## 源码基线\n' + suffix).encode('utf-8'))
                     return raw
                 checks, dependencies = data.Checks('UI设计'), {}
                 with patch.dict(data.check_prototypes.__globals__, {'_read_beneath': read_then_add}):
@@ -653,8 +785,8 @@ class PrototypeV2Tests(unittest.TestCase):
         self.save()
         self.assertEqual(self.confirm()[0], 0)
         path = self.f.req / 'UI设计.md'
-        text = path.read_text(encoding='utf-8') + '\n## 无关说明\n仅修改非依赖说明。\n'
-        path.write_text(text, encoding='utf-8')
+        text = path.read_bytes().decode('utf-8') + '\n## 无关说明\n仅修改非依赖说明。\n'
+        path.write_bytes(text.encode('utf-8'))
         checks = data.Checks('UI设计')
         data.check_prototypes(checks, self.f.req, text)
         self.assertEqual(checks.fails, [])

@@ -313,7 +313,8 @@ class PrototypePreviewTests(unittest.TestCase):
         human = self.call()
         self.assertEqual(human.returncode, 0)
         self.assertEqual(human.stdout.decode('utf-8'),
-            '✓ 原型已准备（尚未确认）：1 项\n准备 SHA-256: ' + prepared['prepare_sha256'] + '\n')
+            '✓ 原型已准备（尚未确认）：1 项' + os.linesep +
+            '准备 SHA-256: ' + prepared['prepare_sha256'] + os.linesep)
         for flags in (('--json', '--preview-html'), ('--preview-html', '--json')):
             result = self.call(*flags)
             self.assertEqual(result.returncode, 3)

@@ -18,9 +18,28 @@ from aek.core.artifact.ui_preview import RenderConditions
 from aek.adapters.ui_renderer import CdpRenderer
 from aek.adapters.ui_linux_renderer import LinuxRenderProvider, LinuxRuntime, render_plan
 
+QUALIFIED_NATIVE = sys.platform == 'linux' and hasattr(os, 'POSIX_SPAWN_CLOSEFROM')
+
 
 class LinuxRendererTests(unittest.TestCase):
-    @unittest.skipUnless(sys.platform == 'linux', 'native Linux private pipes')
+    def test_missing_closefrom_refuses_before_process_or_descriptor_creation(self):
+        from aek.adapters.ui_linux_renderer import _NativeProcess
+        from aek.adapters.ui_cdp import CdpError
+        process = _NativeProcess((sys.executable, '-c', 'raise RuntimeError()'),
+                                 timeout=1, max_bytes=1024, max_events=1)
+        with patch.dict(os.__dict__):
+            os.__dict__.pop('POSIX_SPAWN_CLOSEFROM', None)
+            with patch('aek.adapters.ui_linux_renderer.os.posix_spawn', create=True,
+                       side_effect=AssertionError('must not spawn')) as spawn, \
+                    patch('aek.adapters.ui_linux_renderer.os.pipe',
+                          side_effect=AssertionError('must not open descriptors')):
+                with self.assertRaises(CdpError) as caught:
+                    process.__enter__()
+                self.assertEqual(caught.exception.reason_code, 'RENDER_PROCESS_UNAVAILABLE')
+                spawn.assert_not_called()
+        self.assertIsNone(process.pid)
+
+    @unittest.skipUnless(QUALIFIED_NATIVE, 'Linux spawn closefrom private pipes')
     def test_spawn_keeps_devnull_stdio_separate_from_cdp_descriptors(self):
         from aek.adapters.ui_linux_renderer import _NativeProcess
         code = '''import json,os,stat
@@ -77,7 +96,7 @@ os.read(3,65536)
         self.assertEqual(result.status, 'UNAVAILABLE')
         self.assertIsNone(result.png)
 
-    @unittest.skipUnless(sys.platform == 'linux', 'native Linux lifecycle')
+    @unittest.skipUnless(QUALIFIED_NATIVE, 'Linux spawn closefrom lifecycle')
     def test_native_controller_reaps_owned_process_after_deadline(self):
         from aek.adapters.ui_linux_renderer import _NativeProcess
         from aek.adapters.ui_cdp import CdpError
@@ -90,7 +109,7 @@ os.read(3,65536)
         self.assertEqual(process.reason, 'RENDER_TIMEOUT')
         self.assertFalse(process.remaining())
 
-    @unittest.skipUnless(sys.platform == 'linux', 'native Linux lifecycle')
+    @unittest.skipUnless(QUALIFIED_NATIVE, 'Linux spawn closefrom lifecycle')
     def test_native_stderr_limit_fails_without_echoing_output(self):
         from aek.adapters.ui_linux_renderer import _NativeProcess
         from aek.adapters.ui_cdp import CdpError
@@ -105,7 +124,7 @@ os.read(3,65536)
         self.assertTrue(process.reaped)
         self.assertFalse(process.remaining())
 
-    @unittest.skipUnless(sys.platform == 'linux', 'native Linux lifecycle')
+    @unittest.skipUnless(QUALIFIED_NATIVE, 'Linux spawn closefrom lifecycle')
     def test_native_memory_guard_stops_process_without_leaking_handles(self):
         from aek.adapters.ui_linux_renderer import _NativeProcess
         from aek.adapters.ui_cdp import CdpError
@@ -189,7 +208,7 @@ os.read(3,65536)
             self.assertFalse(marker.exists(), 'a FAILED result cannot undo host execution')
             self.assertNotEqual(result.status, 'RENDERED')
 
-    @unittest.skipUnless(sys.platform == 'linux', 'native Linux process tree')
+    @unittest.skipUnless(QUALIFIED_NATIVE, 'Linux spawn closefrom process tree')
     def test_worker_thread_children_are_included_in_the_memory_guard(self):
         from aek.adapters.ui_linux_renderer import _NativeProcess
         from aek.adapters.ui_cdp import CdpError

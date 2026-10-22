@@ -62,7 +62,7 @@ class UiCoverageTests(unittest.TestCase):
                 row.update(classification='NON_UI', reason='只改变服务端日志', targets=[])
             overview = '### F1：日志\n覆盖验收项：A1\n\n## UI 分类\n```aek-ui-classification\n' + json.dumps(candidate, ensure_ascii=False) + '\n```\n'
             for name, value in (('需求分析.md', requirement), ('概要设计.md', overview)):
-                (req / name).write_text(value, encoding='utf-8')
+                (req / name).write_bytes(value.encode('utf-8'))
             reviews = req / 'reviews'
             reviews.mkdir()
             (reviews / '需求分析.gate.json').write_text(json.dumps(dict(status='PASS',
@@ -83,7 +83,7 @@ class UiCoverageTests(unittest.TestCase):
             self.assertEqual(reads, ['概要设计.md', '需求分析.md'] * 2)
             # Removing a reason cannot be hidden by a locally edited overview:
             # the existing credential is now stale before any image work.
-            (req / '概要设计.md').write_text(overview.replace('只改变服务端日志', ''), encoding='utf-8')
+            (req / '概要设计.md').write_bytes(overview.replace('只改变服务端日志', '').encode('utf-8'))
             checks = gate['Checks']('UI设计')
             gate['_check_ui_prototypes'](checks, req, '')
             self.assertTrue(checks.fails)
@@ -142,7 +142,7 @@ class UiCoverageTests(unittest.TestCase):
         self.addCleanup(fixture.tearDown)
         gate = fixture_module['GATE']
         fixture.requirements = '# 需求\n' + fixture.requirements
-        (fixture.req / '需求分析.md').write_text(fixture.requirements, encoding='utf-8')
+        (fixture.req / '需求分析.md').write_bytes(fixture.requirements.encode('utf-8'))
         name = '014-中文需求'
         destination = fixture.repo / 'docs/03-SDD' / name
         fixture.req.rename(destination)
@@ -160,7 +160,7 @@ class UiCoverageTests(unittest.TestCase):
         for row in candidate['items']:
             row['targets'][0]['context_id'] = fixture.context_id
         overview = fixture.overview + '\n## UI 分类\n```aek-ui-classification\n' + json.dumps(candidate) + '\n```\n'
-        (fixture.req / '概要设计.md').write_text(overview, encoding='utf-8')
+        (fixture.req / '概要设计.md').write_bytes(overview.encode('utf-8'))
         reviews = fixture.req / 'reviews'
         (reviews / '需求分析.gate.json').write_text(json.dumps(dict(status='PASS',
             doc_hashes={'需求分析.md': hashlib.sha256(fixture.requirements.encode()).hexdigest()})), encoding='utf-8')
@@ -178,8 +178,8 @@ class UiCoverageTests(unittest.TestCase):
             raw = original(root, relative, maximum)
             if relative.endswith('.json') and '截图索引' not in relative and not changed:
                 changed.append(True)
-                (fixture.req / '概要设计.md').write_text(
-                    overview + '\n### F3：确认读取期间新增\n覆盖验收项：A1\n', encoding='utf-8')
+                (fixture.req / '概要设计.md').write_bytes(
+                    (overview + '\n### F3：确认读取期间新增\n覆盖验收项：A1\n').encode('utf-8'))
                 freeze_overview()
             return raw
         with patch.dict(gate['_check_ui_prototypes'].__globals__, {'_read_beneath': change_upstream_after_receipt}):
@@ -187,11 +187,11 @@ class UiCoverageTests(unittest.TestCase):
             gate['_check_ui_prototypes'](checks, fixture.req, fixture._full_ui_text())
         self.assertTrue(changed)
         self.assertTrue(checks.fails, 'upstream changes during receipt IO cannot reuse the old coverage decision')
-        (fixture.req / '概要设计.md').write_text(overview, encoding='utf-8')
+        (fixture.req / '概要设计.md').write_bytes(overview.encode('utf-8'))
         freeze_overview()
         # F3 exists in the frozen actual overview, but was removed from both
         # classification and screenshots/prototypes. It must remain a gap.
-        (fixture.req / '概要设计.md').write_text(overview + '\n### F3：仍需要页面\n覆盖验收项：A1\n', encoding='utf-8')
+        (fixture.req / '概要设计.md').write_bytes((overview + '\n### F3：仍需要页面\n覆盖验收项：A1\n').encode('utf-8'))
         freeze_overview()
         checks = gate['Checks']('UI设计')
         gate['_check_ui_prototypes'](checks, fixture.req, fixture._full_ui_text().replace('<!-- aek-prototypes:required -->', ''))
