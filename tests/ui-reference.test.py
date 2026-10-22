@@ -111,7 +111,7 @@ class UiReferenceTests(unittest.TestCase):
         self.assertIn('文件：valid', result.stdout)
         self.assertIn('适用性：unverified', result.stdout)
         self.assertIn('时效：unknown', result.stdout)
-        self.assertIn('function/FP01/data/DP01/P1.png', result.stdout)
+        self.assertIn(str(Path('function/FP01/data/DP01/P1.png')), result.stdout)
         self.assertIn(str(self.material_root / index['screenshots'][0]['path']), result.stdout)
         self.assertIn('页面：列表；状态：default', result.stdout)
         self.assertIn('采集权限：', result.stdout)
