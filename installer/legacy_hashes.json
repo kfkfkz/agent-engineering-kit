@@ -17,6 +17,63 @@
       "agents-md-block": "canonical_sha256:a1f7cdc58a2849780283a3dc40cabf15c0c8f720b00b43f8b6bbdcd3bad48b0c",
       "claude-md-block": "canonical_sha256:93430c52dd543e5579fb2f0f05398b5c6dc2f6f678a0747c07897e878811beba"
     },
+    "08d26db": {
+      "agents-md-block": "canonical_sha256:2a440fc74daf8dd45b116b3a2c1a831b1de6ccfc08be780901109766e3ae02f9",
+      "bin-doc-gate": "canonical_sha256:a5f074b0e08f3ab7c1ef8e01c9aa89189993c67044fa07066ac405a3a8c7cb6e",
+      "claude-md-block": "canonical_sha256:841492c61f60bad4e1e52b3eb1307bcbc62a57407ec27c12bf5048ec745f56b0",
+      "lib-aek-adapters-review_markdown-py": "canonical_sha256:0417506fef5c098297eaecf9f0d17da6f58679d4f5ff9f0c0b8befb8dafb7efd",
+      "lib-aek-adapters-security_host-py": "canonical_sha256:a65c3aab7e90a4a643d587968967afa441ebca3a2cf7da35e73a9c1076d47f19",
+      "lib-aek-adapters-security_maven-py": "canonical_sha256:5e1075db8aab330e5cd721c4807675984b2396fa54827e5ed5309b52864daf2f",
+      "lib-aek-adapters-security_maven_host-py": "canonical_sha256:ad8bd495a4a0cc08a33c7b2106a5bff6a4efc7aba5a754ddbc8af4f7fb734469",
+      "lib-aek-adapters-security_process-py": "canonical_sha256:bf1c91d9dc183d109a094d58d944a764a58b29de3e5dd63f9c2328eb0a9cebcf",
+      "lib-aek-adapters-security_runtime-py": "canonical_sha256:c49cb953da3ff8c2e165af177ad28787f9b3dd2f19524f481eba7ff03a1384ff",
+      "lib-aek-adapters-security_scanner-py": "canonical_sha256:714ea62b55567e50c3e8e5c78056674744f8a33f30801eec809b92291675f75a",
+      "lib-aek-adapters-security_trivy_host-py": "canonical_sha256:979a6e853131a7d454b7b39c38e030786f20171809b31beec0822dec09df9044",
+      "lib-aek-adapters-ui_baseline-py": "canonical_sha256:5eab7a53a4f27c9d71cca745ec977edda585f7905a3f1518a53bd003d42a8e6e",
+      "lib-aek-adapters-ui_cdp-py": "canonical_sha256:6fdd9f648a6cf585673a3f2f1175631734f20aa5c15895f390ad3b10313e8ca8",
+      "lib-aek-adapters-ui_filesystem-py": "canonical_sha256:04af193c2620d04b27686ff41c528570e8b45f4e0fb1a998c80c489382c5328d",
+      "lib-aek-adapters-ui_image-py": "canonical_sha256:a2b96ae9b17dd4b65c5465e668363334cfd64aeac0db5b7e2e896eaafec8e9cd",
+      "lib-aek-adapters-ui_linux_renderer-py": "canonical_sha256:1fcb7814b4ae18bbad525c08c7cf3ae25400e38220f7c9b977be29b5d9077537",
+      "lib-aek-adapters-ui_observation_store-py": "canonical_sha256:52a0c426e6967edd7d1b094b19915a7b6febdac2d1e9f974c54cff384d7c8b32",
+      "lib-aek-adapters-ui_query-py": "canonical_sha256:197e90ef9a8144396446ed4c1513247b1de117bafb6126cbf9107bded419af98",
+      "lib-aek-adapters-ui_render_host-py": "canonical_sha256:cabc02b7b95ad5e2f7b03a57aef4112bc144dc047756ef32c74b858080a99440",
+      "lib-aek-adapters-ui_renderer-py": "canonical_sha256:38d0706f03204683f9f7bba8fc012eafc2327933881278f48ec2269a18b662e0",
+      "lib-aek-adapters-ui_sqlite_runtime-py": "canonical_sha256:9cfebdbb1720960c8035a5c3ed19e9515473185a5f1ae5f38a92af33b40d92cd",
+      "lib-aek-application-local_host-py": "canonical_sha256:553d4f463db8b0d3dbbc17ff2e9ead8c4a3f243b76023eb62892c85c12916eb9",
+      "lib-aek-application-review-py": "canonical_sha256:17c2f69db9bc46161543067004ebc70548691c88e471461755ffcf2c445ae473",
+      "lib-aek-application-security_review-py": "canonical_sha256:e413e499e70bac87bd507c523808f9424943c59e5fbcf06873df271f744ec76d",
+      "lib-aek-core-artifact-ui_baseline-py": "canonical_sha256:37288fa9dd37d5e3640e40831a1ae82b1ee19351eb7206b01c96ed3ec56f18a6",
+      "lib-aek-core-artifact-ui_coverage-py": "canonical_sha256:61872a443b385efef6aee78f1382bec20bc0e7da5f4396e75525569d31437f87",
+      "lib-aek-core-artifact-ui_observation-py": "canonical_sha256:952bf5b353b23374a37f747aabf50d323f18637fcfa821d7c0dea9b21c7d4a3d",
+      "lib-aek-core-artifact-ui_preview-py": "canonical_sha256:8dc5495beb2d5cce0733e100df8475ddc97c8019100664445b3806f9995868ba",
+      "lib-aek-core-review-lifecycle-py": "canonical_sha256:da01d23f1f45cb8e9febcc6b8684d1f4a25d6c7e4cd5ae9ac14e63b701e06058",
+      "lib-aek-core-security-delivery-py": "canonical_sha256:46c7cf60d66aad0dbf5ab3ce23fa381719f59b8b1e9b7f09e54336e5d2de7402",
+      "lib-aek-core-security-dependencies-py": "canonical_sha256:a9feba65a6a06ed1b6b411049562c50c453e0dac292ef25f156935bae03f9153",
+      "lib-aek-core-security-scanners-py": "canonical_sha256:335770814393943a3738b26e04d9f910ddf525c81ab4f6a1029857c280d8f3ba",
+      "memory-constitution-seed": "canonical_sha256:dbc530ccbc847446350bce4fdc20a3889a9c03db7506f0eac32d7a8f79d2b5f6",
+      "memory-readme-seed": "canonical_sha256:684534edf60bccd8abfac92682db9d03886613e2900e51775ca0f9135d11ee7a",
+      "req-tpl-flow": "canonical_sha256:4826751e5f0e4f6a81b58278df5a1028c538af88985e4d9674581196b07f351b",
+      "skill-agents-delivery-gate": "canonical_sha256:3cb6c564d73f2bfeb80a1f6e5eb65653f1de5eb014e2e7caa27edf25b2a49654",
+      "skill-agents-design-pipeline": "canonical_sha256:f79e2d56ea9c827d2e834b91be9c869f4a36956025184546f802e607edd42085",
+      "skill-agents-design-pipeline-reference-prototype-confirmation-workflow": "canonical_sha256:ac06dfa52201c8d3bb21a5b796e6d742af314270188340a07220ab10dadff2c7",
+      "skill-agents-design-pipeline-reference-screenshot-observation": "canonical_sha256:139d217c4d3e8f6bc8a418215dd245953c8b0e78e555ab4ff54f71cfa36f0e0d",
+      "skill-agents-design-pipeline-reference-screenshot-observation-workflow": "canonical_sha256:9edc5866f12cea47209a9a00b07b42628397bdd25ab299278795a908d786b8db",
+      "skill-agents-design-pipeline-reference-ui-source-baseline": "canonical_sha256:73fe5b7c72530b79d7ea2c1e3e61cfe9375fd94aaa324b6e633215a1bbaf892d",
+      "skill-agents-design-pipeline-ui-reference-helper": "canonical_sha256:721aedce39e92a28ac113ea8f19129376a9597f470b4dff4ce04d4b5138f2c95",
+      "skill-agents-repo-delivery-reference-standard": "canonical_sha256:8b4b78d783e0a27737277628aa836ab60a62dff3da3dc2953065d7e2c91d6233",
+      "skill-claude-delivery-gate": "canonical_sha256:3cb6c564d73f2bfeb80a1f6e5eb65653f1de5eb014e2e7caa27edf25b2a49654",
+      "skill-claude-design-pipeline": "canonical_sha256:f79e2d56ea9c827d2e834b91be9c869f4a36956025184546f802e607edd42085",
+      "skill-claude-design-pipeline-reference-prototype-confirmation-workflow": "canonical_sha256:ac06dfa52201c8d3bb21a5b796e6d742af314270188340a07220ab10dadff2c7",
+      "skill-claude-design-pipeline-reference-screenshot-observation": "canonical_sha256:139d217c4d3e8f6bc8a418215dd245953c8b0e78e555ab4ff54f71cfa36f0e0d",
+      "skill-claude-design-pipeline-reference-screenshot-observation-workflow": "canonical_sha256:9edc5866f12cea47209a9a00b07b42628397bdd25ab299278795a908d786b8db",
+      "skill-claude-design-pipeline-reference-ui-source-baseline": "canonical_sha256:73fe5b7c72530b79d7ea2c1e3e61cfe9375fd94aaa324b6e633215a1bbaf892d",
+      "skill-claude-design-pipeline-ui-reference-helper": "canonical_sha256:721aedce39e92a28ac113ea8f19129376a9597f470b4dff4ce04d4b5138f2c95",
+      "skill-claude-repo-delivery-reference-standard": "canonical_sha256:8b4b78d783e0a27737277628aa836ab60a62dff3da3dc2953065d7e2c91d6233"
+    },
+    "08d26db:legacy-section": {
+      "agents-md-block": "canonical_sha256:2cea9abfd49241b592a7c71c7570e851b337c0a6dca3089da1719b56469fd33c",
+      "claude-md-block": "canonical_sha256:0e6090b6445fc644340cafc0b7c02b5a2ed5a54beb8c6a2ee0065fccb2211f02"
+    },
     "093f245": {
       "skill-agents-repo-delivery": "canonical_sha256:ba6f2d6db8c25e0757e2abaacd7f56e5d1d38e8418096780d103633bde5482c7",
       "skill-claude-repo-delivery": "canonical_sha256:ba6f2d6db8c25e0757e2abaacd7f56e5d1d38e8418096780d103633bde5482c7"
@@ -766,15 +823,6 @@
       "skill-agents-spec-migrate": "canonical_sha256:c604fb2d90b5c54bd2266399da0d70e75a4b2421f8bde9ecc1fbfaf79e43f37b",
       "skill-claude-spec-migrate": "canonical_sha256:c604fb2d90b5c54bd2266399da0d70e75a4b2421f8bde9ecc1fbfaf79e43f37b"
     },
-    "a99b91f": {
-      "agents-md-block": "canonical_sha256:2a440fc74daf8dd45b116b3a2c1a831b1de6ccfc08be780901109766e3ae02f9",
-      "claude-md-block": "canonical_sha256:841492c61f60bad4e1e52b3eb1307bcbc62a57407ec27c12bf5048ec745f56b0",
-      "memory-readme-seed": "canonical_sha256:684534edf60bccd8abfac92682db9d03886613e2900e51775ca0f9135d11ee7a"
-    },
-    "a99b91f:legacy-section": {
-      "agents-md-block": "canonical_sha256:2cea9abfd49241b592a7c71c7570e851b337c0a6dca3089da1719b56469fd33c",
-      "claude-md-block": "canonical_sha256:0e6090b6445fc644340cafc0b7c02b5a2ed5a54beb8c6a2ee0065fccb2211f02"
-    },
     "aa7a498": {
       "bin-memory-build": "canonical_sha256:39939a5ed2589c35dc3dd95fc0a29200f21cda3b8d2f871537f85da2cd4de799",
       "memory-readme-seed": "canonical_sha256:2c728780b4fffe2c8f04adbaee90bed86c1776c9e2b788c1d575788a95fc7846",
@@ -839,6 +887,14 @@
     },
     "c344ec6": {
       "bin-agent-engineering-mcp": "canonical_sha256:6db5760c3a04be2da3ad4ceb1db0f0f0e5f3117260bd1ceba94a9fc845b32fac"
+    },
+    "c520c66": {
+      "bin-doc-gate": "canonical_sha256:ee3729861905fe9a4b624934847f068d98760404c3caf5c8fcd62fde667e43f3",
+      "req-tpl-ui": "canonical_sha256:4801670d6bd01e93b0caeed0ebe511915a96cde0e69edc1da36a5bc6f44b5685",
+      "skill-agents-design-pipeline": "canonical_sha256:228aa8141950bc7a892151cb000fd6174867cb4038844e126641a68130df11b2",
+      "skill-agents-design-pipeline-ui-reference-helper": "canonical_sha256:95a1dae04d31172e72bae5c02197e65d16f7f8777414edac3ef4545053a81dd2",
+      "skill-claude-design-pipeline": "canonical_sha256:228aa8141950bc7a892151cb000fd6174867cb4038844e126641a68130df11b2",
+      "skill-claude-design-pipeline-ui-reference-helper": "canonical_sha256:95a1dae04d31172e72bae5c02197e65d16f7f8777414edac3ef4545053a81dd2"
     },
     "c79b6a1": {
       "memory-rules": "canonical_sha256:9da6080159b497d97abd77b7a435e522224a7f76992319291ce2ecfac59ccecb",

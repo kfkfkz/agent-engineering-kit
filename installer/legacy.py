@@ -129,8 +129,8 @@ def _git(kit_dir: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def _path_history_blobs(kit_dir: Path, rel: str) -> list[tuple[str, bytes]]:
-    """(commit_short, blob_bytes) 列表——该路径在 git 全历史中的每个版本。"""
-    proc = _git(kit_dir, "log", "--all", "--format=%H", "--", rel)
+    """Committed ancestor versions; private stashes/other refs are not ownership."""
+    proc = _git(kit_dir, "log", "HEAD", "--full-history", "--format=%H", "--", rel)
     if proc.returncode != 0:
         return []
     out: list[tuple[str, bytes]] = []
@@ -149,7 +149,7 @@ def _path_history_blobs(kit_dir: Path, rel: str) -> list[tuple[str, bytes]]:
 
 def generate_legacy_hashes(kit_dir: Path | None = None) -> dict:
     """生成 legacy_hashes.json 内容：
-    - owned_file / seed_file：源文件 git 全历史各版本的内容 hash
+    - owned_file / seed_file：当前提交祖先中源文件各版本的内容 hash
       （canonical == 内容——kit 源不含目标绝对路径）
     - 模板型 managed_block（CLAUDE.md / AGENTS.md）：模板历史版本 →
       区块形态（start + "\n" + 模板内容 + end）的 hash（与 install.sh 追加
