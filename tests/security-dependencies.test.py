@@ -62,6 +62,25 @@ def advisory_payload(match="AFFECTED"):
 
 
 class DependencyDecisionTests(unittest.TestCase):
+    def test_dynamic_declaration_cannot_be_adopted_by_repeating_it_in_clean_sources(self):
+        from aek.core.security.dependencies import evaluate_design_dependency
+        payload, host, authority, port = dependency_context()
+        for version in ("[1.0,2.0)", "LATEST", "RELEASE", "${client.version}"):
+            with self.subTest(version=version):
+                proposal = {**payload["proposals"][0], "version": version}
+                package = {key: proposal[key] for key in ("ecosystem", "package", "version")}
+                ref = "advisory-" + str(len(host.history))
+                register_source(host, authority, port, ref, "advisory", {**package, "advisories": []})
+                register_source(host, authority, port, ref + "-compat", "compatibility", {**package, "compatible": True})
+                observations = tuple({"metadata": port.lookup(key).metadata, "facts": port.lookup(key).facts,
+                                      "provenance_ref": port.lookup(key).provenance_ref}
+                                     for key in (ref, ref + "-compat"))
+                result = evaluate_design_dependency(proposal, observations, current_identity=authority.current_identity,
+                    required_components=REQUIRED, scope_ref=authority.scope_ref, now=NOW)
+                self.assertEqual(result["status"], "PENDING")
+                self.assertIn("DETERMINISTIC_RESOLUTION_REQUIRED", result["reason_codes"])
+                self.assertEqual(result["proposal"]["version"], version)
+
     def test_cve_ghsa_osv_and_vendor_aliases_require_current_attested_mapping(self):
         from aek.application.security_review import SecurityReviewService
         identifiers = ("CVE-2026-FIXTURE", "GHSA-fixture-0001", "OSV-FIXTURE", "VENDOR-2026-FIXTURE")

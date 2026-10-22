@@ -14,18 +14,18 @@ AEK 将 Skills、项目记忆、代码图谱接入和可重复执行的门禁安
 - **凭证随版本变化**：代码、文档、策略或证据变化后，重新检查相关结论；中断任务先核验进度和提交状态再继续。
 - **安全审查留下可复核证据**：依赖采用前核对公告与兼容性，交付时复核真实解析版本和发布物；安全发现的修复、独立复验、审批和关闭分别记录。
 
-当前代码版本为 **1.0.7**，变化见 [Changelog](CHANGELOG.md) 和 [GitHub Releases](https://github.com/kfkfkz/agent-engineering-kit/releases)。AEK 不自带模型服务；开发侧离线核验不要求连接模型 API。
+当前代码版本为 **1.0.8**，正式发布以 [GitHub Releases](https://github.com/kfkfkz/agent-engineering-kit/releases) 为准，完整变化见 [Changelog](CHANGELOG.md)。AEK 不自带模型服务；开发侧离线核验不要求连接模型 API。
 
-1.0.7 是 1.0.6 的稳定性补丁：修复中文需求目录、原生 Windows 截图与原型确认、Review 摘要以及原型要求绕过，补充截图暂存风险诊断；保留现有流程，不增加新功能。不提供自动登录截图或上传服务，完整范围与边界见 [变更记录](CHANGELOG.md)。
+1.0.8 改善现有系统的原型设计：截图可局部推进、理解结果可按摘要复用、相关状态可集中对照并一次确认；补齐安全证据覆盖与确定版本检查，首次安装提供用户可维护的通用宪章。不自动登录、上传截图或新增日常全量扫描，详见[使用指南](USAGE.md)。
 
-安全机械入口 `security-check` 提供只读 evaluate/report/doctor/plan。可选扫描器不自动安装或下载；当前默认宿主来源与进程隔离不足以授权扫描、审批或关闭，CLI/MCP 不提供自动安全闭环。用户仍通过 `security-review` 获得定向审查与补验建议，详见[使用指南](USAGE.md#安全审查与依赖治理)。
+安全机械入口 `security-check` 提供只读 evaluate/report/doctor/plan。可选扫描器不自动安装或下载；固定工具执行需可信宿主明确配置、采用与授权，普通 CLI/MCP 不授予扫描、审批或关闭权限。用户仍通过 `security-review` 获得定向审查与补验建议，详见[使用指南](USAGE.md#安全审查与依赖治理)。
 
 ## 快速开始
 
-需要 **Python 3.10+**。获取稳定版：
+需要 **Python 3.10+**。从 [Releases](https://github.com/kfkfkz/agent-engineering-kit/releases) 选择正式稳定标签；以下命令须在 v1.0.8 正式 Release 发布后使用，若尚未发布请替换为最新稳定标签：
 
 ```bash
-git clone --branch v1.0.7 --depth 1 https://github.com/kfkfkz/agent-engineering-kit.git
+git clone --branch v1.0.8 --depth 1 https://github.com/kfkfkz/agent-engineering-kit.git
 cd agent-engineering-kit
 ```
 
@@ -43,7 +43,7 @@ Linux / macOS / WSL：
 python -m installer "D:\code\your-project"
 ```
 
-基础安装在取得 AEK 源码后可离线执行。安装器管理自己的资源，并保留用户记忆和根指引的非受管内容。
+基础安装在取得 AEK 源码后可离线执行。安装器管理自己的资源，并保留用户记忆和根指引的非受管内容；首次安装还会在 `docs/memory/constitution.md` 提供一份可编辑的通用协作宪章种子，已有宪章不会被覆盖，卸载也会保留。
 
 如果 Codex 通常从父级 workspace 启动，安装时指定 workspace 根目录：
 

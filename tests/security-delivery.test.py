@@ -60,6 +60,40 @@ def evaluate(decision, inventories, port, authority, refs, **kwargs):
 
 
 class SecurityDeliveryTests(unittest.TestCase):
+    def test_dynamic_declaration_delivery_checks_resolved_and_shipped_actual_version(self):
+        from aek.adapters.security_maven import prepare_maven_resolution, register_maven_resolution
+        from aek.adapters.security_evidence import source_binding
+        from aek.core.security.dependencies import evaluate_design_dependency
+        spec = importlib.util.spec_from_file_location('maven_delivery_fixture',
+            Path(__file__).with_name('security-maven.test.py'))
+        maven = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(maven)
+        _decision, host, authority, port = context()
+        _, raw, sidecar, models = maven.inputs()
+        metadata = maven.workflow.source_metadata(authority, 'resolved', 'inventory')
+        metadata.update(tool_version='3.11.0', required_components=list(fixtures.REQUIRED))
+        facts = prepare_maven_resolution(raw, maven.encoded(sidecar), model_inputs=models, metadata=metadata)
+        binding = source_binding(metadata, facts)
+        handle = authority.on_source_completed(host.issue(authority, 'tool-completed', 'source', binding, actor='tool'),
+                                               binding=binding)
+        register_maven_resolution(raw, maven.encoded(sidecar), model_inputs=models, metadata=metadata,
+                                  source_port=port, handle=handle)
+        proposal = {**_decision['proposal'], 'version': '[1.0,2.0)',
+                    'evidence_refs': ['advisory', 'compatibility', 'resolved']}
+        decision = evaluate_design_dependency(proposal, observations(port, proposal['evidence_refs']),
+            current_identity=authority.current_identity, required_components=fixtures.REQUIRED,
+            scope_ref=authority.scope_ref, now=fixtures.NOW)
+        self.assertEqual(decision['status'], 'ADOPTABLE')
+        shipped = inventory(authority, kind='SHIPPED')
+        register_inventory(host, authority, port, shipped)
+        fixtures.register_source(host, authority, port, 'scope', 'delivery-scope', {'shipped_required': True})
+        fixtures.register_source(host, authority, port, 'normal', 'regression',
+            {'passed': True, 'dependency_ref': 'DEP-1', 'version': '1.2.3'})
+        refs = ['advisory', 'compatibility', 'resolved', 'shipped', 'scope', 'normal']
+        result = evaluate(decision, (facts['inventory'], shipped), port, authority, refs)
+        self.assertEqual(result['status'], 'PASS', result)
+        self.assertEqual(decision['proposal']['version'], '[1.0,2.0)')
+
     def test_attested_bom_parent_transitive_path_is_preserved_for_each_dependency_scope(self):
         for scope in ("production", "test", "provided", "build"):
             with self.subTest(scope=scope):

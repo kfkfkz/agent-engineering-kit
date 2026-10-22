@@ -214,6 +214,23 @@ class DynamicPlanCliTests(unittest.TestCase):
         self.assertEqual(public_status["需求分析"]["state"], "FROZEN")
         self.assertEqual(public_status["业务流程设计"]["state"], "SKIPPED")
 
+    def test_no_ui_plan_retains_design_gates_and_missing_upstream_cannot_enter_detail(self):
+        self.write_valid_requirements()
+        self.run_gate('plan-prepare', str(self.req), '--base', self.base,
+                      '--route', 'standard', '--json')
+        self.run_gate('plan-freeze', str(self.req), '--base', self.base, '--json')
+        snapshot = self.status()
+        for stage in ('需求分析', '概要设计', '详细设计', '计划'):
+            self.assertNotEqual(snapshot['effective_stage_states'][stage], 'SKIPPED')
+        checked = json.loads(self.run_gate('check', str(self.req), '--stage', '详细设计',
+                                          '--json', expected=1).stdout)
+        upstream = [row for row in checked['checks'] if row['group'] == 'upstream']
+        self.assertTrue(upstream)
+        self.assertTrue(any(row['status'] == 'FAIL' for row in upstream), upstream)
+        # Optional/missing UI does not make the detailed-design review optional.
+        self.run_gate('gate', str(self.req), '--stage', '详细设计', '--no-review', expected=3)
+        self.assertFalse((self.req / 'reviews/详细设计.gate.json').exists())
+
 
 if __name__ == "__main__":
     unittest.main()

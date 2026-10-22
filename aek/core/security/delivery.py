@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from aek.core.context.identity import IdentityEnvelope, IdentityState, compare_identity, decode_identity
-from aek.core.security.dependencies import evaluate_design_dependency
+from aek.core.security.dependencies import evaluate_design_dependency, is_concrete_version, resolve_dynamic_dependency
 from aek.core.security.model import SecurityInputError, _exact_object, _inventories, _proposals, _strings, _text
 from aek.core.security.record import _sources, _timestamp
 
@@ -64,17 +64,28 @@ def evaluate_dependency_delivery(decision: dict, inventories: tuple[dict, ...], 
         except (TypeError, ValueError, KeyError):
             continue
     package_keys = ("ecosystem", "package", "version")
+    target_version = proposal['version']
+    resolution_refs = []
+    resolution_reasons = []
+    if not is_concrete_version(target_version):
+        resolution = resolve_dynamic_dependency(proposal, observations,
+            current_identity=current_identity, required_components=required_components,
+            scope_ref=scope_ref, now=now, max_age_days=max_age_days)
+        target_version, resolution_refs = resolution['resolved_version'], resolution['source_refs']
+        resolution_reasons = resolution['reason_codes']
     design_observations = tuple(o for o in observations if type(o) is dict and type(o.get("metadata")) is dict
-        and (o["metadata"].get("ref") in proposal["evidence_refs"] or (
+        and (o["metadata"].get("ref") in {*proposal["evidence_refs"], *resolution_refs} or (
             o["metadata"].get("kind") in {"advisory", "compatibility"} and type(o.get("facts")) is dict
-            and all(o["facts"].get(k) == proposal[k] for k in package_keys))))
+            and all(o["facts"].get(k) == (target_version if k == 'version' else proposal[k])
+                    for k in package_keys))))
     available_design_refs = {o["metadata"]["ref"] for o in design_observations}
     design = evaluate_design_dependency(proposal, design_observations, current_identity=current_identity,
         required_components=required_components, scope_ref=scope_ref, now=now, max_age_days=max_age_days,
         unresolved_refs=tuple(ref for ref in proposal["evidence_refs"]
                               if ref not in available_design_refs and ref != accepted_risk_ref),
         accepted_risk_ref=accepted_risk_ref)
-    reasons, evidence = [], list(design["source_refs"])
+    reasons = list(resolution_reasons)
+    evidence = list(design["source_refs"]) + resolution_refs
     failed = design["status"] == "REJECTED"
     if design["status"] != "ADOPTABLE":
         reasons.extend(design["reason_codes"] or ["DESIGN_ADOPTION_REVALIDATION_REQUIRED"])
@@ -152,7 +163,7 @@ def evaluate_dependency_delivery(decision: dict, inventories: tuple[dict, ...], 
         for package in packages:
             if package["version"] is None:
                 reasons.append("DEPENDENCY_VERSION_UNKNOWN")
-            elif package["version"] != proposal["version"]:
+            elif target_version is not None and package["version"] != target_version:
                 failed = True
                 reasons.append("DEPENDENCY_VERSION_MISMATCH")
             if package["relationship"] == "UNKNOWN":
@@ -180,9 +191,10 @@ def evaluate_dependency_delivery(decision: dict, inventories: tuple[dict, ...], 
                 and "SHIPPED" not in matching_kinds):
             reasons.append("DEPENDENCY_INSTANCE_NOT_SHIPPED" if candidates_by_kind["SHIPPED"]
                            else "DEPENDENCY_PACKAGE_NOT_SHIPPED")
-    regression = [o for o in valid.values() if o["metadata"]["kind"] == "regression"
+    regression = [o for o in valid.values() if target_version is not None
+        and o["metadata"]["kind"] == "regression"
         and set(o["facts"]) == {"passed", "dependency_ref", "version"}
-        and o["facts"]["dependency_ref"] == proposal["id"] and o["facts"]["version"] == proposal["version"]
+        and o["facts"]["dependency_ref"] == proposal["id"] and o["facts"]["version"] == target_version
         and type(o["facts"]["passed"]) is bool]
     if not regression:
         reasons.append("DEPENDENCY_REGRESSION_REQUIRED")

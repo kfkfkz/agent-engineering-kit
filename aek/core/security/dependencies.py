@@ -10,7 +10,7 @@ import ipaddress
 import re
 
 from aek.core.context.identity import IdentityEnvelope, IdentityState, compare_identity, decode_identity
-from aek.core.security.model import SecurityInputError, _digest, _exact_object, _proposals, _strings, _text
+from aek.core.security.model import SecurityInputError, _digest, _exact_object, _inventories, _proposals, _strings, _text
 from aek.core.security.record import _sources, _timestamp, canonical_bytes
 
 
@@ -72,6 +72,85 @@ def _https_reference(value: str) -> bool:
     return True
 
 
+def is_concrete_version(value: object) -> bool:
+    """A concrete spelling is not proof that a resolver actually selected it."""
+    return (type(value) is str and bool(value) and len(value) <= 2048
+            and not any(char.isspace() or char in "[](),${}" for char in value)
+            and value.upper() not in {"LATEST", "RELEASE"})
+
+
+def resolve_dynamic_dependency(proposal: dict, observations: tuple[dict, ...], *,
+                               current_identity: IdentityEnvelope, required_components: tuple[str, ...],
+                               scope_ref: str, now: datetime, max_age_days: int = 7) -> dict:
+    """Select exact producer facts, never evaluate Maven ranges or properties.
+
+    The original declaration remains in the proposal. A resolved version is
+    usable only for this declaration's attested module/scope occurrences; it
+    still requires independent advisories and compatibility for that version.
+    """
+    _proposals([proposal])
+    pending = {"resolved_version": None, "source_refs": [], "reason_codes": ["DETERMINISTIC_RESOLUTION_REQUIRED"]}
+    if proposal["ecosystem"] != "maven" or proposal["version"] is None:
+        return pending
+    selected, refs, invalid = set(), set(), False
+    for observation in observations:
+        try:
+            metadata, facts = observation["metadata"], observation["facts"]
+            if type(facts) is not dict or facts.get("schema_version") != 2 or type(facts.get("occurrences")) is not list:
+                continue
+            occurrences = [row for row in facts["occurrences"] if type(row) is dict
+                           and row.get("ecosystem") == proposal["ecosystem"] and row.get("package") == proposal["package"]
+                           and row.get("classification") == proposal["scope"]
+                           and row.get("declared_version") == proposal["version"]]
+            if not occurrences:
+                continue
+            _sources([metadata])
+            # Retain applicable evidence even when it prevents resolution.
+            # Callers re-inspect these refs; returning only successful refs
+            # would let them silently shrink a conflicting/incomplete set.
+            refs.add(metadata["ref"])
+            inventory = facts["inventory"]
+            _inventories([inventory])
+            checked = _timestamp(metadata["checked_at"])
+            if not (metadata["kind"] == "inventory" and metadata["status"] == "VERIFIED"
+                    and metadata["scope_ref"] == scope_ref and metadata["coverage"] == "COMPLETE_FOR_DECLARED_SCOPE"
+                    and not metadata["coverage_gaps"] and observation["provenance_ref"]
+                    and checked <= now and now - checked <= timedelta(days=max_age_days)
+                    and inventory["kind"] == "RESOLVED" and inventory["scope_ref"] == scope_ref
+                    and inventory["identity_digest"] == current_identity.envelope_digest
+                    and inventory["producer_ref"] == metadata["producer_ref"]
+                    and inventory["coverage"] == "COMPLETE_FOR_DECLARED_SCOPE" and not inventory["coverage_gaps"]
+                    and compare_identity(decode_identity(metadata["identity"]), current_identity,
+                                         required_components).state == IdentityState.VALID
+                    and compare_identity(decode_identity(metadata["identity"]), current_identity,
+                                         tuple(metadata["required_components"])).state == IdentityState.VALID):
+                invalid = True
+                continue
+            _digest(facts["tree_sha256"])
+            _digest(facts["sidecar_sha256"])
+            packages = {row["id"]: row for row in inventory["packages"]}
+            if len(packages) != len(inventory["packages"]):
+                invalid = True
+                continue
+            for occurrence in occurrences:
+                version = occurrence["resolved_version"]
+                package = packages.get(occurrence["instance_id"])
+                if (not is_concrete_version(version) or package is None
+                        or any(package[key] != proposal[key] for key in ("ecosystem", "package", "scope"))
+                        or package["version"] != version or package["source_ref"] != metadata["ref"]):
+                    invalid = True
+                    continue
+                selected.add(version)
+        except (KeyError, ValueError, TypeError):
+            invalid = True
+    if invalid or len(selected) != 1:
+        pending["source_refs"] = sorted(refs)
+        if len(selected) > 1:
+            pending["reason_codes"].append("RESOLUTION_VERSION_AMBIGUOUS")
+        return pending
+    return {"resolved_version": next(iter(selected)), "source_refs": sorted(refs), "reason_codes": []}
+
+
 def evaluate_design_dependency(proposal: dict, observations: tuple[dict, ...], *,
                                current_identity: IdentityEnvelope | None,
                                required_components: tuple[str, ...], scope_ref: str,
@@ -87,6 +166,17 @@ def evaluate_design_dependency(proposal: dict, observations: tuple[dict, ...], *
                 "pending_delivery_requirements": ["RESOLVED_INVENTORY_REQUIRED", "SHIPPED_INVENTORY_IF_APPLICABLE"]}
     if current_identity is None or proposal["version"] is None:
         return decision
+    resolution_refs = []
+    effective_proposal = proposal
+    if not is_concrete_version(proposal["version"]):
+        resolution = resolve_dynamic_dependency(proposal, observations, current_identity=current_identity,
+            required_components=required_components, scope_ref=scope_ref, now=now, max_age_days=max_age_days)
+        if resolution["resolved_version"] is None:
+            decision["reason_codes"] = resolution["reason_codes"]
+            decision["source_refs"] = resolution["source_refs"]
+            return decision
+        resolution_refs = resolution["source_refs"]
+        effective_proposal = {**proposal, "version": resolution["resolved_version"]}
     candidates = {}
     observation_gaps = []
     package_keys = ("ecosystem", "package", "version")
@@ -107,7 +197,7 @@ def evaluate_design_dependency(proposal: dict, observations: tuple[dict, ...], *
         if not valid:
             observation_gaps.append("EVIDENCE_INCOMPLETE")
         if (valid and type(facts) is dict
-                and all(facts.get(key) == proposal[key] for key in package_keys)):
+                and all(facts.get(key) == effective_proposal[key] for key in package_keys)):
             candidates.setdefault(metadata["kind"], []).append(observation)
     advisories = []
     affected = False
@@ -137,9 +227,9 @@ def evaluate_design_dependency(proposal: dict, observations: tuple[dict, ...], *
                          and item["facts"]["compatible"] is False), None)
     if incompatible is not None:
         decision.update(status="REJECTED", reason_codes=["DEPENDENCY_INCOMPATIBLE"],
-                        source_refs=[incompatible["metadata"]["ref"]])
+                        source_refs=resolution_refs + [incompatible["metadata"]["ref"]])
         return decision
-    decision["source_refs"] = [item["metadata"]["ref"] for item in advisories]
+    decision["source_refs"] = resolution_refs + [item["metadata"]["ref"] for item in advisories]
     if compatibility is not None:
         decision["source_refs"].append(compatibility["metadata"]["ref"])
     if affected:

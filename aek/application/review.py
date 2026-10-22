@@ -183,21 +183,51 @@ def _full_boundary_evidence(
     globals_ = []
     providers = {item: section.key for section in current.sections
                  for item in section.defines_ids}
+    # Display headings are lossy: literal " / " in a title is not a level
+    # boundary. Use the actual supported Markdown heading/fence stack, not
+    # split() or prefix matching (which can assign a global title to an owner).
     sections_by_key = {section.key: section for section in current.sections}
+    actual_owners = {}
+    for document, text in documents.items():
+        family = roles.get(document)
+        stack = []
+        fence_char, fence_size = '', 0
+        for line in text.splitlines(keepends=True):
+            fence = re.match(r'^[ \t]{0,3}(`{3,}|~{3,})', line)
+            if fence:
+                token = fence.group(1)
+                tab_indented = '\t' in line[:fence.start(1)]
+                if not fence_char and (tab_indented or (token[0] == '`' and '`' in line[fence.end(1):])):
+                    # The source parser marks this unsupported opener unknown.
+                    # Do not let it invent an owner boundary in the proof.
+                    continue
+                if not fence_char:
+                    fence_char, fence_size = token[0], len(token)
+                elif (not tab_indented and token[0] == fence_char and len(token) >= fence_size
+                      and not line[fence.end(1):].strip(' \t\r\n')):
+                    fence_char, fence_size = '', 0
+                continue
+            if fence_char:
+                continue
+            heading = re.match(r'^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*(?:\r?\n)?$', line)
+            if not heading:
+                continue
+            level, title = len(heading.group(1)), heading.group(2).strip()
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            logical = ' / '.join([item[1] for item in stack] + [title])
+            section = sections_by_key.get((document, logical))
+            owner = stack[-1][2] if stack else None
+            definition = re.fullmatch(r'([FD][1-9][0-9]*)[：:]\s*\S.*', title)
+            if (definition and family and definition.group(1).startswith(family)
+                    and section is not None and section.defines_ids == (definition.group(1),)):
+                owner = definition.group(1)
+            stack.append((level, title, owner))
+            actual_owners[(document, logical)] = owner
     for section in current.sections:
-        family = roles.get(section.document)
-        owner = None
-        parts = section.heading.split(" / ")
-        for depth in range(len(parts), 0, -1):
-            parent = sections_by_key.get((section.document, " / ".join(parts[:depth])))
-            title = re.fullmatch(r"([FD][1-9][0-9]*)[：:]\s*\S.*", parts[depth - 1])
-            if (parent is not None and title and family
-                    and title.group(1).startswith(family)
-                    and parent.defines_ids == (title.group(1),)):
-                owner = parent
-                break
+        owner = actual_owners.get(section.key)
         owners.append((section.document, section.heading,
-                       owner.defines_ids[0] if owner else None))
+                       owner))
         if owner is None:
             globals_.append(section.key)
     edges = sorted({(providers[ref], section.key) for section in current.sections
@@ -677,7 +707,10 @@ def review_issue_locations(
                 or not isinstance(row["document"], str) or not isinstance(row["heading"], str)):
             raise ValueError("Reviewer location is not bound to an existing issue")
         key = (row["document"], row["heading"])
-        if (key not in sections or owners.get(key) is None
+        # Plans currently have no F/D owner frontier and are always reviewed
+        # in full. Their exact task/table/global section bytes are legitimate
+        # locations, not permission to admit a scoped or partial plan review.
+        if (key not in sections or (request.stage != "计划" and owners.get(key) is None)
                 or row["section_digest"] != sections[key].digest):
             raise ValueError("Reviewer location is not a current owned section")
         order.append((row["fingerprint"], *key))

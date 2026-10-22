@@ -159,6 +159,38 @@ class ReviewLifecycleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_lifecycle(tampered)
 
+    def test_current_gate_replay_preserves_issues_closed_by_older_gates(self) -> None:
+        fixed = transition_issue(self.snapshot, self.fingerprint, IssueState.FIXED,
+                                 IssueAuthority.AUTHOR, input_digest="d" * 64)
+        verified = transition_issue(fixed, self.fingerprint, IssueState.VERIFIED,
+                                    IssueAuthority.REVIEWER, input_digest="e" * 64)
+        old_closed = project_pass_gate(verified, stage="详细设计", status="PASS",
+            lifecycle_snapshot_digest=verified.snapshot_digest, gate_digest="f" * 64)
+        new_issue = {**issue("REV-2"), "problem": "A later independent finding",
+                     "location": "详细设计.md §D3", "affected_ids": ["D3"]}
+        opened = ingest_review_occurrences(old_closed, subject_digest="1" * 64,
+            request_digest="2" * 64, doc_hashes={"详细设计.md": "3" * 64},
+            issues=(new_issue,), iteration=2)
+        new_fp = next(item.fingerprint for item in opened.issues
+                      if item.fingerprint != self.fingerprint)
+        fixed = transition_issue(opened, new_fp, IssueState.FIXED,
+                                 IssueAuthority.AUTHOR, input_digest="4" * 64)
+        current = transition_issue(fixed, new_fp, IssueState.VERIFIED,
+                                   IssueAuthority.REVIEWER, input_digest="5" * 64)
+        closed = project_pass_gate(current, stage="详细设计", status="PASS",
+            lifecycle_snapshot_digest=current.snapshot_digest, gate_digest="6" * 64)
+        self.assertEqual(project_pass_gate(closed, stage="详细设计", status="PASS",
+            lifecycle_snapshot_digest=current.snapshot_digest, gate_digest="6" * 64), closed)
+        old_item = next(item for item in closed.issues if item.fingerprint == self.fingerprint)
+        self.assertEqual(old_item, old_closed.issues[0])
+        self.assertEqual(closed.events[:len(old_closed.events)], old_closed.events)
+        for base, gate in ((verified.snapshot_digest, "f" * 64),
+                           (current.snapshot_digest, "7" * 64),
+                           ("0" * 64, "6" * 64)):
+            with self.subTest(base=base, gate=gate), self.assertRaises(ValueError):
+                project_pass_gate(closed, stage="详细设计", status="PASS",
+                                  lifecycle_snapshot_digest=base, gate_digest=gate)
+
     def test_pass_gate_projection_is_bound_and_idempotent(self) -> None:
         fixed = transition_issue(
             self.snapshot, self.fingerprint, IssueState.FIXED,

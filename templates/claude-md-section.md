@@ -2,6 +2,8 @@
 
 历史踩坑与流程经验沉淀在 [docs/memory/](docs/memory/)——规则见 [RULES.md](docs/memory/RULES.md)（kit 管辖），索引见 [README.md](docs/memory/README.md)：
 
+- 跨项目协作准则见 `docs/memory/constitution.md`（首次安装种子、项目可编辑）；开始非平凡任务前阅读。它不替代用户指令、项目规范或 AEK 治理门禁；轻量任务仍按任务路由处理
+
 - 非平凡的功能实现、缺陷修复、重构或迁移，使用 `repo-delivery` 技能先做低成本 Route Card 分流，再按 Direct / Bounded / Standard / Initiative 最轻安全路线提取适用门禁；只有正向证据才升径，并遵循 `execution_profile` 限制上下文、设计与验证深度；复用项目既有 spec/SDD，不另建平行文档体系
 - 显式启动：Claude Code 使用 `/repo-delivery [任务描述]`；Codex 使用 `$repo-delivery [任务描述]`。自然语言请求仍可自动触发
 - 代码结构、调用链、依赖和影响分析第一次检索必须先用 `codebase-memory` 图工具；grep/rg 只用于字面量、配置、非代码文件或 coverage 明示缺口。代码写入、Git/SVN 更新、切分支或合并后，下一次结构查询前按完整变更批次核验 status+coverage；后台未追平时每个 dirty epoch 最多刷新一次，并披露代次、动作和置信度

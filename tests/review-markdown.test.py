@@ -9,6 +9,63 @@ from aek.application.review import plan_review
 
 
 class ReviewMarkdownTests(unittest.TestCase):
+    def test_invalid_backtick_info_cannot_hide_a_real_owner_as_a_complete_snapshot(self):
+        material = parse_review_documents('详细设计', {'详细设计.md':
+            '# 设计\n## 全局约束\n```lang`invalid\n### D1：实际标题\n真实规则。\n```\n'}, 'a' * 64)
+        self.assertFalse(material.snapshot.parse_complete)
+
+    def test_supported_fences_keep_short_wrong_type_and_info_lines_as_literal_content(self):
+        for char in ('`', '~'):
+            for length in (3, 4):
+                for extra in (0, 2):
+                    for whitespace in ('', ' \t'):
+                        with self.subTest(char=char, length=length, extra=extra, whitespace=whitespace):
+                            other = '~' if char == '`' else '`'
+                            info = 'python' if char == '`' else 'info `literal`'
+                            text = ('# 设计\n## 全局约束\n' + char * length + info + '\n'
+                                    + other * length + '\n### D8：错误字符不能关闭\n'
+                                    + char * (length - 1) + '\n### D9：较短围栏不能关闭\n'
+                                    + char * (length + extra) + whitespace + '\n'
+                                    + '## 实现\n### D1：真实实现\n处理请求。\n')
+                            material = parse_review_documents('详细设计', {'详细设计.md': text}, 'a' * 64)
+                            self.assertTrue(material.snapshot.parse_complete)
+                            self.assertEqual({ident for section in material.snapshot.sections for ident in section.defines_ids}, {'D1'})
+
+    def test_unclosed_fence_with_info_suffix_does_not_expose_a_fake_owner(self):
+        material = parse_review_documents('详细设计', {'详细设计.md':
+            '# 设计\n## 全局约束\n```python\n```not-closing\n### D9：仍在围栏内\n规则。\n'}, 'a' * 64)
+        self.assertFalse(material.snapshot.parse_complete)
+        self.assertFalse(any(section.defines_ids for section in material.snapshot.sections))
+
+    def test_fence_with_trailing_text_cannot_close_and_expose_a_fake_owner(self):
+        material = parse_review_documents('详细设计', {'详细设计.md':
+            '# 设计\n## 全局约束\n```text\n```not-a-closing-fence\n'
+            '### D9：围栏中的示例\n所有接口都鉴权。\n```another-non-closing-line\n```\n'
+            '## 实现\n### D1：真实实现\n处理请求。\n'}, 'a' * 64)
+        self.assertTrue(material.snapshot.parse_complete)
+        self.assertEqual({ident for section in material.snapshot.sections for ident in section.defines_ids}, {'D1'})
+        global_section = next(section for section in material.snapshot.sections if section.heading == '设计 / 全局约束')
+        self.assertEqual(global_section.uses_ids, ())
+        self.assertIn('### D9：围栏中的示例', material.section_map()[global_section.key])
+
+    def test_tab_indentation_cannot_close_a_fence_or_hide_an_owner_as_complete(self):
+        material = parse_review_documents('详细设计', {'详细设计.md':
+            '# 设计\n## 全局约束\n```text\n\t```\n### D9：仍在围栏里\n规则。\n\t```\n```\n'
+            '## 实现\n### D1：真实实现\n处理请求。\n'}, 'a' * 64)
+        self.assertTrue(material.snapshot.parse_complete)
+        self.assertEqual({ident for section in material.snapshot.sections for ident in section.defines_ids}, {'D1'})
+        ambiguous = parse_review_documents('详细设计', {'详细设计.md':
+            '# 设计\n\t```text\n### D1：真实标题\n规则。\n```\n'}, 'a' * 64)
+        self.assertFalse(ambiguous.snapshot.parse_complete)
+
+    def test_trace_like_heading_with_unsupported_separator_is_unknown_not_an_omitted_owner(self):
+        material = parse_review_documents('概要设计', {'概要设计.md':
+            '# 设计\n### F1：已支持 / 子标题\\正文\n覆盖 A1。\n### F3|未支持的分隔符\n需要页面。\n'}, 'a' * 64)
+        self.assertFalse(material.snapshot.parse_complete)
+        self.assertTrue(material.snapshot.unknown_edges)
+        self.assertEqual(next(section.defines_ids for section in material.snapshot.sections
+                              if 'F1：' in section.heading), ('F1',))
+
     def test_fenced_owner_ids_do_not_define_or_reference_source_contracts(self) -> None:
         material = parse_review_documents("详细设计", {"详细设计.md": (
             "# 设计\n## 全局\n```markdown\n### D1：仅为示例\n"

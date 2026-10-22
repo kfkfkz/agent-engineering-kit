@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path, PureWindowsPath
@@ -340,6 +341,69 @@ finally:
                 if child is not None:
                     self._stop_child(child, pending[1] if pending is not None else None)
                 fs.close_dir(root)
+
+    def test_explicit_lock_deadline_times_out_without_releasing_the_owner(self):
+        holder = '''
+import sys
+from pathlib import Path
+from aek.adapters import ui_filesystem as fs
+root = fs.open_absolute_dir(Path(sys.argv[1]))
+try:
+    with fs.exclusive_lock(root):
+        print('acquired', flush=True)
+        sys.stdin.readline()
+finally:
+    fs.close_dir(root)
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            owner = self._child(holder, directory)
+            root = fs.open_absolute_dir(Path(directory))
+            try:
+                self._expect_signal(owner, "acquired")
+                started = time.monotonic()
+                with self.assertRaises(TimeoutError):
+                    with fs.exclusive_lock(root, timeout=0.05):
+                        self.fail("contender entered the owner's critical section")
+                self.assertLess(time.monotonic() - started, 5)
+                self.assertIsNone(owner.poll(), "timing out must not terminate another lock owner")
+                self._finish_child(owner)
+                self.assertEqual(owner.returncode, 0)
+                with fs.exclusive_lock(root, timeout=0):
+                    pass
+            finally:
+                self._stop_child(owner)
+                fs.close_dir(root)
+
+    def test_lock_deadline_rejects_unsafe_values_before_acquiring(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = fs.open_absolute_dir(Path(directory))
+            try:
+                for timeout in (True, -1, float("nan"), float("inf"), "1", 10 ** 1000):
+                    with self.subTest(timeout=str(timeout)), self.assertRaises(ValueError):
+                        with fs.exclusive_lock(root, timeout=timeout):
+                            self.fail("invalid deadline acquired the lock")
+                with fs.exclusive_lock(root, timeout=0):
+                    pass
+            finally:
+                fs.close_dir(root)
+
+    def test_windows_lock_timeout_closes_mutex_without_releasing_unowned_lock(self):
+        handle = SimpleNamespace()
+        handle.require_open = lambda: SimpleNamespace(handle=11)
+        identity = SimpleNamespace(volume=7, index_hi=0, index_lo=9)
+        calls = []
+        kernel = SimpleNamespace(
+            CreateMutexW=lambda *_: 23,
+            WaitForSingleObject=lambda mutex, timeout: calls.append(("wait", mutex, timeout)) or 0x102,
+            ReleaseMutex=lambda mutex: calls.append(("release", mutex)) or True,
+            CloseHandle=lambda mutex: calls.append(("close", mutex)),
+        )
+        with patch.object(fs.os, "name", "nt"), \
+                patch.object(fs, "_info", return_value=identity, create=True), \
+                patch.object(fs, "_kernel", kernel, create=True), self.assertRaises(TimeoutError):
+            with fs.exclusive_lock(handle, timeout=0):
+                self.fail("timed-out mutex entered the critical section")
+        self.assertEqual(calls, [("wait", 23, 0), ("close", 23)])
 
     def test_lock_is_recoverable_after_owner_process_dies(self):
         holder_code = '''

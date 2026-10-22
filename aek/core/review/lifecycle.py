@@ -552,13 +552,31 @@ def project_pass_gate(
             elif item.state == IssueState.BLOCKED:
                 raise ValueError("PASS gate cannot override a BLOCKED issue")
         return result
-    close_events = [event for event in snapshot.events
-                    if event.to_state == IssueState.CLOSED]
-    if (close_events
-            and all(event.input_digest == lifecycle_snapshot_digest
-                    and event.gate_digest == gate_digest
-                    for event in close_events)
-            and not any(item.state in {IssueState.VERIFIED, IssueState.BLOCKED}
-                        for item in snapshot.issues)):
-        return snapshot
+    # Earlier issues can have been closed by earlier gates. Only the current
+    # gate's exact closure suffix is its projection, not all historical CLOSED
+    # events. Reverse that suffix and verify every preimage before replaying;
+    # merely finding a matching event anywhere would accept stale gates.
+    prior = snapshot
+    for event in reversed(snapshot.events):
+        if (event.to_state != IssueState.CLOSED
+                or event.from_state != IssueState.VERIFIED
+                or event.authority != IssueAuthority.JUDGE
+                or event.input_digest != lifecycle_snapshot_digest
+                or event.gate_digest != gate_digest):
+            break
+        items = tuple(replace(item, state=IssueState.VERIFIED, gate_digest=None)
+                      if item.fingerprint == event.fingerprint
+                      and item.state == IssueState.CLOSED
+                      and item.gate_digest == gate_digest else item
+                      for item in prior.issues)
+        prior = _make_snapshot(prior.stage, prior.subject_digest,
+            prior.iteration, prior.max_iterations, items, prior.events[:-1])
+        if prior.snapshot_digest != event.precondition_snapshot_digest:
+            break
+        if prior.snapshot_digest == lifecycle_snapshot_digest:
+            if project_pass_gate(prior, stage=stage, status=status,
+                    lifecycle_snapshot_digest=lifecycle_snapshot_digest,
+                    gate_digest=gate_digest) == snapshot:
+                return snapshot
+            break
     raise ValueError("PASS gate does not match the lifecycle snapshot")

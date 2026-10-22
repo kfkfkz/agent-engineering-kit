@@ -228,7 +228,12 @@ class PreparedWorkspaceTests(unittest.TestCase):
 
         try:
             with mock.patch("adapters.process.subprocess.Popen", side_effect=launch), \
-                    mock.patch("adapters.process.time.sleep", side_effect=KeyboardInterrupt):
+                    mock.patch("adapters.process.time", wraps=time) as controller_clock:
+                # Patch only the controller's clock reference. Replacing
+                # time.sleep on the shared stdlib module also interrupts
+                # subprocess.wait's cleanup polling, a second artificial
+                # interrupt whose race can leave the child unreaped here.
+                controller_clock.sleep.side_effect = KeyboardInterrupt
                 with self.assertRaises(KeyboardInterrupt):
                     run_process((sys.executable, "-I", "-c", "import time; time.sleep(30)"),
                                 self.root, timeout_seconds=2)

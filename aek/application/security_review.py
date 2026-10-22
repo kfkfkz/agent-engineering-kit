@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Protocol
@@ -12,9 +12,13 @@ from aek.core.context.identity import (
 )
 from aek.core.security.model import MAX_SECURITY_BYTES, SecurityInputError, decode_security_request
 from aek.core.security.record import SecurityRecord, finding_fingerprint, record_as_dict, _timestamp
-from aek.core.security.dependencies import decode_advisories, dependency_evidence_digest, evaluate_design_dependency
+from aek.core.security.dependencies import (
+    decode_advisories, dependency_evidence_digest, evaluate_design_dependency,
+    is_concrete_version, resolve_dynamic_dependency,
+)
 from aek.core.security.delivery import evaluate_dependency_delivery
 from aek.core.security.policy import SecurityPolicy
+from aek.core.security.scanners import ScanEvidencePolicy, ScanEvidenceView, ScannerPlan, normalize_scan
 from aek.core.security.knowledge import compare_security_baseline, derive_security_invariants
 
 
@@ -46,7 +50,8 @@ class SecurityReviewService:
     def __init__(self, *, record_port: SecurityRecordPort | None = None,
                  source_port: SourceEvidencePort | None = None, approval_port: object | None = None,
                  policy: SecurityPolicy | None = None, clock=None, scanner_ports: dict | None = None,
-                 scanner_options: dict | None = None) -> None:
+                 scanner_options: dict | None = None,
+                 scan_evidence_policy: ScanEvidencePolicy | None = None) -> None:
         self.record_port = record_port
         self.source_port = source_port
         self.approval_port = approval_port
@@ -56,6 +61,54 @@ class SecurityReviewService:
         # Only the composition root supplies local config/cache options. The
         # request union deliberately has no executable, network or grant keys.
         self.scanner_options = scanner_options if scanner_options is not None else {}
+        if scan_evidence_policy is not None and type(scan_evidence_policy) is not ScanEvidencePolicy:
+            raise SecurityInputError()
+        # Independent of advisory age; only the composition root supplies it.
+        self.scan_evidence_policy = scan_evidence_policy
+
+    def inspect_scan_v2(self, tool_id: str, raw: bytes, *, plan: ScannerPlan,
+                        current_identity: IdentityEnvelope, exit_code: int,
+                        resolved_inventory_ref: str, scan_evidence_ref: str,
+                        database_evidence_refs: tuple[str, ...], scope_root: str | None = None) -> dict:
+        """Read-only evidence view, not an execution or Composer endpoint.
+
+        No request-selected source port, clock, authority or freshness policy.
+        The old request union, Record and two-field Composer rows stay intact.
+        """
+        if type(tool_id) is not str or type(plan) is not ScannerPlan or plan.tool_id != tool_id:
+            raise SecurityInputError()
+        for value, ceiling in ((plan.max_items, 10000), (plan.max_output_bytes, 2000000)):
+            if type(value) is not int or not 0 < value <= ceiling:
+                raise SecurityInputError()
+        identity = identity_as_dict(current_identity)
+        scope = identity['components']['subject'].get('scope_digest')
+        if type(scope) is not str or not scope:
+            raise SecurityInputError()
+        adapter = self.scanner_ports.get(tool_id)
+        if (self.scan_evidence_policy is None or tool_id != 'trivy'
+                or not callable(getattr(adapter, 'normalize_v2', None))):
+            reason = ('DATABASE_POLICY_UNAVAILABLE' if self.scan_evidence_policy is None
+                      else 'SCANNER_V2_UNAVAILABLE')
+            # Missing control-side capability must not erase already reported
+            # vulnerabilities or turn their absence into a safety conclusion.
+            scan = normalize_scan(tool_id, raw, exit_code=exit_code, version=plan.tool_version,
+                scope_paths=tuple(path for path, _sha in plan.input_files), scope_root=scope_root,
+                max_items=min(self.policy.max_items, plan.max_items),
+                max_output_bytes=min(self.policy.max_output_bytes, plan.max_output_bytes))
+            scan = replace(scan, status=scan.status if scan.status in ('ERROR', 'BLOCKED') else 'INCONCLUSIVE',
+                           coverage_gaps=tuple(sorted(set((*scan.coverage_gaps, reason)))))
+            return asdict(ScanEvidenceView(scan, {'status': 'UNVERIFIED', 'reason_code': reason},
+                {'status': 'UNKNOWN'}, {'status': 'INCONCLUSIVE'},
+                {'status': 'UNKNOWN', 'reason_code': reason}))
+        view = adapter.normalize_v2(raw, plan=plan,
+            exit_code=exit_code, version=plan.tool_version,
+            scope_paths=tuple(path for path, _sha in plan.input_files),
+            identity_digest=current_identity.envelope_digest, scope_ref=scope,
+            source_port=self.source_port, resolved_inventory_ref=resolved_inventory_ref,
+            scan_evidence_ref=scan_evidence_ref, database_evidence_refs=database_evidence_refs,
+            policy=self.scan_evidence_policy, clock=self._clock, scope_root=scope_root,
+            max_items=self.policy.max_items, max_output_bytes=self.policy.max_output_bytes)
+        return asdict(view)
 
     def knowledge(self, record: SecurityRecord, *, current_identity: IdentityEnvelope,
                   required_components: tuple[str, ...], repository_ref: str,
@@ -192,10 +245,20 @@ class SecurityReviewService:
         proposals = []
         for row in body["dependency_decisions"]:
             proposal = row["proposal"]
+            target_version = proposal['version']
+            resolution_refs = set()
+            if target_version is not None and not is_concrete_version(target_version):
+                resolution = resolve_dynamic_dependency(proposal, tuple(recorded_observations),
+                    current_identity=current_identity, required_components=required_components,
+                    scope_ref=body['scope']['subject_digest'], now=self._clock(),
+                    max_age_days=self.policy.max_advisory_age_days)
+                target_version = resolution['resolved_version']
+                resolution_refs.update(resolution['source_refs'])
             extra = {o["metadata"]["ref"] for o in recorded_observations
                      if o["metadata"]["kind"] in {"advisory", "compatibility"}
-                     and all(o["facts"].get(k) == proposal[k] for k in ("ecosystem", "package", "version"))}
-            proposals.append({**proposal, "evidence_refs": sorted(set(proposal["evidence_refs"]) | extra)})
+                     and target_version is not None and o['facts'].get('version') == target_version
+                     and all(o["facts"].get(k) == proposal[k] for k in ("ecosystem", "package"))}
+            proposals.append({**proposal, "evidence_refs": sorted(set(proposal["evidence_refs"]) | extra | resolution_refs)})
         payload = {"schema_version": 1, "operation": "evaluate", "stage": stage,
                    "scope": body["scope"], "identity": body["identity"],
                    "proposals": proposals,
@@ -235,12 +298,22 @@ class SecurityReviewService:
                 rows = []
                 for decision in body["dependency_decisions"]:
                     proposal = decision["proposal"]
+                    target_version = proposal['version']
+                    resolution_refs = set()
+                    if target_version is not None and not is_concrete_version(target_version):
+                        resolution = resolve_dynamic_dependency(proposal, tuple(observations),
+                            current_identity=current_identity, required_components=required_components,
+                            scope_ref=body['scope']['subject_digest'], now=self._clock(),
+                            max_age_days=self.policy.max_advisory_age_days)
+                        target_version = resolution['resolved_version']
+                        resolution_refs.update(resolution['source_refs'])
                     design_observations = tuple(o for o in observations if
-                        o["metadata"]["ref"] in proposal["evidence_refs"] or (
+                        o["metadata"]["ref"] in set(proposal["evidence_refs"]) | resolution_refs or (
                             o["metadata"]["kind"] in {"advisory", "compatibility"}
-                            and all(o["facts"].get(k) == proposal[k] for k in ("ecosystem", "package", "version"))))
+                            and target_version is not None and o['facts'].get('version') == target_version
+                            and all(o["facts"].get(k) == proposal[k] for k in ("ecosystem", "package"))))
                     approval = self._approval(proposal, design_observations, body["scope"]["subject_digest"],
-                                              current_identity.envelope_digest)
+                                              current_identity.envelope_digest, version=target_version)
                     rows.append(evaluate_dependency_delivery(decision, tuple(body["inventories"]), tuple(observations),
                         current_identity=current_identity, required_components=required_components,
                         scope_ref=body["scope"]["subject_digest"], now=self._clock(),
@@ -277,11 +350,11 @@ class SecurityReviewService:
                                      "provenance_ref": observation.provenance_ref})
         return observations, unresolved
 
-    def _approval(self, proposal, observations, scope_ref, current_digest):
-        if self.approval_port is not None:
+    def _approval(self, proposal, observations, scope_ref, current_digest, *, version):
+        if self.approval_port is not None and version is not None:
             for ref in proposal["evidence_refs"]:
                 if self.approval_port.validate_disposition(ref, scope_ref=scope_ref, identity_digest=current_digest,
-                        dependency_ref=proposal["id"], version=proposal["version"],
+                        dependency_ref=proposal["id"], version=version,
                         evidence_digest=dependency_evidence_digest(tuple(observations))):
                     return ref
         return None
@@ -319,12 +392,21 @@ class SecurityReviewService:
             return False
         observations, _missing = self._observations(sorted(set(proposal["evidence_refs"]) | set(finding["evidence_refs"])))
         now = self._clock()
+        target_version = proposal['version']
+        if not is_concrete_version(target_version):
+            resolution = resolve_dynamic_dependency(proposal, tuple(observations), current_identity=current,
+                required_components=required, scope_ref=payload['scope']['subject_digest'],
+                now=now, max_age_days=self.policy.max_advisory_age_days)
+            target_version = resolution['resolved_version']
+            if target_version is None:
+                return False
         for observation in observations:
             facts = observation["facts"]
             if (observation["metadata"]["kind"] != "advisory"
                     or not self._valid_observation(observation, current, required, payload["scope"]["subject_digest"])
                     or set(facts) != {"ecosystem", "package", "version", "advisories"}
-                    or any(facts[key] != proposal[key] for key in ("ecosystem", "package", "version"))):
+                    or any(facts[key] != proposal[key] for key in ("ecosystem", "package"))
+                    or facts['version'] != target_version):
                 continue
             try:
                 advisories = decode_advisories(facts["advisories"])
@@ -427,14 +509,17 @@ class SecurityReviewService:
                         unresolved.append(ref)
             accepted_risk_ref = None
             if self.approval_port is not None and not identity_required:
-                for ref in proposal["evidence_refs"]:
-                    if self.approval_port.validate_disposition(ref,
-                            scope_ref=payload["scope"]["subject_digest"], identity_digest=current_digest,
-                            dependency_ref=proposal["id"], version=proposal["version"],
-                            evidence_digest=dependency_evidence_digest(tuple(observations))):
-                        accepted_risk_ref = ref
-                        if ref in unresolved:
-                            unresolved.remove(ref)
+                target_version = proposal['version']
+                if target_version is not None and not is_concrete_version(target_version):
+                    resolution = resolve_dynamic_dependency(proposal, tuple(observations),
+                        current_identity=current_identity, required_components=required_components,
+                        scope_ref=payload['scope']['subject_digest'], now=self._clock(),
+                        max_age_days=self.policy.max_advisory_age_days)
+                    target_version = resolution['resolved_version']
+                accepted_risk_ref = self._approval(proposal, observations, payload['scope']['subject_digest'],
+                                                   current_digest, version=target_version)
+                if accepted_risk_ref in unresolved:
+                    unresolved.remove(accepted_risk_ref)
             decisions.append(evaluate_design_dependency(proposal, tuple(observations),
                 current_identity=current_identity if not identity_required else None,
                 required_components=required_components, scope_ref=payload["scope"]["subject_digest"],

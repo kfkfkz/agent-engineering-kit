@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
+from datetime import datetime, timezone
 import hashlib
 import json
 import re
@@ -9,6 +10,52 @@ import re
 from aek.core.security.model import decode_security_json
 
 VERSIONS = {"trivy": "0.75.0", "semgrep": "1.180.0", "gitleaks": "8.30.1"}
+
+
+@dataclass(frozen=True)
+class ScanEvidencePolicy:
+    """Composition-root policy; reports cannot change age or allowed origins."""
+    policy_ref: str
+    max_database_age_days: int
+    database_sources: tuple[tuple[str, str, int], ...]
+
+    def __post_init__(self):
+        if (type(self.policy_ref) is not str or not self.policy_ref
+                or len(self.policy_ref) > 2048
+                or type(self.max_database_age_days) is not int
+                or not 1 <= self.max_database_age_days <= 365
+                or type(self.database_sources) is not tuple or len(self.database_sources) > 16):
+            raise ValueError("INVALID_SCAN_EVIDENCE_POLICY")
+        for row in self.database_sources:
+            if (type(row) is not tuple or len(row) != 3
+                    or row[0] not in {"vulnerability", "java"}
+                    or type(row[1]) is not str or not row[1] or len(row[1]) > 2048
+                    or type(row[2]) is not int or row[2] < 1):
+                raise ValueError("INVALID_SCAN_EVIDENCE_POLICY")
+        if len(set(self.database_sources)) != len(self.database_sources):
+            raise ValueError("INVALID_SCAN_EVIDENCE_POLICY")
+
+
+def database_currentness(facts: dict, *, policy: ScanEvidencePolicy, now: datetime) -> dict:
+    """Time is supplied afresh by the control side, never the scanner report."""
+    if (type(policy) is not ScanEvidencePolicy or not isinstance(now, datetime)
+            or now.tzinfo is None or now.utcoffset() is None):
+        raise ValueError("INVALID_DATABASE_CLOCK_OR_POLICY")
+    def result(status, reason):
+        return {"status": status, "reason_code": reason, "policy_ref": policy.policy_ref,
+                "checked_at": now.astimezone(timezone.utc).isoformat()}
+    try:
+        if (type(facts) is not dict or type(facts["schema"]) is not int
+                or (facts["kind"], facts["source"], facts["schema"]) not in policy.database_sources):
+            return result("UNKNOWN", "DATABASE_SOURCE_OR_SCHEMA_UNSUPPORTED")
+        updated = datetime.fromisoformat(_text(facts["updated_at"]).replace("Z", "+00:00"))
+        if updated.tzinfo is None or updated.utcoffset() is None or updated > now:
+            return result("UNKNOWN", "DATABASE_TIMESTAMP_INVALID")
+        if (now - updated).total_seconds() > policy.max_database_age_days * 86400:
+            return result("STALE", "DATABASE_TOO_OLD")
+        return result("CURRENT", "DATABASE_CURRENT")
+    except (ValueError, TypeError, KeyError, OverflowError):
+        return result("UNKNOWN", "DATABASE_TIMESTAMP_INVALID")
 
 
 @dataclass(frozen=True)
@@ -91,6 +138,20 @@ class NormalizedScan:
     source_status: str = "DECLARED"
 
 
+@dataclass(frozen=True)
+class ScanEvidenceView:
+    """Separate evidence dimensions, never a new security gate or approval."""
+    scan: NormalizedScan
+    execution: dict
+    resolved_coverage: dict
+    scanner_coverage: dict
+    database_currentness: dict
+    advisory_match: str = "NOT_EVALUATED"
+    shipped_applicability: str = "NOT_EVALUATED"
+    final_gate: str = "NOT_EVALUATED"
+    schema_version: int = 2
+
+
 def _path(value: object, scope: tuple[str, ...], scope_root: str | None = None) -> str:
     if scope_root is not None and type(value) is str:
         root = scope_root.replace("\\", "/").rstrip("/")
@@ -118,6 +179,61 @@ def _text(value: object) -> str:
 
 def _severity(value: object) -> str:
     return value if type(value) is str and value in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO", "UNKNOWN"} else "UNKNOWN"
+
+
+def reconcile_occurrences(packages: tuple[dict, ...], occurrences: list[dict]) -> dict:
+    """Compare producer-bound instances, not scanner-reported package counts.
+
+    This is a pure comparison, not a provenance validator. The adapter must get
+    occurrences from the current original SourceEvidencePort before calling it.
+    Multiple instances cannot borrow one scanner package to claim completeness.
+    """
+    if (type(packages) is not tuple or type(occurrences) is not list
+            or len(packages) > 10000 or len(occurrences) > 10000):
+        raise ValueError("INVALID_RESOLVED_OCCURRENCES")
+    aliases = {"jar": "maven", "pom": "maven", "node-pkg": "npm"}
+    def key(item, expected=False):
+        ref = item["scanner_ref"] if expected else item
+        if type(ref) is not dict:
+            return None
+        ecosystem = _text(item["ecosystem"])
+        return (aliases.get(ecosystem, ecosystem), _text(item["package"]),
+                _text(item["resolved_version"] if expected else item["version"]),
+                _text(ref["path"]), _text(ref["package_id"]))
+    ids, expected, actual = set(), {}, {}
+    for item in occurrences:
+        if type(item) is not dict:
+            raise ValueError("INVALID_RESOLVED_OCCURRENCES")
+        identifier = _text(item["instance_id"])
+        if identifier in ids:
+            raise ValueError("DUPLICATE_RESOLVED_OCCURRENCE")
+        ids.add(identifier)
+        for field in ("module", "scope", "resolution_context"):
+            _text(item[field])
+        if (type(item["parent_path"]) is not list
+                or any(type(parent) is not str or not parent for parent in item["parent_path"])
+                or identifier in item["parent_path"]):
+            raise ValueError("INVALID_RESOLVED_OCCURRENCE_PATH")
+        try:
+            binding = key(item, True)
+        except (KeyError, ValueError, TypeError):
+            binding = None
+        expected.setdefault(binding, []).append(identifier)
+    for item in packages:
+        try:
+            binding = key(item)
+        except (KeyError, ValueError, TypeError):
+            binding = None
+        actual.setdefault(binding, []).append(item)
+    matched = []
+    for binding, identifiers in expected.items():
+        if binding is not None and len(identifiers) == 1 and len(actual.get(binding, [])) == 1:
+            matched.extend(identifiers)
+    missing = ids - set(matched)
+    unexpected = len(packages) - len(matched)
+    return {"status": "COMPLETE" if not missing and not unexpected else "INCONCLUSIVE",
+            "matched_instance_ids": sorted(matched), "missing_instance_ids": sorted(missing),
+            "unexpected_packages": unexpected}
 
 
 def normalize_scan(tool_id: str, raw: bytes, *, exit_code: int | None, version: str,

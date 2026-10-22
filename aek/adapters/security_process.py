@@ -123,11 +123,29 @@ class ProcessPort:
 
 def run_process(argv: tuple[str, ...], cwd: Path, *, timeout_seconds: float,
                 max_output_bytes: int = 2000000, environment: dict[str, str] | None = None,
-                output_file: Path | None = None) -> ProcessResult:
+                output_file: Path | None = None, pass_fds: tuple[int, ...] = ()) -> ProcessResult:
+    """Run one bounded process, optionally retaining controller-owned POSIX FDs.
+
+    The caller owns selected descriptors and must keep them open, unchanged,
+    through this call. This is not an execution grant or a sandbox capability;
+    only a fixed native provider may supply them, never request JSON. Other
+    descriptors remain closed. Empty selection preserves the Windows path.
+    """
     if (type(argv) is not tuple or not argv or any(type(arg) is not str or "\0" in arg for arg in argv)
             or type(timeout_seconds) not in {int, float} or not 0 < timeout_seconds <= 300
             or type(max_output_bytes) is not int or not 0 < max_output_bytes <= 2000000):
         raise ValueError("INVALID_PROCESS_REQUEST")
+    if (type(pass_fds) is not tuple or len(pass_fds) > 32
+            or any(type(fd) is not int or fd < 3 for fd in pass_fds)
+            or len(set(pass_fds)) != len(pass_fds)):
+        raise ValueError("INVALID_PROCESS_DESCRIPTORS")
+    if pass_fds and os.name != "posix":
+        raise ValueError("PROCESS_DESCRIPTOR_BOUNDARY_UNAVAILABLE")
+    try:
+        for fd in pass_fds:
+            os.fstat(fd)
+    except (OSError, OverflowError):
+        raise ValueError("INVALID_PROCESS_DESCRIPTORS") from None
     env = {key: value for key, value in os.environ.items() if key.upper() in ENVIRONMENT_KEYS - {"HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"}}
     if environment is not None:
         if type(environment) is not dict or any(key not in ENVIRONMENT_KEYS or type(value) is not str or "\0" in value for key, value in environment.items()):
@@ -141,8 +159,11 @@ def run_process(argv: tuple[str, ...], cwd: Path, *, timeout_seconds: float,
         options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | 4} if os.name == "nt" else {"start_new_session": True} if os.name == "posix" else None
         if options is None:
             return ProcessResult(None, "PROCESS_BOUNDARY_UNAVAILABLE", b"", b"", empty, empty, 0, True)
+        if pass_fds:
+            options["pass_fds"] = pass_fds
         process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, **options)
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False,
+                                   close_fds=True, **options)
         if os.name == "nt":
             job = _WindowsJob(process)
     except OSError:

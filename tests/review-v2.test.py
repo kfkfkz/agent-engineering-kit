@@ -69,6 +69,122 @@ OUTLINE = """<!-- aek-review-boundary: declared-id-v1 -->
 
 
 class ReviewV2Tests(unittest.TestCase):
+    def test_non_closing_fence_info_cannot_assign_global_code_to_a_fake_owner(self):
+        text = ('<!-- aek-review-boundary: declared-id-v1 -->\n# 设计\n## 全局约束\n'
+                '```text\n```not-a-closing-fence\n### D9：围栏中的示例\n所有接口都鉴权。\n'
+                '```another-non-closing-line\n```\n## 实现\n### D1：真实实现\n处理请求。\n')
+        previous = parse_review_documents('详细设计', {'详细设计.md': text}, 'a' * 64)
+        first = review.full_review_request_v2(previous.snapshot,
+            documents=previous.document_map(), section_texts=previous.section_map())
+        baseline = json.dumps({'schema_version': 2, 'snapshot': asdict(previous.snapshot),
+            'accepted_full_request_digest': first.request_digest,
+            'accepted_receipt_digest': '1' * 64, 'accepted_sensor_digest': '2' * 64,
+            'dependency_fingerprint': first.dependency_fingerprint,
+            'boundary_evidence_digest': first.scope_proof['boundary_evidence_digest']},
+            ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        current = parse_review_documents('详细设计', {'详细设计.md': text.replace('所有接口都鉴权。', '只校验查询接口。')}, 'a' * 64)
+        request = review.plan_review_v2(current.snapshot, baseline=baseline,
+            documents=current.document_map(), section_texts=current.section_map())
+        self.assertEqual(request.mode, 'full')
+        self.assertIn('GLOBAL_CONSTRAINT_CHANGED', request.scope_proof['reason_codes'])
+
+    def test_owner_title_with_slash_and_backslash_keeps_its_actual_section_identity(self):
+        documents = {'详细设计.md': '<!-- aek-review-boundary: declared-id-v1 -->\n# 设计\n## 实现\n### D1：读取 / 回写\\缓存\n处理请求。\n#### 失败路径\n不得遗失。\n'}
+        material = parse_review_documents('详细设计', documents, 'a' * 64)
+        first = review.full_review_request_v2(material.snapshot,
+            documents=material.document_map(), section_texts=material.section_map())
+        baseline = json.dumps({'schema_version': 2, 'snapshot': asdict(material.snapshot),
+            'accepted_full_request_digest': first.request_digest,
+            'accepted_receipt_digest': '1' * 64, 'accepted_sensor_digest': '2' * 64,
+            'dependency_fingerprint': first.dependency_fingerprint,
+            'boundary_evidence_digest': first.scope_proof['boundary_evidence_digest']},
+            ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        current = parse_review_documents('详细设计', {
+            name: text.replace('不得遗失。', '失败时必须保留原内容。') for name, text in documents.items()}, 'a' * 64)
+        request = review.plan_review_v2(current.snapshot, baseline=baseline,
+            documents=current.document_map(), section_texts=current.section_map())
+        self.assertEqual(request.mode, 'incremental', request.scope_proof)
+        self.assertIn(('详细设计.md', '设计 / 实现 / D1：读取 / 回写\\缓存 / 失败路径'), request.selected_sections)
+
+    def test_literal_parent_like_global_title_does_not_acquire_an_unrelated_owner(self):
+        documents = {'详细设计.md': '<!-- aek-review-boundary: declared-id-v1 -->\n# 设计\n## 实现\n### D1：读取\n局部处理。\n## 实现 / D1：读取 / 独立全局\n所有接口都鉴权。\n'}
+        material = parse_review_documents('详细设计', documents, 'a' * 64)
+        first = review.full_review_request_v2(material.snapshot,
+            documents=material.document_map(), section_texts=material.section_map())
+        baseline = json.dumps({'schema_version': 2, 'snapshot': asdict(material.snapshot),
+            'accepted_full_request_digest': first.request_digest,
+            'accepted_receipt_digest': '1' * 64, 'accepted_sensor_digest': '2' * 64,
+            'dependency_fingerprint': first.dependency_fingerprint,
+            'boundary_evidence_digest': first.scope_proof['boundary_evidence_digest']},
+            ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+        current = parse_review_documents('详细设计', {
+            name: text.replace('所有接口都鉴权。', '只有查询接口鉴权。') for name, text in documents.items()}, 'a' * 64)
+        request = review.plan_review_v2(current.snapshot, baseline=baseline,
+            documents=current.document_map(), section_texts=current.section_map())
+        self.assertEqual(request.mode, 'full')
+        self.assertIn('GLOBAL_CONSTRAINT_CHANGED', request.scope_proof['reason_codes'])
+
+    def test_full_plan_review_can_locate_current_task_and_test_sections(self):
+        documents = {
+            "任务清单.md": "# 任务清单\n## 任务\n### T1：查询\n对应设计：D1\n",
+            "测试方案.md": "# 测试方案\n## 用例清单\n| TC-1 | 查询 | A1 |\n",
+        }
+        material = parse_review_documents("计划", documents, "a" * 64)
+        request = review.full_review_request_v2(material.snapshot,
+            documents=material.document_map(), section_texts=material.section_map())
+        self.assertEqual(request.mode, "full")
+        sections = [item for item in material.snapshot.sections if item.defines_ids]
+        self.assertEqual({item.document for item in sections}, set(documents))
+        fingerprint = "f" * 64
+        receipt = json.loads(review.reviewer_receipt(request))
+        rows = [{"fingerprint": fingerprint, "document": item.document,
+                 "heading": item.heading, "section_digest": item.digest}
+                for item in sections]
+        receipt["issue_locations"] = sorted(rows,
+            key=lambda row: (row["fingerprint"], row["document"], row["heading"]))
+        sensor = json.dumps({"reviewer": "independent-fixture", "stage": "计划",
+                            "doc_hashes": dict(request.doc_hashes), "issues": []})
+        arguments = dict(current_snapshot=material.snapshot,
+                         known_issue_sections={fingerprint: tuple(item.key for item in sections)})
+        checked = review.validate_review_result(request, sensor, json.dumps(receipt), **arguments)
+        self.assertEqual(checked.state, "VALID", checked.reason)
+        for invalid in (receipt["issue_locations"][:1],
+                        [{**row, "section_digest": "0" * 64} for row in rows],
+                        [{**row, "fingerprint": "9" * 64} for row in rows],
+                        [{**row, "heading": "不存在的章节"} for row in rows],
+                        [{**rows[0], "document": rows[1]["document"]}, rows[1]],
+                        receipt["issue_locations"] * 2,
+                        list(reversed(receipt["issue_locations"]))):
+            with self.subTest(invalid=invalid):
+                bad = {**receipt, "issue_locations": invalid}
+                self.assertEqual(review.validate_review_result(request, sensor, json.dumps(bad),
+                    **arguments).state, "INVALID")
+        baseline = json.dumps({"schema_version": 2, "snapshot": asdict(material.snapshot),
+            "accepted_full_request_digest": request.request_digest,
+            "accepted_receipt_digest": hashlib.sha256(json.dumps(receipt).encode()).hexdigest(),
+            "accepted_sensor_digest": hashlib.sha256(sensor.encode()).hexdigest(),
+            "dependency_fingerprint": request.dependency_fingerprint,
+            "boundary_evidence_digest": request.scope_proof["boundary_evidence_digest"]},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        repeated = review.plan_review_v2(material.snapshot, baseline=baseline,
+            documents=material.document_map(), section_texts=material.section_map())
+        self.assertEqual(repeated.mode, "full", "a plan locator must not admit incremental input")
+
+    def test_full_design_global_section_still_cannot_replace_an_owner_locator(self):
+        documents = {"详细设计.md": "# 详细设计\n## 全局约束\n所有查询鉴权。\n### D1：查询\n规则。\n"}
+        material = parse_review_documents("详细设计", documents, "a" * 64)
+        request = review.full_review_request_v2(material.snapshot,
+            documents=material.document_map(), section_texts=material.section_map())
+        section = next(item for item in material.snapshot.sections if item.heading.endswith("全局约束"))
+        receipt = json.loads(review.reviewer_receipt(request))
+        receipt["issue_locations"] = [{"fingerprint": "f" * 64, "document": section.document,
+            "heading": section.heading, "section_digest": section.digest}]
+        sensor = json.dumps({"reviewer": "independent-fixture", "stage": "详细设计",
+                            "doc_hashes": dict(request.doc_hashes), "issues": []})
+        checked = review.validate_review_result(request, sensor, json.dumps(receipt),
+            current_snapshot=material.snapshot, known_issue_sections={"f" * 64: None})
+        self.assertEqual(checked.state, "INVALID")
+
     def test_full_reviewer_locator_is_current_existing_and_covers_all_known_owners(self):
         documents = {"概要设计.md": "<!-- aek-review-boundary: declared-id-v1 -->\n"
             "# 概要设计\n## 功能点设计\n### F1：查询\n查询。\n### F2：消费者\n关联 F1。\n"}

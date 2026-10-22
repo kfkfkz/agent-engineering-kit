@@ -11,10 +11,12 @@ import contextlib
 import ctypes
 import errno
 import hashlib
+import math
 import os
 import re
 import stat
 import sys
+import time
 from pathlib import Path
 
 
@@ -414,10 +416,33 @@ def fsync_dir(handle) -> None:
 
 
 @contextlib.contextmanager
-def exclusive_lock(handle):
+def exclusive_lock(handle, *, timeout: float | None = None):
+    """Lock material identity; legacy callers block, explicit deadlines do not."""
+    deadline = None
+    if timeout is not None:
+        if type(timeout) not in (int, float):
+            raise ValueError("lock timeout must be a finite non-negative number")
+        try:
+            seconds = float(timeout)
+        except OverflowError as exc:
+            raise ValueError("lock timeout must be finite") from exc
+        if not math.isfinite(seconds) or seconds < 0:
+            raise ValueError("lock timeout must be a finite non-negative number")
+        deadline = time.monotonic() + seconds
     if os.name != "nt":
         import fcntl
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if deadline is None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        else:
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(errno.ETIMEDOUT, "UI material lock timed out") from None
+                    time.sleep(min(0.05, remaining))
         try:
             yield
         finally:
@@ -430,7 +455,14 @@ def exclusive_lock(handle):
         _win_error()
     acquired = False
     try:
-        result = _kernel.WaitForSingleObject(mutex, 0xFFFFFFFF)
+        while True:
+            milliseconds = (0xFFFFFFFF if deadline is None else
+                math.ceil(max(0.0, min(deadline - time.monotonic(), 0xFFFFFFFE / 1000)) * 1000))
+            result = _kernel.WaitForSingleObject(mutex, milliseconds)
+            if result != 0x102:  # WAIT_TIMEOUT
+                break
+            if deadline is None or time.monotonic() >= deadline:
+                raise TimeoutError(errno.ETIMEDOUT, "UI material lock timed out")
         if result not in (0, 0x80):  # WAIT_OBJECT_0 / WAIT_ABANDONED
             _win_error()
         acquired = True

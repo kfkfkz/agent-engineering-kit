@@ -52,6 +52,8 @@ Agent 使用 Route Card 已冻结的路线与任务起点 Git commit，内部依
 计划中的 reason/evidence，不把模板占位文件当成待完成产物。阶段全部 skipped 时直接越过；
 部分 skipped（例如 API/数据库设计）时，硬校验、评审输入和冻结只覆盖参与文档。每个阶段
 PASS 后原有门禁入口会自动建立 plan binding；状态必须为 `FROZEN/BOUND` 才能进入真实后继。
+无 UI 影响只免除计划明确跳过的 UI 产物，不免除其他 required 设计阶段；`review=optional`
+只影响 AI 评审是否必需，不能免除硬校验、阶段门禁或计划绑定。解析失败要修解析/材料，不能改为 SKIPPED。
 残缺 plan、credential、binding、事务日志或 STALE/INVALID 一律停止并修复/显式回滚，绝不
 回退 legacy-static 猜测。已有且无动态 sidecar 的 1.0 文档继续走 legacy-static，不强制迁移。
 
@@ -133,9 +135,11 @@ context 的 stage 为 `design`，purpose=`target_evidence` 或审查的 `review_
 - 先确认用户提供的组件体系/版本/主题。用户未知时，先用 `codebase-memory` 定位前端入口、依赖和设计令牌，再读必要配置/源码；记录证据路径或 `unknown`，不得猜测。
 - 在 `docs/01-需求/<需求目录>/原始材料/ui-reference/` 运行受管 helper `python3 <已安装 design-pipeline>/scripts/ui-reference.py scaffold --repo-root <仓库根>`，UTF-8 请求 JSON 从 stdin 输入。机器标识 `change_id` 和实际目录分别表示：例如目录 `003-中文需求名称` 对应 `change_id: "CHG-003"`、`requirement_dir: "003-中文需求名称"`，编号目录必须使用 `CHG-NNN` 映射；旧 schema 1 省略 `requirement_dir` 时沿用 `change_id` 目录。`requirement_dir` 只能是安全单级目录名，截图/权限等 ID 仍使用原有稳定短 ID 校验。helper 创建 `截图索引.json` 和空 `.png` 占位；不得要求用户在对话附件上传。向用户列出需替换的文件路径、页面/状态、采集权限/版本/视口和脱敏提醒；不覆盖既有图或手改索引。
 - 用户替换后执行 `validate --repo-root <仓库根> --change-id CHG-003 --requirement-dir 003-中文需求名称` 并传播原始 JSON 结果和退出码；`record-review`、`bind-prototype` 使用同一组目录参数，旧 `CHG-*` 目录可省略 `--requirement-dir`。技术有效只说明文件可读；每个 `applies_to` 权限上下文还要独立核实页面内容适用性和当前系统新鲜度。布局可逻辑复用，但不得继承另一上下文的权限/数据可见性结论。图片不可视觉读取、未确认或不适用时，只阻断依赖它的页面/区域基线。
+- 需要观察文本时按需读取[截图观察工作流](references/screenshot-observation-workflow.md)，使用显式v2准备/记录入口；来源当前且区域足够则复用，缺失才读取[提取契约](references/screenshot-observation.md)并用获准通道定向看图，不自动调用模型。观察不代替适用性、必要视觉核对或人工确认；旧安装缺入口时只保留候选，不宣称已缓存。
+- 原型依赖组件、布局或Token源码时按需读取[源码区域基线](references/ui-source-baseline.md)，绑定实际来源及区域意图；沿原联合依赖摘要复核，不把来源哈希当语义批准或扩大上游范围。
 - 对确实可读取的图像做视觉核对；否则请维护者核实。只有已看过材料且上下文对应时才通过受限 `record-review` 更新，使用当前索引 SHA 做 CAS；不手写/替代派生状态。`git_status` 保留 `tracked/untracked/unknown` 语义，`git_staging` 单独报告 `added/modified/renamed/copied/deleted/unmerged/none/unknown`，原始截图已暂存或跟踪时告警；只读检查使用字面路径，不改写 Git 配置或索引，不自动 add/commit。Git 不可用或非仓库时为 `unknown`。
 - UI 原型使用现有 ArtifactPlan 批准的 UI 设计产物位置，并保持静态单 HTML 自包含（CSS 内联；当前 Doc Gate 禁止脚本执行以及外部/相对资源）。逐页/区域关联 UI-EV ID/摘要、权限上下文、F/A、变更意图、设计体系摘要和实际依赖；通过受限 `bind-prototype` 写索引反向引用。该 helper 不读取目标原型；冻结前由现有 UI 设计/Doc Gate 在批准根内重新读取、拒绝路径穿越/链接、核对字节与依赖摘要。
-- 使用可视预览向维护者展示 HTML 与引用截图，明确询问 `ACCEPTED / NEEDS_REVISION / BLOCKED`。只把维护者对实际预览的明确回复作为 `confirmation_source: maintainer_reply` 写入既有 UI 设计产物，绑定原型/截图/体系/权限上下文摘要、区域、F/A、评审人和时间；不得推断或复制旧 `ACCEPTED`。在可交互终端中由维护者运行 `doc-gate prototype-confirm <需求目录> --page PAGE-1 --area AREA-1 --reviewer <姓名>`；命令重新计算原型与当前全部依赖的联合摘要，显示两者并要求输入精确联合摘要短语。该命令拒绝管道/非交互调用并生成不可覆盖的本地流程凭证；它不认证操作系统用户身份，reviewer 姓名是本地记录而非数字签名。AI 不能代替维护者调用或推断此确认。摘要或任一依赖变化时，只使证据关系可达的页面/区域及确认失效，共享布局/Token 可影响多个依赖者；通过既有 Review Issue/Doc Gate 重新验证，不创建平行 Gate。
+- 需要确认时按需读取[原型确认工作流](references/prototype-confirmation-workflow.md)：展示实际 HTML/截图，旧 v1 沿原流程，新 v2 先只读准备再由维护者一次交互决定；不预填批准、不代输或复制旧确认。原 Doc Gate 核对当前摘要与权限/状态依赖，变化局部失效；不创建平行 Gate。
 
 ### 3. 硬校验循环
 
@@ -153,6 +157,11 @@ context 的 stage 为 `design`，purpose=`target_evidence` 或审查的 `review_
 
 用**未参与生成的独立子 Agent**（可用且上层指令允许委派时）做评审；不可用时清空假设做第二遍，
 并在 issues.json 中写 `"reviewer": "same-context"`（披露）。
+评审子 Agent 默认继承当前会话模型，不指定模型覆盖；仅用户明确要求时改用其他模型。
+无法确认继承或当前模型不可用时如实披露，不为省成本静默降级，也不把同上下文复核称作独立评审。
+同一文档/阶段的修订轮次优先复用原独立 Reviewer 会话，用当前受控送审输入继续核对未决问题；
+上下文复用不豁免本轮必读材料、摘要与 receipt 校验。原会话不可用、已参与编写或无法保持当前模型时
+才重建并说明原因；保留原问题和轮次，不借换会话重置评审上限。
 
 硬校验通过后，Agent 内部运行
 `.repo-memory-kit/bin/doc-gate review-input <SDD目录> --stage <阶段> --schema-version 2 --json`。
@@ -261,6 +270,12 @@ lifecycle snapshot 的确定性 PASS gate 才能派生 `CLOSED`；Agent 不手�
 
 概要设计 PASS 后按功能五件套（界面原型/业务逻辑/性能/安全/三方依赖）写通俗业务闭环，不含代码、表或字段。
 功能标题用 `### 3.1 名称`，子节用 `#### 3.1.1 界面设计`；正文用 `对应功能点：F1` 追踪，勿以 F-ID 编号。
+面向评审者的正文、评审问题和变更说明必须展开功能名称与业务含义；F/A 编号只作附带追踪，
+不能以“按 F1/见需求 A3”代替说明，也不能要求评审者先翻原始需求才能理解本稿。
+复杂交互按需补最小图：多角色/异步/先后约束用时序图，复杂状态转换或分支补偿用状态/活动图；
+不是每个功能点必画。使用业务角色与动作名称，文字规则仍完整；仅采用已安装绘图工具支持的图型，
+archify 中时序用 `sequence`、状态用 `lifecycle`、活动/分支用 `workflow`；分别读取对应 schema/示例并校验，
+不把下文 workflow 命令或回执硬套给别的图型。
 
 **业务流程图用 archify 产出**（已随 kit 安装到 `.agents` 与
 `.claude` 两棵技能树，需 Node.js ≥18）。先从**仓库根**定位 CLI，

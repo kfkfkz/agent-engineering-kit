@@ -33,4 +33,5 @@ Standard 采用“影响分析 → 仅适用的设计 → 计划 → 实现 → 
 - 按 `tdd` 做 RED→GREEN→REFACTOR；难测、过度 mock 或散弹修改视为架构反馈，不在 RED 时顺手重构。
 - 持续更新任务执行记录，但不反复冻结计划；出现契约、数据模型或范围新证据时重新路由。
 - AI 评审是 sensor，确定性工具/策略才产生 gate verdict。失败进入 `systematic-debugging`，不放宽断言。
+- 无 UI 只跳过有计划依据的 UI 阶段；进入编码前核对全部参与设计阶段为 FROZEN，不能以无页面、评审 optional 或解析报错跳过设计门禁。
 - 完成实现后完整读取 `evidence-closeout.md`。

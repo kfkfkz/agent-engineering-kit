@@ -6,6 +6,7 @@
 set -e
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
+export XDG_CONFIG_HOME="$T/config"  # 不继承调用方的真实配置/事务密钥目录
 export HOME="$T/home"          # 隔离 HOME：全局技能清理只作用于沙箱
 mkdir -p "$HOME"
 trap 'rm -rf "$T"' EXIT
@@ -36,6 +37,7 @@ echo "$INSTALL_OUT" | grep -q '/memory-capture' \
     || bad "安装完成仍输出手工 pitfall 下一步"
 assert_exists "RULES.md 安装"            "$P/docs/memory/RULES.md"
 assert_exists "README.md 创建"           "$P/docs/memory/README.md"
+assert_exists "通用协作宪章种子"         "$P/docs/memory/constitution.md"
 assert_exists "坑条目模板安装"            "$P/docs/memory/_PITFALL_TEMPLATE.md"
 assert_exists "PROFILE 模板安装"         "$P/docs/memory/_PROFILE_TEMPLATE.md"
 assert_exists "校验器随仓库安装"          "$P/.repo-memory-kit/bin/validate-memory.sh"
@@ -67,6 +69,8 @@ assert_eq "cbmignore 托管区块数=1" "$(grep -c 'repo-memory-kit:start' "$P/.
 assert_eq "CLAUDE.md 区块标记=1"  "$(grep -cF '<!-- repo-memory-kit:start -->' "$P/CLAUDE.md")" "1"
 if grep -q '/repo-delivery' "$P/CLAUDE.md"; then ok "CLAUDE.md 含 slash 工作流入口"; else bad "CLAUDE.md 缺 slash 工作流入口"; fi
 if grep -qF "\$repo-delivery" "$P/CLAUDE.md"; then ok "CLAUDE.md 含 Codex 工作流入口"; else bad "CLAUDE.md 缺 Codex 工作流入口"; fi
+assert_grep "CLAUDE.md 提示读取通用宪章" 'docs/memory/constitution.md' "$P/CLAUDE.md"
+assert_grep "AGENTS.md 提示读取通用宪章" 'docs/memory/constitution.md' "$P/AGENTS.md"
 assert_exists "安装清单 v2（manifest.json）" "$P/.repo-memory-kit/manifest.json"
 
 # 空白仓库也必须获得两类根指引；manifest 记录容器由 kit 创建，卸载可安全回收。
@@ -91,10 +95,12 @@ if grep -q '"kit_version"' "$P/.repo-memory-kit/manifest.json"; then ok "清单�
 
 # ── T2 幂等：区块/段落不重复，用户文件不覆盖 ──
 echo "CUSTOM INDEX LINE" >> "$P/docs/memory/README.md"
+echo "CUSTOM CHARTER LINE" >> "$P/docs/memory/constitution.md"
 "$KIT/install.sh" "$P" >/dev/null
 assert_eq "二次安装 cbmignore 区块仍=1" "$(grep -c 'repo-memory-kit:start' "$P/.cbmignore")" "1"
 assert_eq "二次安装 CLAUDE.md 段落仍=1" "$(grep -c '^## 项目记忆（坑与流程）' "$P/CLAUDE.md")" "1"
 if grep -q "CUSTOM INDEX LINE" "$P/docs/memory/README.md"; then ok "README 用户内容保留"; else bad "README 被覆盖"; fi
+if grep -q "CUSTOM CHARTER LINE" "$P/docs/memory/constitution.md"; then ok "宪章用户定制保留"; else bad "宪章用户定制被覆盖"; fi
 
 # ── T3 用户修改 kit 管辖文件 → conflict 保护（update/repair 均不覆盖）；
 #      kit 历史版本内容（drifted）→ --repair 显式恢复 ──
@@ -185,11 +191,13 @@ for tool in reuse-research security-review delivery-gate spec-migrate task-hando
 done
 assert_gone     "卸载：bin 目录移除"       "$P4/.repo-memory-kit/bin"
 assert_exists   "卸载：manifest.json 缩减保留（seed 残留条目）" "$P4/.repo-memory-kit/manifest.json"
-assert_grep     "缩减清单只含 seed"        '"spec_id": "memory-readme-seed"' "$P4/.repo-memory-kit/manifest.json"
+assert_grep     "缩减清单含记忆 README seed" '"spec_id": "memory-readme-seed"' "$P4/.repo-memory-kit/manifest.json"
+assert_grep     "缩减清单保留宪章 seed"     '"spec_id": "memory-constitution-seed"' "$P4/.repo-memory-kit/manifest.json"
 assert_gone     "卸载：_PITFALL_TEMPLATE.md（清单内）移除" "$P4/docs/memory/_PITFALL_TEMPLATE.md"
 if grep -qF '<!-- repo-memory-kit:start -->' "$P4/CLAUDE.md"; then bad "卸载后 CLAUDE.md 仍含区块"; else ok "卸载：CLAUDE.md 区块移除"; fi
 if [ -f "$P4/CLAUDE.md" ]; then ok "卸载：CLAUDE.md 本体保留"; else bad "卸载误删 CLAUDE.md 本体"; fi
 assert_exists   "卸载：README 索引保留"    "$P4/docs/memory/README.md"
+assert_exists   "卸载：用户宪章保留"       "$P4/docs/memory/constitution.md"
 assert_exists   "卸载：用户条目目录保留"   "$P4/docs/memory/pitfalls"
 
 # ── T15 卸载漂移保护：被修改过的 kit 文件不删 ──

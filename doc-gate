@@ -29,8 +29,8 @@
 from __future__ import annotations
 
 import argparse
-from html.parser import HTMLParser
 import hashlib
+import io
 import json
 import os
 import re
@@ -38,8 +38,8 @@ import secrets
 import stat
 import sys
 import unicodedata
-from dataclasses import asdict
-from datetime import datetime
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from pathlib import PurePosixPath
 
@@ -57,9 +57,21 @@ if not (_package_root / "aek/core/artifact/registry.py").is_file():
 sys.path.insert(0, str(_package_root))
 from aek.core.artifact.plan import load_credential_bytes, load_plan_bytes
 from aek.core.artifact.registry import ARTIFACT_REGISTRY
+from aek.core.artifact.ui_baseline import MAX_BASELINE_BYTES
+from aek.core.artifact.ui_preview import (
+    MAX_HTML_BYTES, MAX_PHYSICAL_PIXELS, MAX_PNG_BYTES, MAX_PREVIEW_REPORT_BYTES,
+    PreviewItem, PreviewReference, SelfContainedHtml as _SelfContainedHtml, build_static_preview,
+)
+from aek.core.artifact.ui_coverage import classify_ui_scope, check_ui_coverage
 from aek.core.context.budget import resolve_context_budget
 from aek.adapters.change_scope import resolve_base_commit, scan_negative_risks
 from aek.adapters import ui_filesystem as _ui_fs
+from aek.adapters.ui_image import validate_png_reader as _validate_png_reader
+from aek.adapters.ui_baseline import read_baseline as _read_ui_baseline
+from aek.adapters.ui_observation_store import (
+    ObservationStore as _UiObservationStore, extraction_contract as _extraction_contract,
+    observation_scope as _observation_scope,
+)
 from aek.adapters.telemetry import ContextLedger
 from aek.adapters.review_markdown import (
     ReviewMaterialParser, extract_trace_ids, parse_review_documents,
@@ -372,9 +384,12 @@ def _check_business_process_diagram(c, req_dir: Path, text: str) -> None:
 
 def _block(text: str, pos: int) -> str:
     """从标题位置取到下一个同级或更高级标题前的文本块。"""
-    ends = [e for e in (text.find("\n### ", pos + 1),
-                         text.find("\n## ", pos + 1)) if e != -1]
-    end = min(ends) if ends else len(text)
+    # Use the same horizontal-whitespace grammar as scenario headings. A
+    # tab-separated next heading must not leave two scenarios in one block.
+    following = re.compile(r"^#{1,3}(?!#)(?:[ \t]+|(?=\r?$)|(?=场景[ \t]*\d+：))", re.M).search(text, pos + 1)
+    # Preserve the historical block bytes: the separator newline belongs to
+    # neither block. Existing prototype dependency digests use these bytes.
+    end = following.start() - 1 if following else len(text)
     return text[pos:end]
 
 
@@ -420,14 +435,38 @@ def _load_policy(root: Path | None) -> dict:
 # ══════════════════════════ 解析器 ══════════════════════════
 
 def parse_scenarios(text: str) -> dict[str, dict]:
-    """场景 N → {前置, 操作, 结果}（值为原文，空串=缺失）。"""
+    """场景 N → fields, including indented paragraphs/lists after the colon.
+
+    Continuations belong only to the current field: a peer block, another
+    field or the next scenario cannot fill an otherwise empty value.
+    """
     out = {}
-    for m in re.finditer(r"^###\s*场景\s*(\d+)：(.*)$", text, re.M):
+    for m in re.finditer(r"^###[ \t]*场景[ \t]*(\d+)：(.*)$", text, re.M):
         block = _block(text, m.start())
-        item = {}
-        for key in ("前置", "操作", "结果"):
-            km = re.search(rf"\*\*{key}\*\*：(.*)", block)
-            item[key] = km.group(1).strip() if km else ""
+        values = {key: [] for key in ("前置", "操作", "结果")}
+        lines = [line.expandtabs(4) for line in block.splitlines()[1:]]
+        fields = [re.fullmatch(r"( *)(?:[-+*][ \t]+)?\*\*(前置|操作|结果)\*\*：[ \t]*(.*)", line)
+                  for line in lines]
+        indent = min((len(field.group(1)) for field in fields if field), default=0)
+        current, seen = None, set()
+        for line, field in zip(lines, fields):
+            if field is not None and len(field.group(1)) == indent:
+                current = field.group(2)
+                if current in seen:
+                    # Duplicate outer fields are ambiguous, not a means to
+                    # fill a required value that was explicitly left empty.
+                    values[current] = []
+                    current = None
+                    continue
+                seen.add(current)
+                values[current].append(field.group(3).strip())
+            elif current is not None and line.strip():
+                leading = len(line) - len(line.lstrip(' '))
+                if leading <= indent or line.lstrip().startswith('#'):
+                    current = None
+                elif re.fullmatch(r"(?:[-+*]|\d+[.)])\s*(?:\[[ xX]\])?\s*", line.strip()) is None:
+                    values[current].append(line.strip())
+        item = {key: '\n'.join(value for value in rows if value) for key, rows in values.items()}
         out[m.group(1)] = item
     return out
 
@@ -579,6 +618,11 @@ def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, st
         if dynamic_state.state != "FROZEN" or dynamic_state.plan is None:
             return "INVALID", f"动态计划不可用：{dynamic_state.reason}"
         if not participating_documents(dynamic_state.plan, stage):
+            if stage == 'UI设计':
+                coverage_checks = Checks(stage)
+                scope = _current_ui_coverage(coverage_checks, req_dir, dynamic_state, False)
+                if scope is None or not scope.complete or scope.required:
+                    return 'INVALID', 'UI classification does not prove a current NON_UI scope'
             return "SKIPPED", "ArtifactPlan 已证明本阶段无需产物"
         states = evaluate_stage_states(
             dynamic_state, _dynamic_snapshots(req_dir, dynamic_state))
@@ -770,89 +814,8 @@ def _check_placeholders(c: Checks, doc: str, text: str) -> None:
 
 _PROTOTYPE_BLOCK = re.compile(r"(?ms)^```aek-prototypes\s*\n(.*?)^```\s*$")
 _PROTOTYPE_DIGEST = re.compile(r"^[0-9a-f]{64}$")
-_PROTOTYPE_MAX_BYTES = 5 * 1024 * 1024
+_PROTOTYPE_MAX_BYTES = MAX_HTML_BYTES
 _SCREENSHOT_MAX_BYTES = 200 * 1024 * 1024
-
-
-class _SelfContainedHtml(HTMLParser):
-    """Conservative static check: the preview cannot load remote/local resources."""
-    _URL_ATTRS = {"src", "srcset", "imagesrcset", "attributionsrc", "poster", "data", "action", "formaction",
-                  "background", "ping", "lowsrc", "dynsrc", "longdesc", "codebase",
-                  "archive", "manifest"}
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.errors: list[str] = []
-        self._style_depth = 0
-
-    @staticmethod
-    def _safe_data_url(value: str) -> bool:
-        return bool(re.match(r"(?i)^data:image/(?:png|jpeg|gif|webp);base64,", value.strip()))
-
-    @staticmethod
-    def _unsafe_css(value: str) -> bool:
-        # This is deliberately not a CSS tokenizer. Reject comment delimiters
-        # instead of stripping them with a regex that could mistake text inside
-        # a quoted CSS string for a real comment and hide a later url().
-        if "/*" in value or "*/" in value:
-            return True
-        value = re.sub(r"\\(?:\r\n|\n|\r|\f)", "", value)
-        def unescape(match: re.Match[str]) -> str:
-            try:
-                return chr(int(match.group(1), 16))
-            except (ValueError, OverflowError):
-                return " "
-        value = re.sub(r"\\([0-9a-fA-F]{1,6})\s?", unescape, value)
-        value = re.sub(r"\\([^\r\n])", r"\1", value)
-        return bool(re.search(r"(?i)url\s*\(|@import", value))
-
-    def _attrs(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attrs_map = {name.lower(): (value or "") for name, value in attrs}
-        if len(attrs_map) != len(attrs):
-            self.errors.append(f"duplicate HTML attribute: {tag}")
-        if any(name.startswith("on") for name in attrs_map):
-            self.errors.append("event-handler attributes are not allowed")
-        if any(name in {"xlink:href", "xml:base"} for name in attrs_map):
-            self.errors.append("namespaced resource references are not allowed")
-        if tag.lower() in {"iframe", "frame", "object", "embed", "applet", "portal", "base", "form"}:
-            self.errors.append(f"forbidden resource element: {tag}")
-        if tag.lower() == "script":
-            self.errors.append("script execution is disabled in prototype previews")
-        if tag.lower() == "meta" and attrs_map.get("http-equiv", "").lower() == "refresh":
-            self.errors.append("automatic navigation is not allowed in prototype previews")
-        for name in self._URL_ATTRS:
-            value = attrs_map.get(name)
-            if value is None or not value.strip():
-                continue
-            if name == "src" and tag.lower() in {"img", "source"} and self._safe_data_url(value):
-                continue
-            self.errors.append(f"non-self-contained {name} attribute")
-        href = attrs_map.get("href")
-        if href and tag.lower() != "a":
-            self.errors.append("non-self-contained href attribute")
-        elif href and tag.lower() == "a" and not href.startswith("#"):
-            self.errors.append("external navigation is not allowed in prototype preview")
-        style = attrs_map.get("style", "")
-        if style and self._unsafe_css(style):
-            self.errors.append("CSS resource reference is not allowed")
-        if tag.lower() == "script" and "src" in attrs_map:
-            self.errors.append("external script is not allowed")
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._attrs(tag, attrs)
-        if tag.lower() == "style":
-            self._style_depth += 1
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self._attrs(tag, attrs)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "style" and self._style_depth:
-            self._style_depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        if self._style_depth and self._unsafe_css(data):
-            self.errors.append("CSS resource reference is not allowed")
 
 
 def _open_dir_nofollow(path: Path):
@@ -957,22 +920,55 @@ def _expected_ui_evidence_path(row: dict) -> str:
 
 
 def _prototype_confirmation_digest(page_id: str, area_id: str,
-                                   prototype_digest: str, dependency_digest: str) -> str:
+                                   prototype_digest: str, dependency_digest: str, *,
+                                   state_id=None, context_id=None, scope_digest=None) -> str:
     value = {"page_id": page_id, "area_id": area_id,
              "prototype_sha256": prototype_digest,
              "dependency_sha256": dependency_digest}
+    if any(part is not None for part in (state_id, context_id, scope_digest)):
+        _prototype_target({'page_id': page_id, 'area_id': area_id,
+                           'state_id': state_id, 'context_id': context_id}, 2)
+        if type(scope_digest) is not str or not _PROTOTYPE_DIGEST.fullmatch(scope_digest):
+            raise ValueError('invalid prototype scope digest')
+        value.update(schema_version=2, state_id=state_id, context_id=context_id, scope_digest=scope_digest)
     return hashlib.sha256(json.dumps(
         value, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _prototype_confirmation_path(page_id: str, area_id: str,
-                                 prototype_digest: str, dependency_digest: str) -> str:
+                                 prototype_digest: str, dependency_digest: str, **identity) -> str:
     if (not re.fullmatch(r"PAGE-[A-Z0-9_-]{1,56}", page_id)
             or not re.fullmatch(r"AREA-[A-Z0-9_-]{1,56}", area_id)
             or not _PROTOTYPE_DIGEST.fullmatch(prototype_digest)
             or not _PROTOTYPE_DIGEST.fullmatch(dependency_digest)):
         raise ValueError("invalid prototype confirmation identity")
+    if identity:
+        return 'v2-' + _prototype_confirmation_digest(
+            page_id, area_id, prototype_digest, dependency_digest, **identity) + '.json'
     return f"{page_id}--{area_id}--{prototype_digest}--{dependency_digest}.json"
+
+
+def _prototype_target(item: dict, schema_version: int) -> tuple:
+    keys = ('page_id', 'area_id') if schema_version == 1 else ('page_id', 'area_id', 'state_id', 'context_id')
+    if any(type(item.get(key)) is not str for key in keys):
+        raise ValueError('invalid prototype target identity')
+    if schema_version == 2 and (
+            not re.fullmatch(r'PAGE-[1-9][0-9]*', item['page_id'])
+            or not re.fullmatch(r'AREA-[1-9][0-9]*', item['area_id'])
+            or item['state_id'] not in {'default', 'loading', 'empty', 'error', 'dialog', 'drawer', 'permission'}
+            or not re.fullmatch(r'[A-Z][A-Z0-9_-]{0,31}', item['context_id'])):
+        raise ValueError('invalid prototype state or context identity')
+    return tuple(item[key] for key in keys)
+
+
+def _prototype_baseline_key(target: tuple, baselines: dict) -> tuple:
+    # A shared legacy layout remains explicit. Typed mappings never fall back
+    # to another state/context, and mixed shared/typed declarations are invalid.
+    if target in baselines:
+        return target
+    if target[:2] in baselines:
+        return target[:2]
+    raise ValueError('UI source baseline is missing the prototype state/context')
 
 
 def _prototype_manifest(text: str) -> dict:
@@ -981,7 +977,9 @@ def _prototype_manifest(text: str) -> dict:
         raise ValueError("UI设计必须且只能包含一个 aek-prototypes JSON 区块")
     manifest = json.loads(blocks[0].group(1), object_pairs_hook=_unique_json_object)
     if (not isinstance(manifest, dict) or set(manifest) != {"schema_version", "prototypes"}
-            or manifest.get("schema_version") != 1 or not isinstance(manifest.get("prototypes"), list)):
+            or type(manifest.get('schema_version')) is not int or manifest['schema_version'] not in (1, 2)
+            or not isinstance(manifest.get("prototypes"), list) or not manifest['prototypes']
+            or (manifest['schema_version'] == 2 and len(manifest['prototypes']) > 32)):
         raise ValueError("原型确认清单格式无效")
     return manifest
 
@@ -989,11 +987,18 @@ def _prototype_manifest(text: str) -> dict:
 def _write_prototype_confirmation(req_dir: Path, page_id: str, area_id: str,
                                   prototype_digest: str, dependency_digest: str,
                                   reviewer: str, reviewed_at: str,
-                                  phrase: str) -> Path:
+                                  phrase: str, *, selection=None, **identity) -> Path:
     """Create immutable local confirmation evidence; never replace an existing receipt."""
     confirmation_digest = _prototype_confirmation_digest(
-        page_id, area_id, prototype_digest, dependency_digest)
-    if phrase != f"ACCEPT {confirmation_digest[:12]}":
+        page_id, area_id, prototype_digest, dependency_digest, **identity)
+    expected_phrase = f"ACCEPT {confirmation_digest[:12]}"
+    if selection is not None:
+        if not identity:
+            raise ValueError('a batch selection requires an explicit v2 identity')
+        expected_phrase = _prototype_selection_phrase(selection, {
+            'page_id': page_id, 'area_id': area_id, 'prototype_sha256': prototype_digest,
+            'dependency_sha256': dependency_digest, **identity})
+    if phrase != expected_phrase:
         raise ValueError("confirmation phrase does not match prototype and dependency digests")
     reviews = req_dir / "reviews"
     root_fd = _open_dir_nofollow(req_dir)
@@ -1005,7 +1010,7 @@ def _write_prototype_confirmation(req_dir: Path, page_id: str, area_id: str,
         receipts_fd = _ui_fs.open_child_dir(reviews_fd, "ui-prototype-confirmations", create=True)
         try:
             name = _prototype_confirmation_path(
-                page_id, area_id, prototype_digest, dependency_digest)
+                page_id, area_id, prototype_digest, dependency_digest, **identity)
             receipt = {
                 "schema_version": 1, "decision": "ACCEPTED", "page_id": page_id,
                 "area_id": area_id, "prototype_sha256": prototype_digest,
@@ -1013,6 +1018,10 @@ def _write_prototype_confirmation(req_dir: Path, page_id: str, area_id: str,
                 "reviewed_at": reviewed_at, "confirmation_method": "interactive_tty",
                 "confirmation_phrase": phrase,
             }
+            if identity:
+                receipt.update(schema_version=2, **identity)
+            if selection is not None:
+                receipt['selection'] = selection
             data = (json.dumps(receipt, ensure_ascii=False, sort_keys=True,
                                separators=(",", ":")) + "\n").encode("utf-8")
             temporary = f".{name}.tmp-{secrets.token_hex(8)}"
@@ -1040,10 +1049,118 @@ def _write_prototype_confirmation(req_dir: Path, page_id: str, area_id: str,
         _ui_fs.close_dir(reviews_fd)
 
 
+def _ui_observation_contract() -> dict:
+    if not _installed_layout:
+        return _extraction_contract(_script_dir / 'skills/design-pipeline')
+    # Both installed surfaces are managed copies of the same resource. Missing
+    # client trees are allowed; conflicting/unsafe copies must not be selected
+    # by fallback. Nothing in candidate material chooses a prompt path.
+    contracts = []
+    for surface in ('.agents', '.claude'):
+        skill_root = _script_dir.parent.parent / surface / 'skills/design-pipeline'
+        try:
+            handle = _ui_fs.open_absolute_dir(skill_root)
+        except FileNotFoundError:
+            continue
+        _ui_fs.close_dir(handle)
+        contracts.append(_extraction_contract(skill_root))
+    if not contracts or any(item != contracts[0] for item in contracts):
+        raise ValueError('current managed observation contract is unavailable or inconsistent')
+    return contracts[0]
+
+
+def _ui_observation_evidence_state(evidence: dict, context_ids: set[str]) -> dict:
+    # Unselected permission contexts and reverse projection updates are not
+    # dependencies of this consumer. Selected applicability remains mandatory.
+    return {**{key: value for key, value in evidence.items()
+               if key not in ('applies_to', 'prototype_refs')},
+            'applies_to': [item for item in evidence.get('applies_to', [])
+                          if isinstance(item, dict) and item.get('context_id') in context_ids]}
+
+
+def _verify_ui_observation_refs(material_fd, regions, scope, contract, image_digests) -> None:
+    refs = [(region['region_id'], ref) for region in regions
+            for ref in region.get('observations', [])]
+    if not refs:
+        return
+    with _UiObservationStore(material_fd, create=False) as store:
+        for region_id, ref in refs:
+            source = {'scope_digest': scope, 'evidence_id': ref['evidence_id'],
+                      'image_sha256': image_digests[ref['evidence_id']]}
+            store.verify_current(source, contract, (region_id,), ref['sha256'])
+
+
+def _current_ui_coverage(c: Checks, req_dir: Path, dynamic_state, plan_required: bool):
+    """Read classification facts from the original reviewed upstream, not UI.
+
+    Legacy v1 without classification/ArtifactPlan keeps its original behavior.
+    A dynamic plan cannot waive missing classification by deleting a UI block.
+    Only bounded text is read here; NON_UI never touches screenshot storage.
+    """
+    try:
+        root = _open_dir_nofollow(req_dir)
+        try:
+            try:
+                overview_raw = _read_beneath(root, '概要设计.md', 10 * 1024 * 1024)
+            except FileNotFoundError:
+                if dynamic_state is None:
+                    return None
+                raise ValueError('UI classification upstream overview is missing')
+            overview = overview_raw.decode('utf-8', errors='strict')
+            starts = list(re.finditer(r'^```aek-ui-classification[ \t]*$', overview, re.M))
+            if not starts and dynamic_state is None:
+                return None
+            blocks = list(re.finditer(r'^```aek-ui-classification[ \t]*\r?\n(.*?)^```[ \t]*$',
+                                      overview, re.M | re.S))
+            if len(starts) != 1 or len(blocks) != 1:
+                raise ValueError('UI classification needs one complete upstream JSON block')
+            raw = blocks[0].group(1)
+            if len(raw.encode('utf-8')) > 256 * 1024:
+                raise ValueError('UI classification exceeds byte limit')
+            classification = json.loads(raw, object_pairs_hook=_unique_json_object)
+            requirements_raw = _read_beneath(root, '需求分析.md', 10 * 1024 * 1024)
+        finally:
+            _ui_fs.close_dir(root)
+        requirements = requirements_raw.decode('utf-8', errors='strict')
+        material = parse_review_documents('UI设计', {
+            '需求分析.md': requirements, '概要设计.md': overview}, '0' * 64)
+        feature_ids, acceptance_ids = [], []
+        for section in material.snapshot.sections:
+            for ident in section.defines_ids:
+                if section.document == '概要设计.md' and re.fullmatch(r'F[1-9][0-9]*', ident):
+                    feature_ids.append(ident)
+                if section.document == '需求分析.md' and re.fullmatch(r'A[1-9][0-9]*', ident):
+                    acceptance_ids.append(ident)
+        upstream_current = (material.snapshot.parse_complete and not material.snapshot.unknown_edges
+                            and stage_frozen(req_dir, '概要设计', dynamic_state)[0] == 'FROZEN')
+        root = _open_dir_nofollow(req_dir)
+        try:
+            if (_read_beneath(root, '概要设计.md', 10 * 1024 * 1024) != overview_raw
+                    or _read_beneath(root, '需求分析.md', 10 * 1024 * 1024) != requirements_raw):
+                raise ValueError('UI classification upstream changed during validation')
+        finally:
+            _ui_fs.close_dir(root)
+        scope = classify_ui_scope(feature_ids=feature_ids, acceptance_ids=acceptance_ids,
+            classification=classification,
+            requirements_sha256=hashlib.sha256(requirements_raw).hexdigest(),
+            upstream_current=upstream_current, plan_required=plan_required)
+        scope = replace(scope, upstream_sha256=hashlib.sha256(
+            hashlib.sha256(requirements_raw).digest() + hashlib.sha256(overview_raw).digest()).hexdigest())
+        c.add('prototype', '上游 UI 分类完整且当前', scope.complete,
+              '；'.join(scope.gaps) + ('；缺口已截断' if scope.truncated else ''))
+        return scope
+    except (OSError, ValueError, KeyError, TypeError, UnicodeError, RecursionError) as exc:
+        c.add('prototype', '上游 UI 分类完整且当前', False, str(exc))
+        # A non-complete immutable scope ensures callers never continue to IO.
+        return classify_ui_scope(feature_ids=(), acceptance_ids=(), classification=None,
+            requirements_sha256='', upstream_current=False, plan_required=plan_required)
+
+
 def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                          require_confirmation: bool = True,
                          dependency_out: dict | None = None,
-                         dynamic_state=None) -> None:
+                         dynamic_state=None, selected_targets=None, preparation_out=None,
+                         preview_out=None) -> None:
     """Re-read accepted UI prototypes and evidence at the existing UI stage gate."""
     blocks = list(_PROTOTYPE_BLOCK.finditer(text))
     required = "<!-- aek-prototypes:required -->" in text
@@ -1054,6 +1171,11 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
             return
         # The reviewed document cannot opt out of its authoritative plan.
         required = required or dynamic_state.plan.by_id("ui-design").classification == "required"
+    coverage = _current_ui_coverage(c, req_dir, dynamic_state, required)
+    if coverage is not None:
+        if not coverage.complete:
+            return
+        required = required or bool(coverage.required)
     if not blocks:
         if required:
             c.add("prototype", "原型确认清单存在", False, "缺少 aek-prototypes JSON 区块")
@@ -1062,11 +1184,8 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
         c.add("prototype", "原型确认清单唯一", False, "只能有一个 aek-prototypes JSON 区块")
         return
     try:
-        manifest = json.loads(blocks[0].group(1), object_pairs_hook=_unique_json_object)
-        if (not isinstance(manifest, dict) or set(manifest) != {"schema_version", "prototypes"}
-                or type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1
-                or not isinstance(manifest["prototypes"], list) or not manifest["prototypes"]):
-            raise ValueError("invalid prototype manifest schema")
+        manifest = _prototype_manifest(text)
+        version = manifest['schema_version']
         repo_root = req_dir.parents[2]
         approved_root = req_dir.relative_to(repo_root).as_posix()
         root_fd = _open_dir_nofollow(req_dir)
@@ -1100,6 +1219,13 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                         or screenshot["id"] in screenshots):
                     raise ValueError("screenshot index has invalid or duplicate UI-EV IDs")
                 screenshots[screenshot["id"]] = screenshot
+            if coverage is not None:
+                mapped = check_ui_coverage(coverage, manifest['prototypes'], index['screenshots'],
+                                           selected_targets=selected_targets)
+                c.add('ui-coverage', '上游 UI 义务反向覆盖', mapped.complete,
+                      '；'.join(mapped.gaps) + ('；缺口已截断' if mapped.truncated else ''))
+                if not mapped.complete:
+                    return
             design_system = index.get("design_system")
             if not isinstance(design_system, dict):
                 raise ValueError("截图索引缺少设计体系")
@@ -1118,8 +1244,36 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                 match.group(1): _block(text, match.start())
                 for match in re.finditer(r"^###\s*(PAGE-\d+)：", text, re.M)
             }
-            seen: set[tuple[str, str]] = set()
+            # Opt-in v2 source/region projection. Legacy manifests and receipt
+            # schemas stay unchanged; a declared baseline joins the existing
+            # dependency hash and cannot manufacture an approval.
+            baseline_blocks = list(re.finditer(r'^```aek-ui-baseline\s*\n(.*?)\n```', text, re.M | re.S))
+            baseline_starts = list(re.finditer(r'^```aek-ui-baseline\s*$', text, re.M))
+            baselines = None
+            if baseline_starts:
+                if len(baseline_starts) != 1 or len(baseline_blocks) != 1:
+                    raise ValueError('UI source baseline must have one complete JSON block')
+                raw_baseline = baseline_blocks[0].group(1)
+                if len(raw_baseline.encode('utf-8', errors='strict')) > MAX_BASELINE_BYTES:
+                    raise ValueError('UI source baseline exceeds byte limit')
+                baseline_manifest = json.loads(raw_baseline, object_pairs_hook=_unique_json_object)
+                baselines = _read_ui_baseline(repo_root, baseline_manifest)
+                prototype_targets = {_prototype_baseline_key(_prototype_target(item, version), baselines)
+                                     for item in manifest['prototypes']}
+                if set(baselines) != prototype_targets:
+                    raise ValueError('UI source baseline targets do not match current prototypes')
+            seen = set()
             errors: list[str] = []
+            pending_dependencies = {}
+            pending_preparations = {}
+            pending_previews = {}
+            typed_targets = {}
+            observation_targets = {}
+            has_observations = baselines is not None and any(
+                region.get('observations') for region in baseline_manifest['regions'])
+            observation_contract = None
+            observation_scope = (_observation_scope(repo_root, req_dir.name, index['change_id'])
+                                 if has_observations else None)
             for number, item in enumerate(manifest["prototypes"], 1):
                 where = f"prototypes[{number}]"
                 required_keys = {"prototype_path", "prototype_sha256", "page_id", "area_id",
@@ -1127,30 +1281,53 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                                  "artifact_plan_id", "gate_digest", "approved_root", "status",
                                  "reviewer", "reviewed_at", "confirmation_source", "evidence_contexts",
                                  "design_system_sha256", "dependency_sha256"}
+                if version == 2:
+                    required_keys -= {'status', 'reviewer', 'reviewed_at', 'confirmation_source', 'dependency_sha256'}
+                    required_keys |= {'state_id', 'context_id'}
                 if not isinstance(item, dict) or set(item) != required_keys:
                     errors.append(f"{where}: schema mismatch")
                     continue
-                if (item["status"] != "ACCEPTED" or item["confirmation_source"] != "maintainer_reply"
+                if version == 2:
+                    if (len(json.dumps(item, ensure_ascii=False, allow_nan=False).encode('utf-8')) > 64 * 1024
+                            or type(item['artifact_plan_id']) is not str or not item['artifact_plan_id'].strip()
+                            or len(item['artifact_plan_id']) > 120 or '\0' in item['artifact_plan_id']
+                            or type(item['gate_digest']) is not str
+                            or not _PROTOTYPE_DIGEST.fullmatch(item['gate_digest'])):
+                        raise ValueError('invalid v2 prototype metadata or byte limit')
+                    for key, prefix in (('feature_ids', 'F'), ('acceptance_ids', 'A')):
+                        ids = item[key]
+                        if (type(ids) is not list or not ids or len(ids) > 128
+                                or any(type(ident) is not str or not re.fullmatch(prefix + r'[1-9][0-9]*', ident)
+                                       for ident in ids) or len(ids) != len(set(ids))):
+                            raise ValueError('invalid v2 prototype trace identities')
+                target = _prototype_target(item, version)
+                if target in seen:
+                    raise ValueError('duplicate prototype target identity')
+                seen.add(target)
+                if selected_targets is not None and target not in selected_targets:
+                    continue
+                if version == 1 and (item["status"] != "ACCEPTED" or item["confirmation_source"] != "maintainer_reply"
                         or not isinstance(item["reviewer"], str)
                         or not item["reviewer"].strip() or not isinstance(item["reviewed_at"], str)
                         or not item["reviewed_at"].strip()):
                     errors.append(f"{where}: ACCEPTED requires a named maintainer and timestamp")
                     continue
-                try:
-                    reviewed_at = datetime.fromisoformat(item["reviewed_at"].replace("Z", "+00:00"))
-                except (ValueError, AttributeError):
-                    errors.append(f"{where}: invalid review timestamp")
-                    continue
-                if reviewed_at.tzinfo is None:
-                    errors.append(f"{where}: review timestamp must include a timezone")
-                    continue
+                if version == 1:
+                    try:
+                        reviewed_at = datetime.fromisoformat(item["reviewed_at"].replace("Z", "+00:00"))
+                    except (ValueError, AttributeError):
+                        errors.append(f"{where}: invalid review timestamp")
+                        continue
+                    if reviewed_at.tzinfo is None:
+                        errors.append(f"{where}: review timestamp must include a timezone")
+                        continue
                 path = item["prototype_path"]
                 page_id, area_id = item["page_id"], item["area_id"]
                 id_lists_ok = (isinstance(item["feature_ids"], list) and item["feature_ids"]
                                and all(re.fullmatch(r"F[1-9][0-9]*", str(x)) for x in item["feature_ids"])
                                and isinstance(item["acceptance_ids"], list) and item["acceptance_ids"]
                                and all(re.fullmatch(r"A[1-9][0-9]*", str(x)) for x in item["acceptance_ids"]))
-                if ((page_id, area_id) in seen or item["approved_root"] != approved_root
+                if (item["approved_root"] != approved_root
                         or not isinstance(page_id, str) or not re.fullmatch(r"PAGE-[A-Z0-9_-]+", page_id)
                         or not isinstance(area_id, str) or not re.fullmatch(r"AREA-[A-Z0-9_-]+", area_id)
                         or not id_lists_ok or not isinstance(item["change_intent"], str)
@@ -1159,7 +1336,7 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                         or not _PROTOTYPE_DIGEST.fullmatch(str(item["prototype_sha256"]))
                         or not _PROTOTYPE_DIGEST.fullmatch(str(item["gate_digest"]))
                         or item["design_system_sha256"] != design_digest
-                        or not _PROTOTYPE_DIGEST.fullmatch(str(item["dependency_sha256"]))
+                        or (version == 1 and not _PROTOTYPE_DIGEST.fullmatch(str(item["dependency_sha256"])))
                         or not isinstance(item["depends_on"], list) or not item["depends_on"]
                         or any(not isinstance(value, str) for value in item["depends_on"])
                         or len(item["depends_on"]) != len(set(item["depends_on"]))
@@ -1174,7 +1351,6 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                 if page_block is None or not re.search(rf"\b{re.escape(area_id)}\b", page_block):
                     errors.append(f"{where}: PAGE/AREA is not present in the current UI design")
                     continue
-                seen.add((page_id, area_id))
                 try:
                     raw = _read_beneath(root_fd, path, _PROTOTYPE_MAX_BYTES)
                     actual_digest = hashlib.sha256(raw).hexdigest()
@@ -1193,7 +1369,11 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                                 or not isinstance(pair["context_id"], str)
                                 or pair["evidence_id"] not in item["depends_on"]):
                             raise ValueError("evidence_contexts contains an invalid UI-EV/context mapping")
+                        if version == 2 and pair['context_id'] in selected_contexts.get(pair['evidence_id'], set()):
+                            raise ValueError('duplicate v2 evidence context mapping')
                         selected_contexts.setdefault(pair["evidence_id"], set()).add(pair["context_id"])
+                        if version == 2 and pair['context_id'] != item['context_id']:
+                            raise ValueError('prototype context does not match selected evidence context')
                     if set(selected_contexts) != set(item["depends_on"]):
                         raise ValueError("every UI-EV dependency must name at least one permission context")
                     dependency_rows = []
@@ -1201,6 +1381,8 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                         evidence = screenshots.get(evidence_id)
                         if evidence is None:
                             raise ValueError(f"unknown UI-EV: {evidence_id}")
+                        if version == 2 and evidence.get('state') != item['state_id']:
+                            raise ValueError('prototype state does not match actual screenshot state')
                         validation = evidence.get("validation", {})
                         if not isinstance(validation, dict):
                             raise ValueError(f"invalid UI-EV validation record: {evidence_id}")
@@ -1247,6 +1429,9 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                         confirmed_by_id = {context["context_id"]: context for context in confirmed
                                            if isinstance(context.get("context_id"), str)}
                         target_ids = selected_contexts[evidence_id]
+                        if version == 2 and sum(context.get('context_id') == item['context_id']
+                                for context in contexts if isinstance(context, dict)) != 1:
+                            raise ValueError('prototype context must identify one actual evidence context')
                         if not target_ids <= confirmed_by_id.keys():
                             raise ValueError(f"UI-EV lacks current visual/context confirmation: {evidence_id}")
                         dependency_rows.append({"id": evidence_id, "sha256": digest,
@@ -1268,6 +1453,11 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                                    and ref.get("artifact_plan_id") == item["artifact_plan_id"]
                                    and ref.get("gate_digest") == item["gate_digest"]
                                    and ref.get("approved_root") == approved_root
+                                   and ((version == 1 and 'schema_version' not in ref)
+                                        or (version == 2 and type(ref.get('schema_version')) is int
+                                        and ref.get('schema_version') == 2
+                                        and ref.get('state_id') == item['state_id']
+                                        and ref.get('context_id') == item['context_id']))
                                    for ref in bound if isinstance(ref, dict)):
                             raise ValueError(f"UI-EV reverse reference is stale: {evidence_id}")
                     dependency_snapshot = {
@@ -1278,16 +1468,68 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                                        for ident in sorted(item["acceptance_ids"])},
                         "evidence": sorted(dependency_rows, key=lambda row: row["id"]),
                     }
+                    receipt_identity = {}
+                    if version == 2:
+                        receipt_identity = {'state_id': item['state_id'], 'context_id': item['context_id'],
+                            'scope_digest': _observation_scope(repo_root, req_dir.name, index['change_id'])}
+                        dependency_snapshot['prototype_context'] = {
+                            'schema_version': 2, 'scope_digest': receipt_identity['scope_digest'], 'spec': item}
+                    if baselines is not None:
+                        baseline = baselines[_prototype_baseline_key(target, baselines)]
+                        if baseline['gaps']:
+                            raise ValueError('UI source baseline requires revalidation: ' +
+                                ','.join(row['source_id'] for row in baseline['gaps'][:8]))
+                        for region in baseline['regions']:
+                            if (not set(region['feature_ids']) <= set(item['feature_ids'])
+                                    or not set(region['acceptance_ids']) <= set(item['acceptance_ids'])
+                                    or not set(region['screenshot_ids']) <= set(item['depends_on'])):
+                                raise ValueError('UI source baseline references outside prototype scope')
+                        observation_ids = {ref['evidence_id'] for region in baseline['regions']
+                                           for ref in region.get('observations', [])}
+                        if observation_ids:
+                            if observation_contract is None:
+                                observation_contract = _ui_observation_contract()
+                            image_digests = {row['id']: row['sha256'] for row in dependency_rows}
+                            _verify_ui_observation_refs(material_fd, baseline['regions'],
+                                observation_scope, observation_contract, image_digests)
+                            observation_targets[target] = {
+                                'regions': baseline['regions'],
+                                'image_digests': {ident: image_digests[ident] for ident in observation_ids},
+                                'context_ids': {ident: selected_contexts[ident] for ident in observation_ids},
+                                'evidence': {ident: _ui_observation_evidence_state(screenshots[ident],
+                                    selected_contexts[ident]) for ident in observation_ids}}
+                        dependency_snapshot['ui_baseline_sha256'] = baseline['digest']
                     dependency_digest = hashlib.sha256(json.dumps(
                         dependency_snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":")
                     ).encode("utf-8")).hexdigest()
-                    if dependency_digest != item["dependency_sha256"]:
+                    if version == 1 and dependency_digest != item["dependency_sha256"]:
                         raise ValueError(f"prototype dependency digest is stale (current {dependency_digest})")
-                    if dependency_out is not None:
-                        dependency_out[(page_id, area_id)] = dependency_digest
+                    pending_dependencies[target] = dependency_digest
+                    if version == 2:
+                        pending_preparations[target] = {key: item[key] for key in
+                            ('page_id', 'area_id', 'state_id', 'context_id', 'prototype_path')}
+                        pending_preparations[target].update(
+                            prototype_sha256=actual_digest, dependency_sha256=dependency_digest,
+                            scope_digest=receipt_identity['scope_digest'],
+                            evidence_contexts=[{'evidence_id': row['id'], 'contexts': row['contexts']}
+                                               for row in dependency_rows])
+                        if preview_out is not None:
+                            pending_previews[target] = [{
+                                'evidence_id': row['id'], 'image_sha256': row['sha256'],
+                                'path': _expected_ui_evidence_path(screenshots[row['id']]),
+                                'bytes': screenshots[row['id']]['validation']['bytes']}
+                                for row in dependency_rows]
+                        typed_targets[target] = {
+                            'item': item, 'page_block': page_block,
+                            'features': dependency_snapshot['features'],
+                            'acceptance': dependency_snapshot['acceptance'],
+                            'image_digests': {row['id']: row['sha256'] for row in dependency_rows},
+                            'context_ids': selected_contexts,
+                            'evidence': {ident: _ui_observation_evidence_state(screenshots[ident], ids)
+                                         for ident, ids in selected_contexts.items()}}
                     if require_confirmation:
                         confirmation_rel = _prototype_confirmation_path(
-                            page_id, area_id, actual_digest, dependency_digest)
+                            page_id, area_id, actual_digest, dependency_digest, **receipt_identity)
                         reviews_fd = _open_dir_nofollow(req_dir / "reviews")
                         try:
                             confirmations_fd = _ui_fs.open_child_dir(
@@ -1301,33 +1543,195 @@ def _check_ui_prototypes(c: Checks, req_dir: Path, text: str, *,
                         finally:
                             _ui_fs.close_dir(reviews_fd)
                         identity_digest = _prototype_confirmation_digest(
-                            page_id, area_id, actual_digest, dependency_digest)
+                            page_id, area_id, actual_digest, dependency_digest, **receipt_identity)
+                        confirmation_keys = {"schema_version", "decision", "page_id", "area_id",
+                            "prototype_sha256", "dependency_sha256", "reviewer", "reviewed_at",
+                            "confirmation_method", "confirmation_phrase"} | set(receipt_identity)
+                        expected_phrase = f"ACCEPT {identity_digest[:12]}"
+                        if version == 2 and isinstance(confirmation, dict) and 'selection' in confirmation:
+                            confirmation_keys.add('selection')
+                            expected_phrase = _prototype_selection_phrase(
+                                confirmation['selection'], pending_preparations[target])
                         if (not isinstance(confirmation, dict)
-                                or set(confirmation) != {"schema_version", "decision", "page_id", "area_id",
-                                                         "prototype_sha256", "dependency_sha256", "reviewer",
-                                                         "reviewed_at", "confirmation_method",
-                                                         "confirmation_phrase"}
+                                or set(confirmation) != confirmation_keys
                                 or type(confirmation.get("schema_version")) is not int
-                                or confirmation.get("schema_version") != 1
+                                or confirmation.get("schema_version") != version
                                 or confirmation.get("decision") != "ACCEPTED"
                                 or confirmation.get("page_id") != page_id
                                 or confirmation.get("area_id") != area_id
                                 or confirmation.get("prototype_sha256") != actual_digest
                                 or confirmation.get("dependency_sha256") != dependency_digest
-                                or confirmation.get("reviewer") != item["reviewer"]
-                                or confirmation.get("reviewed_at") != item["reviewed_at"]
+                                or (version == 1 and confirmation.get("reviewer") != item["reviewer"])
+                                or (version == 1 and confirmation.get("reviewed_at") != item["reviewed_at"])
+                                or any(confirmation.get(key) != value for key, value in receipt_identity.items())
                                 or confirmation.get("confirmation_method") != "interactive_tty"
-                                or confirmation.get("confirmation_phrase") != f"ACCEPT {identity_digest[:12]}"):
+                                or confirmation.get("confirmation_phrase") != expected_phrase):
                             raise ValueError("prototype lacks matching interactive confirmation for current dependencies")
+                        if version == 2:
+                            if (type(confirmation['reviewer']) is not str or not confirmation['reviewer'].strip()
+                                    or len(confirmation['reviewer']) > 120
+                                    or type(confirmation['reviewed_at']) is not str
+                                    or datetime.fromisoformat(confirmation['reviewed_at'].replace('Z', '+00:00')).tzinfo is None):
+                                raise ValueError('invalid current interactive reviewer or timestamp')
                 except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+                    pending_dependencies.pop(target, None)
                     errors.append(f"{where}: {exc}")
+            if observation_targets or typed_targets:
+                # Finish all observation payload IO before the current image,
+                # selected context, source and contract fences. Interpreted
+                # text cannot reopen those already-checked source windows.
+                for target, snapshot in observation_targets.items():
+                    try:
+                        _verify_ui_observation_refs(material_fd, snapshot['regions'],
+                            observation_scope, observation_contract, snapshot['image_digests'])
+                    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+                        pending_dependencies.pop(target, None)
+                        errors.append(f'UI observation changed: {target[0]}/{target[1]}: {exc}')
+                if typed_targets:
+                    # Receipts are external IO too. All v2 targets, including
+                    # those without observations, need a current material fence.
+                    current_text = _read_beneath(root_fd, 'UI设计.md', 10 * 1024 * 1024).decode('utf-8')
+                    current_manifest = _prototype_manifest(current_text)
+                    if current_manifest['schema_version'] != 2:
+                        raise ValueError('prototype manifest version changed during check')
+                    current_items = {}
+                    for current_item in current_manifest['prototypes']:
+                        current_target = _prototype_target(current_item, 2)
+                        if current_target in current_items:
+                            raise ValueError('duplicate current prototype identity')
+                        current_items[current_target] = current_item
+                    current_pages = {match.group(1): _block(current_text, match.start())
+                        for match in re.finditer(r'^###\s*(PAGE-\d+)：', current_text, re.M)}
+                    current_requirements = parse_a_items(_read_beneath(
+                        root_fd, '需求分析.md', 10 * 1024 * 1024).decode('utf-8'))
+                    current_overview = _read_beneath(root_fd, '概要设计.md', 10 * 1024 * 1024).decode('utf-8')
+                    current_features = {match.group(1): _block(current_overview, match.start())
+                        for match in re.finditer(r'^###\s*(F\d+)：', current_overview, re.M)}
+                    current_baselines = None
+                    current_starts = re.findall(r'^```aek-ui-baseline\s*$', current_text, re.M)
+                    current_blocks = re.findall(r'^```aek-ui-baseline\s*\n(.*?)\n```', current_text, re.M | re.S)
+                    if (bool(current_starts) != (baselines is not None)
+                            or (current_starts and (len(current_starts) != 1 or len(current_blocks) != 1))):
+                        raise ValueError('UI source baseline declaration changed during check')
+                    if baselines is not None:
+                        if len(current_blocks) != 1 or len(current_blocks[0].encode('utf-8')) > MAX_BASELINE_BYTES:
+                            raise ValueError('current UI source baseline is missing or ambiguous')
+                        current_baselines = _read_ui_baseline(repo_root, json.loads(
+                            current_blocks[0], object_pairs_hook=_unique_json_object))
+                    for target, snapshot in typed_targets.items():
+                        try:
+                            if (current_items.get(target) != snapshot['item']
+                                    or current_pages.get(target[0]) != snapshot['page_block']
+                                    or any(current_features.get(ident) != value
+                                           for ident, value in snapshot['features'].items())
+                                    or any(current_requirements.get(ident, {}).get('text') != value
+                                           for ident, value in snapshot['acceptance'].items())):
+                                raise ValueError('prototype specification or design dependencies changed')
+                            if current_baselines is not None:
+                                current = current_baselines[_prototype_baseline_key(target, current_baselines)]
+                                if (current is None or current['gaps']
+                                        or current['digest'] != baselines[_prototype_baseline_key(target, baselines)]['digest']):
+                                    raise ValueError('prototype source mapping changed')
+                            item = snapshot['item']
+                            if hashlib.sha256(_read_beneath(root_fd, item['prototype_path'],
+                                    _PROTOTYPE_MAX_BYTES)).hexdigest() != item['prototype_sha256']:
+                                raise ValueError('prototype HTML changed after receipt IO')
+                        except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+                            pending_dependencies.pop(target, None)
+                            errors.append(f'UI prototype changed: {target[0]}/{target[1]}: {exc}')
+                final_index = json.loads(_read_beneath(material_fd, '截图索引.json',
+                    8 * 1024 * 1024).decode('utf-8'), object_pairs_hook=_unique_json_object)
+                if (not isinstance(final_index, dict) or type(final_index.get('schema_version')) is not int
+                        or final_index.get('schema_version') != 1
+                        or final_index.get('change_id') != index['change_id']
+                        or final_index.get('requirement_dir', final_index.get('change_id')) != req_dir.name
+                        or not isinstance(final_index.get('screenshots'), list)):
+                    raise ValueError('UI observation evidence scope changed during check')
+                final_screenshots = {}
+                for row in final_index['screenshots']:
+                    if (not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                            or row['id'] in final_screenshots):
+                        raise ValueError('duplicate current UI evidence identity')
+                    final_screenshots[row['id']] = row
+                for target, snapshot in {**observation_targets, **typed_targets}.items():
+                    try:
+                        if final_index.get('design_system') != design_system:
+                            raise ValueError('observation design system changed during check')
+                        for ident, old_state in snapshot['evidence'].items():
+                            current = final_screenshots[ident]
+                            if _ui_observation_evidence_state(current, snapshot['context_ids'][ident]) != old_state:
+                                raise ValueError('observation screenshot context changed during check')
+                            digest, _ = _hash_regular_beneath(material_fd,
+                                _expected_ui_evidence_path(current), _SCREENSHOT_MAX_BYTES)
+                            if digest != current['validation']['content_sha256']:
+                                raise ValueError('observation screenshot changed during check')
+                    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+                        pending_dependencies.pop(target, None)
+                        errors.append(f'UI observation changed: {target[0]}/{target[1]}: {exc}')
+                # Reading an observation is another external IO boundary. A
+                # contract captured before those reads cannot authorize their
+                # publication if the managed prompt changed during them.
+                if observation_targets:
+                    try:
+                        contract_still_current = _ui_observation_contract() == observation_contract
+                    except (OSError, ValueError):
+                        contract_still_current = False
+                    if not contract_still_current:
+                        for target in observation_targets:
+                            pending_dependencies.pop(target, None)
+                        errors.append('UI observation contract changed during final payload verification')
+            if baselines is not None:
+                final_baselines = _read_ui_baseline(repo_root, baseline_manifest)
+                for target, baseline in baselines.items():
+                    if selected_targets is not None and not any(
+                            _prototype_baseline_key(selected, baselines) == target for selected in selected_targets):
+                        continue
+                    final = final_baselines.get(target)
+                    if final is None or final['gaps'] or final['digest'] != baseline['digest']:
+                        for consumer in tuple(pending_dependencies):
+                            if consumer == target or (len(target) == 2 and consumer[:2] == target):
+                                pending_dependencies.pop(consumer, None)
+                        errors.append(f'UI source baseline changed during check: {target[0]}/{target[1]}')
+            if observation_targets:
+                try:
+                    with _UiObservationStore(material_fd, create=False) as store:
+                        binding_index, _ = store.binding_snapshot(observation_scope)
+                    current_bindings = {row['evidence_id']: row for row in binding_index['bindings']}
+                except (OSError, ValueError):
+                    current_bindings = {}
+                contract_sha = hashlib.sha256(json.dumps(observation_contract,
+                    ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+                for target, snapshot in observation_targets.items():
+                    for region in snapshot['regions']:
+                        for ref in region.get('observations', []):
+                            expected = {'evidence_id': ref['evidence_id'],
+                                'image_sha256': snapshot['image_digests'][ref['evidence_id']],
+                                'contract_sha256': contract_sha, 'observation_sha256': ref['sha256']}
+                            if current_bindings.get(ref['evidence_id']) != expected:
+                                pending_dependencies.pop(target, None)
+                                errors.append(f'UI observation binding changed: {target[0]}/{target[1]}')
+            # Nothing is offered for confirmation until all source reads in
+            # this check have finished. The source files remain user-owned.
+            if coverage is not None:
+                final_coverage = _current_ui_coverage(c, req_dir, dynamic_state, required)
+                if final_coverage != coverage:
+                    pending_dependencies.clear()
+                    errors.append('UI classification upstream changed after prototype/receipt IO')
+            if dependency_out is not None:
+                dependency_out.update(pending_dependencies)
+            if preparation_out is not None:
+                preparation_out.update({target: value for target, value in pending_preparations.items()
+                                        if target in pending_dependencies})
+            if preview_out is not None:
+                preview_out.update({target: value for target, value in pending_previews.items()
+                                    if target in pending_dependencies})
             c.add("prototype", "原型确认与依赖摘要有效", not errors,
                   "；".join(errors[:5]))
         finally:
             if material_fd is not None:
                 _ui_fs.close_dir(material_fd)
             _ui_fs.close_dir(root_fd)
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, KeyError, TypeError, RecursionError) as exc:
         c.add("prototype", "原型确认与依赖摘要有效", False, str(exc))
 
 
@@ -1359,6 +1763,14 @@ def run_checks(req_dir: Path, stage: str, dynamic_state=None) -> Checks:
     spec = _effective_stage_spec(stage, dynamic_state)
 
     if dynamic_state is not None and not spec["docs"]:
+        if stage == 'UI设计':
+            scope = _current_ui_coverage(c, req_dir, dynamic_state, False)
+            if scope is None or not scope.complete:
+                return c
+            if scope.required:
+                c.add('prototype', '上游 UI 义务与跳过计划一致', False,
+                      'UI classification requires prototypes but ArtifactPlan skips UI')
+                return c
         c.add("plan", "阶段由 ArtifactPlan 跳过", True,
               "无需生成、评审或冻结本阶段产物")
         return c
@@ -2102,6 +2514,13 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
             print(f"✗ 动态计划不可用于门禁：{dynamic_state.reason}")
             return 3
         if not participating_documents(dynamic_state.plan, stage):
+            skipped_checks = run_checks(req_dir, stage, dynamic_state)
+            if skipped_checks.fails:
+                if as_json:
+                    print(json.dumps(skipped_checks.to_dict(), ensure_ascii=False))
+                else:
+                    print(f"✗ {stage} 当前跳过依据未通过校验，不能跳过门禁")
+                return 3
             print(f"✓ {stage} 已由 ArtifactPlan 跳过，无需门禁")
             return 0
     elif _dynamic_sidecar_present(req_dir):
@@ -3456,6 +3875,347 @@ def cmd_plan_rollback(req_dir: Path, as_json: bool) -> int:
         return 3
 
 
+def _prototype_selection_targets(targets) -> tuple:
+    if not isinstance(targets, (list, tuple)) or not 1 <= len(targets) <= 32:
+        raise ValueError('select between 1 and 32 explicit prototype targets')
+    result = []
+    for target in targets:
+        if not isinstance(target, (list, tuple)) or len(target) != 4:
+            raise ValueError('each target requires PAGE/AREA/STATE/context')
+        result.append(_prototype_target(dict(zip(
+            ('page_id', 'area_id', 'state_id', 'context_id'), target)), 2))
+    if len(set(result)) != len(result):
+        raise ValueError('duplicate prototype selection')
+    return tuple(sorted(result))
+
+
+def _prototype_prepared_payload(items: list) -> dict:
+    payload = {'schema_version': 2, 'status': 'PREPARED', 'per_item': items}
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    # Each immutable receipt may carry this selection; stay below its 64KiB read limit.
+    if len(raw) > 48 * 1024:
+        raise ValueError('prepared selection exceeds 48KiB; narrow the selection')
+    payload['prepare_sha256'] = hashlib.sha256(raw).hexdigest()
+    return payload
+
+
+def _prototype_selection_phrase(selection: dict, member: dict) -> str:
+    """Bind a group decision to an actual current member, not a self-reported status."""
+    if (type(selection) is not dict
+            or set(selection) != {'schema_version', 'status', 'per_item', 'prepare_sha256'}
+            or type(selection['schema_version']) is not int or selection['schema_version'] != 2
+            or selection['status'] != 'PREPARED' or type(selection['per_item']) is not list):
+        raise ValueError('invalid confirmation selection')
+    items = selection['per_item']
+    if any(type(item) is not dict for item in items):
+        raise ValueError('invalid confirmation selection member')
+    targets = _prototype_selection_targets([_prototype_target(item, 2) for item in items])
+    fields = {'page_id', 'area_id', 'state_id', 'context_id', 'prototype_path',
+              'prototype_sha256', 'dependency_sha256', 'scope_digest', 'evidence_contexts'}
+    for item in items:
+        if (type(item) is not dict or set(item) != fields
+                or type(item['prototype_path']) is not str or len(item['prototype_path']) > 500
+                or type(item['evidence_contexts']) is not list
+                or any(type(item[key]) is not str or not _PROTOTYPE_DIGEST.fullmatch(item[key])
+                       for key in ('prototype_sha256', 'dependency_sha256', 'scope_digest'))):
+            raise ValueError('invalid confirmation selection member')
+    if (tuple(_prototype_target(item, 2) for item in items) != targets
+            or _prototype_prepared_payload(items) != selection
+            or sum(all(item.get(key) == value for key, value in member.items()) for item in items) != 1):
+        raise ValueError('confirmation selection does not bind the current member')
+    return f"ACCEPT {selection['prepare_sha256'][:12]}"
+
+
+def _prototype_preparation_maps(req_dir: Path, targets, *, require_confirmation=False, strict=True,
+                                preview_out=None) -> dict:
+    """Two bounded group reads; no output survives an intervening dependency change."""
+    targets = _prototype_selection_targets(targets)
+    snapshots = []
+    preview_snapshots = []
+    for _ in range(2):
+        root = _open_dir_nofollow(req_dir)
+        try:
+            text = _read_beneath(root, 'UI设计.md', 10 * 1024 * 1024).decode('utf-8', errors='strict')
+        finally:
+            _ui_fs.close_dir(root)
+        if _prototype_manifest(text)['schema_version'] != 2:
+            raise ValueError('prototype-prepare requires an explicit v2 manifest')
+        checks, prepared, previews = Checks('UI设计'), {}, {}
+        _check_ui_prototypes(checks, req_dir, text, require_confirmation=require_confirmation,
+                             selected_targets=set(targets), preparation_out=prepared,
+                             preview_out=previews if preview_out is not None else None)
+        if strict and (checks.fails or set(prepared) != set(targets)):
+            raise ValueError('current prototype preparation failed: ' + '；'.join(
+                item['detail'] or item['name'] for item in checks.fails[:3]))
+        snapshots.append(prepared)
+        preview_snapshots.append(previews)
+    if strict and snapshots[0] != snapshots[1]:
+        raise ValueError('prototype or dependencies changed during preparation')
+    if preview_out is not None:
+        if preview_snapshots[0] != preview_snapshots[1] or set(preview_snapshots[1]) != set(targets):
+            raise ValueError('preview sources changed during preparation')
+        preview_out.update(preview_snapshots[1])
+    return {target: snapshots[1][target] for target in targets
+            if target in snapshots[1] and snapshots[0].get(target) == snapshots[1][target]}
+
+
+def _prepare_prototype_selection(req_dir: Path, targets) -> dict:
+    items = _prototype_preparation_maps(req_dir, targets)
+    return _prototype_prepared_payload([items[target] for target in sorted(items)])
+
+
+def _prepare_prototype_v2(req_dir: Path, target: tuple) -> dict:
+    """Read-only optimistic preparation, never a maintainer decision."""
+    return _prepare_prototype_selection(req_dir, [target])
+
+
+def _prepare_prototype_preview(req_dir: Path, targets, *, render_profiles=None) -> bytes:
+    """Derive a report from selected Gate-verified snapshots, then recheck all sources."""
+    targets = _prototype_selection_targets(targets)
+    profiles = {}
+    if render_profiles is not None:
+        from aek.adapters.ui_render_host import LinuxRenderHostProfile
+        if (type(render_profiles) is not dict or not set(render_profiles) <= set(targets)
+                or any(type(profile) is not LinuxRenderHostProfile or profile._target != target
+                       for target, profile in render_profiles.items())):
+            raise ValueError('render profiles must be fixed controller-selected profiles for this selection')
+        # Freeze the controller mapping, not a caller-owned mutable registry.
+        profiles = {target: render_profiles[target] for target in targets if target in render_profiles}
+    previews = {}
+    prepared = _prototype_preparation_maps(req_dir, targets, preview_out=previews)
+    selection = _prototype_prepared_payload([prepared[target] for target in targets])
+    material = _open_dir_nofollow(req_dir.parents[2] / 'docs/01-需求' / req_dir.name
+                                  / '原始材料/ui-reference')
+    items, encoded_bytes = [], 0
+    try:
+        for target in targets:
+            references = []
+            for ref in previews[target]:
+                encoded_bytes += 4 * ((ref['bytes'] + 2) // 3)
+                if encoded_bytes > MAX_PREVIEW_REPORT_BYTES:
+                    raise ValueError('preview selection exceeds report image budget')
+                raw = _read_beneath(material, ref['path'], MAX_PNG_BYTES)
+                if len(raw) != ref['bytes'] or hashlib.sha256(raw).hexdigest() != ref['image_sha256']:
+                    raise ValueError('preview image changed after preparation')
+                _validate_png_reader(io.BytesIO(raw).read, len(raw), max_pixels=MAX_PHYSICAL_PIXELS)
+                references.append(PreviewReference(ref['evidence_id'], target[3], raw, ref['image_sha256']))
+            items.append(PreviewItem(target, references=tuple(references)))
+    finally:
+        _ui_fs.close_dir(material)
+    rendered = {target: profile.read_result(expected_item=prepared[target])
+                for target, profile in profiles.items()}
+    items = [replace(item, render=rendered.get(item.target)) for item in items]
+    report = build_static_preview(selection, items)
+    def recheck_material():
+        current_previews = {}
+        current = _prototype_preparation_maps(req_dir, targets, preview_out=current_previews)
+        if (_prototype_prepared_payload([current[target] for target in targets]) != selection
+                or current_previews != previews):
+            raise ValueError('preview dependencies changed during report generation')
+    recheck_material()
+    if profiles:
+        # Two bounded observations, not a claim of a globally atomic snapshot
+        # across independently written source files. Never execute or approve.
+        for target, profile in profiles.items():
+            if profile.read_result(expected_item=prepared[target]) != rendered[target]:
+                raise ValueError('trusted render source changed during report generation')
+        recheck_material()
+        # All source/material/proof IO is complete. This final control-side
+        # fence is pure and must not reopen a new proof or runtime IO window.
+        if any(profile.control_fence() is not True for profile in profiles.values()):
+            raise ValueError('trusted render control context changed during report generation')
+    return report.html
+
+
+def cmd_prototype_prepare(req_dir: Path, page_id: str, area_id: str,
+                          state_id: str, context_id: str, as_json: bool, *, targets=None,
+                          preview_html=False, render_profiles=None) -> int:
+    try:
+        if preview_html:
+            if as_json:
+                raise ValueError('--preview-html cannot be combined with --json')
+            html = _prepare_prototype_preview(req_dir, targets if targets is not None
+                else [(page_id, area_id, state_id, context_id)], render_profiles=render_profiles)
+            if hasattr(sys.stdout, 'buffer'):
+                sys.stdout.buffer.write(html)
+            else:
+                sys.stdout.write(html.decode('utf-8'))
+            return 0
+        payload = _prepare_prototype_selection(req_dir, targets if targets is not None
+                                               else [(page_id, area_id, state_id, context_id)])
+        if as_json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"✓ 原型已准备（尚未确认）：{len(payload['per_item'])} 项")
+            print(f"准备 SHA-256: {payload['prepare_sha256']}")
+        return 0
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+        if preview_html:
+            print('✗ 原型预览失败：材料无效、已变化、格式冲突或超限；请重新校验。', file=sys.stderr)
+        elif as_json:
+            print(json.dumps({'schema_version': 2, 'status': 'CONFLICT', 'error': str(exc)}, ensure_ascii=False))
+        else:
+            print(f'✗ 原型准备失败: {exc}')
+        return 3
+
+
+def _current_v2_confirmation(req_dir: Path, target: tuple, prepared: dict):
+    item = prepared['per_item'][0]
+    identity = {key: item[key] for key in ('state_id', 'context_id', 'scope_digest')}
+    name = _prototype_confirmation_path(target[0], target[1], item['prototype_sha256'],
+                                        item['dependency_sha256'], **identity)
+    root = _open_dir_nofollow(req_dir)
+    try:
+        try:
+            raw = _read_beneath(root, 'reviews/ui-prototype-confirmations/' + name, 64 * 1024)
+        except FileNotFoundError:
+            return None
+        receipt = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_json_object)
+        text = _read_beneath(root, 'UI设计.md', 10 * 1024 * 1024).decode('utf-8')
+    finally:
+        _ui_fs.close_dir(root)
+    checks, current = Checks('UI设计'), {}
+    _check_ui_prototypes(checks, req_dir, text, selected_targets={target}, preparation_out=current)
+    if checks.fails or current.get(target) != item:
+        raise ValueError('existing confirmation is invalid or no longer current; it will not be overwritten')
+    return {'receipt_ref': 'reviews/ui-prototype-confirmations/' + name, 'reviewer': receipt['reviewer']}
+
+
+def cmd_prototype_confirm_v2(req_dir: Path, target: tuple, reviewer: str, expected_prepare: str) -> int:
+    """One real terminal decision for one explicit, current v2 selection."""
+    try:
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise ValueError('v2 confirmation requires an interactive input and display terminal')
+        target = _prototype_target(dict(zip(('page_id', 'area_id', 'state_id', 'context_id'), target)), 2)
+        if (type(reviewer) is not str or not reviewer.strip() or len(reviewer) > 120
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in reviewer)):
+            raise ValueError('reviewer must be a non-empty safe name of at most 120 characters')
+        if type(expected_prepare) is not str or not _PROTOTYPE_DIGEST.fullmatch(expected_prepare):
+            raise ValueError('v2 confirmation requires a prepared SHA-256')
+        prepared = _prepare_prototype_v2(req_dir, target)
+        if prepared['prepare_sha256'] != expected_prepare:
+            raise ValueError('prepared prototype or dependencies are stale')
+        item = prepared['per_item'][0]
+        prior = _current_v2_confirmation(req_dir, target, prepared)
+        if prior is not None:
+            print(json.dumps({'schema_version': 2, 'per_item': [{**item, **prior, 'status': 'ACCEPTED'}],
+                              'projection_status': 'CURRENT'}, ensure_ascii=False))
+            return 0
+        identity = {key: item[key] for key in ('state_id', 'context_id', 'scope_digest')}
+        digest = _prototype_confirmation_digest(target[0], target[1], item['prototype_sha256'],
+                                                item['dependency_sha256'], **identity)
+        print('请先查看实际HTML预览及本次所需截图；准备记录不是批准。')
+        print(json.dumps(item, ensure_ascii=False, indent=2))
+        print(f"HTML: {req_dir / item['prototype_path']}")
+        phrase = input(f'若已预览并接受，请输入 ACCEPT {digest[:12]} 或 REVISE/BLOCK/CANCEL：').strip()
+        if phrase in ('REVISE', 'BLOCK', 'CANCEL'):
+            status = {'REVISE': 'NEEDS_REVISION', 'BLOCK': 'BLOCKED', 'CANCEL': 'CANCELLED'}[phrase]
+            print(json.dumps({'schema_version': 2, 'per_item': [{**item, 'status': status}],
+                              'projection_status': 'UNCHANGED'}, ensure_ascii=False))
+            return 0
+        if phrase != f'ACCEPT {digest[:12]}':
+            raise ValueError('confirmation phrase does not match the displayed selection')
+        # The human pause is an external mutation window. Recompute from the
+        # current actual files, not from candidate-reported hashes or status.
+        current = _prepare_prototype_v2(req_dir, target)
+        if current != prepared:
+            raise ValueError('prototype or dependencies changed while awaiting confirmation')
+        reviewed_at = datetime.now(timezone.utc).isoformat()
+        try:
+            _write_prototype_confirmation(req_dir, target[0], target[1], item['prototype_sha256'],
+                item['dependency_sha256'], reviewer, reviewed_at, phrase, **identity)
+        except FileExistsError:
+            pass  # A competing complete receipt is checked, never replaced.
+        recorded = _current_v2_confirmation(req_dir, target, prepared)
+        if recorded is None:
+            raise ValueError('confirmation was not published')
+        print(json.dumps({'schema_version': 2, 'per_item': [{**item, **recorded, 'status': 'ACCEPTED'}],
+                          'projection_status': 'CURRENT'}, ensure_ascii=False))
+        return 0
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, EOFError) as exc:
+        print(json.dumps({'schema_version': 2, 'per_item': [{'status': 'CONFLICT', 'error': str(exc)}],
+                          'projection_status': 'PENDING'}, ensure_ascii=False))
+        return 3
+
+
+def cmd_prototype_confirm_batch(req_dir: Path, targets, reviewer: str, expected_prepare: str) -> int:
+    """One explicit terminal decision; immutable per-item facts permit partial recovery."""
+    try:
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise ValueError('v2 confirmation requires an interactive input and display terminal')
+        targets = _prototype_selection_targets(targets)
+        if (type(reviewer) is not str or not reviewer.strip() or len(reviewer) > 120
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in reviewer)):
+            raise ValueError('reviewer must be a non-empty safe name of at most 120 characters')
+        if type(expected_prepare) is not str or not _PROTOTYPE_DIGEST.fullmatch(expected_prepare):
+            raise ValueError('v2 confirmation requires a prepared SHA-256')
+        prepared = _prepare_prototype_selection(req_dir, targets)
+        if prepared['prepare_sha256'] != expected_prepare:
+            raise ValueError('prepared selection or dependencies are stale')
+        items = {_prototype_target(item, 2): item for item in prepared['per_item']}
+        results, pending = {}, []
+        for target, item in items.items():
+            try:
+                prior = _current_v2_confirmation(req_dir, target, {'per_item': [item]})
+                if prior is None:
+                    pending.append(item)
+                else:
+                    results[target] = {**item, **prior, 'status': 'ACCEPTED'}
+            except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+                results[target] = {**item, 'status': 'CONFLICT', 'error': str(exc)}
+        if pending:
+            selection = _prototype_prepared_payload(pending)
+            print('请查看以下每项实际HTML和截图；已完成项不重复批准。准备记录不是批准。')
+            print(json.dumps(selection, ensure_ascii=False, indent=2))
+            for item in pending:
+                print(f"HTML: {req_dir / item['prototype_path']}")
+            phrase = input(f"若已预览并接受全部所列项，请输入 ACCEPT {selection['prepare_sha256'][:12]} 或 REVISE/BLOCK/CANCEL：").strip()
+            decisions = {'REVISE': 'NEEDS_REVISION', 'BLOCK': 'BLOCKED', 'CANCEL': 'CANCELLED'}
+            if phrase not in decisions and phrase != f"ACCEPT {selection['prepare_sha256'][:12]}":
+                raise ValueError('confirmation phrase does not match the displayed selection')
+            reviewed_at = datetime.now(timezone.utc).isoformat()
+            for item in pending:
+                target = _prototype_target(item, 2)
+                if phrase in decisions:
+                    results[target] = {**item, 'status': decisions[phrase]}
+                    continue
+                try:
+                    if _prepare_prototype_v2(req_dir, target)['per_item'][0] != item:
+                        raise ValueError('selected prototype or dependencies changed during confirmation')
+                    identity = {key: item[key] for key in ('state_id', 'context_id', 'scope_digest')}
+                    try:
+                        _write_prototype_confirmation(req_dir, target[0], target[1], item['prototype_sha256'],
+                            item['dependency_sha256'], reviewer, reviewed_at, phrase,
+                            selection=selection, **identity)
+                    except FileExistsError:
+                        pass  # Competing receipts are revalidated; never replaced.
+                    recorded = _current_v2_confirmation(req_dir, target, {'per_item': [item]})
+                    if recorded is None:
+                        raise ValueError('confirmation was not published')
+                    results[target] = {**item, **recorded, 'status': 'ACCEPTED'}
+                except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+                    results[target] = {**item, 'status': 'CONFLICT', 'error': str(exc)}
+        # Finish ALL receipt IO before a group material fence. A later member's
+        # receipt read must not leave an earlier cached ACCEPTED result current.
+        accepted = [target for target, row in results.items() if row['status'] == 'ACCEPTED']
+        if accepted:
+            current = _prototype_preparation_maps(req_dir, accepted, require_confirmation=True, strict=False)
+            for target in accepted:
+                if current.get(target) != items[target]:
+                    results[target] = {**items[target], 'status': 'CONFLICT',
+                                       'error': 'confirmation is no longer current after batch IO'}
+        rows = [results[target] for target in targets]
+        conflict = any(row['status'] == 'CONFLICT' for row in rows)
+        all_current = all(row['status'] == 'ACCEPTED' for row in rows)
+        print(json.dumps({'schema_version': 2, 'per_item': rows,
+            'projection_status': 'CURRENT' if all_current else ('PENDING' if conflict else 'UNCHANGED')}, ensure_ascii=False))
+        return 3 if conflict else 0
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, EOFError) as exc:
+        print(json.dumps({'schema_version': 2, 'per_item': [{'status': 'CONFLICT', 'error': str(exc)}],
+                          'projection_status': 'PENDING'}, ensure_ascii=False))
+        return 3
+
+
 def cmd_prototype_confirm(req_dir: Path, page_id: str, area_id: str,
                           reviewer: str) -> int:
     """Require an interactive maintainer action for this exact prototype digest."""
@@ -3469,6 +4229,8 @@ def cmd_prototype_confirm(req_dir: Path, page_id: str, area_id: str,
         try:
             ui_text = _read_beneath(root_fd, ui_doc, 10 * 1024 * 1024).decode("utf-8")
             manifest = _prototype_manifest(ui_text)
+            if manifest['schema_version'] != 1:
+                raise ValueError('v2 prototypes require explicit --schema-version 2 and a prepared state/context')
             matches = [item for item in manifest["prototypes"]
                        if isinstance(item, dict) and item.get("page_id") == page_id
                        and item.get("area_id") == area_id]
@@ -3586,12 +4348,40 @@ def main() -> int:
     pr = sub.add_parser("plan-rollback")
     pr.add_argument("dir")
     pr.add_argument("--json", action="store_true")
+    upp = sub.add_parser('prototype-prepare', help='只读准备指定状态/权限上下文的 v2 原型')
+    upp.add_argument('dir')
+    upp.add_argument('--page')
+    upp.add_argument('--area')
+    upp.add_argument('--state')
+    upp.add_argument('--context')
+    upp.add_argument('--target', action='append', help='显式 PAGE/AREA/STATE/context，可重复，最多32项')
+    upp.add_argument('--json', action='store_true')
+    upp.add_argument('--preview-html', action='store_true', help='只读输出完整静态HTML对照，不写文件或确认')
     ucp = sub.add_parser("prototype-confirm", help="交互式确认已预览的 UI 原型摘要")
     ucp.add_argument("dir", help="需求目录（docs/03-SDD/NNN-名称/）")
-    ucp.add_argument("--page", required=True, help="页面 ID，如 PAGE-1")
-    ucp.add_argument("--area", required=True, help="区域 ID，如 AREA-1")
+    ucp.add_argument("--page", help="页面 ID，如 PAGE-1")
+    ucp.add_argument("--area", help="区域 ID，如 AREA-1")
+    ucp.add_argument('--target', action='append', help='显式 PAGE/AREA/STATE/context，可重复，最多32项')
     ucp.add_argument("--reviewer", required=True, help="实际查看预览并确认的维护者姓名")
+    ucp.add_argument('--schema-version', type=int, choices=(1, 2), default=1)
+    ucp.add_argument('--state')
+    ucp.add_argument('--context')
+    ucp.add_argument('--prepared-sha256')
     args = ap.parse_args()
+
+    if args.cmd == 'prototype-prepare':
+        singles = (args.page, args.area, args.state, args.context)
+        if args.target and any(part is not None for part in singles):
+            ap.error('--target cannot be combined with single-target arguments')
+        if not args.target and any(part is None for part in singles):
+            ap.error('prototype-prepare requires --target or --page/--area/--state/--context')
+    if args.cmd == 'prototype-confirm':
+        if args.target:
+            if args.schema_version != 2 or any(value is not None for value in (
+                    args.page, args.area, args.state, args.context)):
+                ap.error('--target requires explicit --schema-version 2 and no single-target arguments')
+        elif args.page is None or args.area is None:
+            ap.error('prototype-confirm requires --target or --page/--area')
 
     if args.cmd == "init":
         return cmd_init(Path(args.repo).resolve(), args.name, args.json)
@@ -3599,7 +4389,10 @@ def main() -> int:
     # Keep reparse/symlink components visible to the UI filesystem boundary.
     req_dir = Path(os.path.abspath(args.dir))
     if not req_dir.is_dir():
-        print(f"✗ 需求目录不存在: {req_dir}")
+        if args.cmd == 'prototype-prepare' and args.preview_html:
+            print('✗ 原型预览失败：需求目录不存在或不可用。', file=sys.stderr)
+        else:
+            print(f"✗ 需求目录不存在: {req_dir}")
         return 3
     if args.cmd == "check":
         return cmd_check(req_dir, args.stage, args.json, args.summary)
@@ -3624,7 +4417,20 @@ def main() -> int:
     if args.cmd == "plan-rollback":
         return cmd_plan_rollback(req_dir, args.json)
     if args.cmd == "prototype-confirm":
+        if args.target:
+            return cmd_prototype_confirm_batch(req_dir, [part.split('/') for part in args.target],
+                                                args.reviewer, args.prepared_sha256)
+        if args.schema_version == 2:
+            return cmd_prototype_confirm_v2(req_dir, (args.page, args.area, args.state, args.context),
+                                             args.reviewer, args.prepared_sha256)
+        if any(value is not None for value in (args.state, args.context, args.prepared_sha256)):
+            print('✗ v2 state/context/preparation arguments require --schema-version 2')
+            return 3
         return cmd_prototype_confirm(req_dir, args.page, args.area, args.reviewer)
+    if args.cmd == 'prototype-prepare':
+        return cmd_prototype_prepare(req_dir, args.page, args.area, args.state, args.context, args.json,
+                                     targets=[part.split('/') for part in args.target] if args.target else None,
+                                     preview_html=args.preview_html)
     return cmd_status(req_dir, args.json)
 
 

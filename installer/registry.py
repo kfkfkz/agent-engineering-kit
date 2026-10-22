@@ -180,6 +180,10 @@ def _memory_specs() -> list[ResourceSpec]:
             destination_path="docs/memory/RULES.md", resource_type="owned_file",
             locator=None, merge_policy="replace", expected_mode=0o644),
         ResourceSpec(
+            id="memory-constitution-seed", source_path="templates/agent-constitution.md",
+            destination_path="docs/memory/constitution.md", resource_type="seed_file",
+            locator=None, merge_policy="seed_if_absent", expected_mode=0o644),
+        ResourceSpec(
             id="memory-readme-seed", source_path="templates/memory-README.md",
             destination_path="docs/memory/README.md", resource_type="seed_file",
             locator=None, merge_policy="seed_if_absent", expected_mode=0o644),
@@ -245,7 +249,11 @@ def _skill_reference_specs() -> list[ResourceSpec]:
                     f".{tree}/skills/repo-delivery/references/{name}.md"),
                 resource_type="owned_file", locator=None,
                 merge_policy="replace", expected_mode=0o644))
-    for skill, name in (("delivery-gate", "review-evidence"),):
+    for skill, name in (("delivery-gate", "review-evidence"),
+                        ("design-pipeline", "screenshot-observation"),
+                        ("design-pipeline", "screenshot-observation-workflow"),
+                        ("design-pipeline", "ui-source-baseline"),
+                        ("design-pipeline", "prototype-confirmation-workflow")):
         for tree in ("claude", "agents"):
             out.append(ResourceSpec(
                 id=f"skill-{tree}-{skill}-reference-{name}",
@@ -278,6 +286,10 @@ AEK_PACKAGE_FILES = (
     "core/artifact/__init__.py",
     "core/artifact/registry.py",
     "core/artifact/plan.py",
+    "core/artifact/ui_observation.py",
+    "core/artifact/ui_baseline.py",
+    "core/artifact/ui_preview.py",
+    "core/artifact/ui_coverage.py",
     "core/review/__init__.py",
     "core/review/judge.py",
     "core/review/result.py",
@@ -320,9 +332,19 @@ AEK_PACKAGE_FILES = (
     "application/governance.py",
     "application/security_review.py",
     "application/security_workflow.py",
+    "application/local_host.py",
     "adapters/__init__.py",
     "adapters/atomic_file.py",
     "adapters/ui_filesystem.py",
+    "adapters/ui_image.py",
+    "adapters/ui_baseline.py",
+    "adapters/ui_observation_store.py",
+    "adapters/ui_query.py",
+    "adapters/ui_sqlite_runtime.py",
+    "adapters/ui_cdp.py",
+    "adapters/ui_renderer.py",
+    "adapters/ui_linux_renderer.py",
+    "adapters/ui_render_host.py",
     "adapters/capsule.py",
     "adapters/telemetry.py",
     "adapters/memory.py",
@@ -337,6 +359,11 @@ AEK_PACKAGE_FILES = (
     "adapters/security_evidence.py",
     "adapters/security_store.py",
     "adapters/security_scanner.py",
+    "adapters/security_maven.py",
+    "adapters/security_maven_host.py",
+    "adapters/security_trivy_host.py",
+    "adapters/security_host.py",
+    "adapters/security_runtime.py",
     "adapters/security_process.py",
 )
 

@@ -40,6 +40,19 @@ for tool in $KIT_SKILLS; do
     done
 done
 
+# 截图理解提示词按需加载，但两个客户端都必须取得同一份实际资源。
+for reference in screenshot-observation screenshot-observation-workflow ui-source-baseline prototype-confirmation-workflow; do
+    for root in .claude .agents; do
+        prompt_src="$SRC/skills/design-pipeline/references/$reference.md"
+        prompt_dst="$P/$root/skills/design-pipeline/references/$reference.md"
+        if [ -f "$prompt_dst" ] && cmp -s "$prompt_src" "$prompt_dst"; then
+            ok "$root/design-pipeline $reference 一致"
+        else
+            bad "$root/design-pipeline $reference 缺失或漂移"
+        fi
+    done
+done
+
 # repo-delivery 是薄入口；重型规则只能从固定 Catalog 按 route/stage 完整读取。
 RD_SRC="$SRC/skills/repo-delivery/SKILL.md"
 rd_lines="$(wc -l < "$RD_SRC" | tr -d ' ')"

@@ -180,7 +180,18 @@ AEK 的 SQL 运行证据口径参考 PostgreSQL 官方 `EXPLAIN` 文档，用于
 
 ---
 
-## 2.7 MIT Permission Notice for Adapted Materials
+## 2.7 Karpathy-Inspired Claude Code Guidelines
+
+**Upstream project:** [`multica-ai/andrej-karpathy-skills`](https://github.com/multica-ai/andrej-karpathy-skills)
+**Upstream license declaration:** MIT，见[上游 README 的 License 节](https://github.com/multica-ai/andrej-karpathy-skills/blob/main/README.md#license)（2026-10-22 核验）。
+
+`templates/agent-constitution.md` 参考其澄清目标、保持简洁、精准修改和以可验证结果推进的通用思想，
+并结合 aek 自身的任务路线与安全约束独立改写。aek 不复制其 README/CLAUDE.md 正文，不捆绑其
+插件或运行时，也不表示上游作者认可 aek。项目原有宪章仍归维护者所有，不因这份种子被替换。
+
+---
+
+## 2.8 MIT Permission Notice for Adapted Materials
 
 对于上述采用 MIT License、且其材料被 AEK 改编的项目，应保留对应版权声明以及 MIT License 的许可文本。
 

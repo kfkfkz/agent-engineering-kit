@@ -11,6 +11,7 @@ from aek.adapters.review_lifecycle_store import LifecycleConflict, LifecycleGate
 from aek.core.review.lifecycle import (
     IssueAuthority,
     IssueState,
+    ingest_review_occurrences,
     initialize_lifecycle,
     transition_issue,
 )
@@ -109,6 +110,40 @@ class LifecycleGateStoreTests(unittest.TestCase):
         raw = (self.reviews / "详细设计.gate.json").read_bytes()
         self.assertEqual(json.loads(raw), gate)
         self.assertEqual(closed.issues[0].state, IssueState.CLOSED)
+
+    def test_new_gate_recovers_after_old_gate_closed_a_different_issue(self) -> None:
+        for crash_point in ("after_gate", "after_closed"):
+            with self.subTest(crash_point=crash_point), tempfile.TemporaryDirectory() as temp:
+                store = LifecycleGateStore(Path(temp), "详细设计")
+                old_closed, _ = store.publish_pass_gate(
+                    verified_snapshot(), self.gate(), expected_snapshot_digest=None)
+                new_issues = tuple({
+                    "id": f"R-{number}", "severity": "minor", "location": f"D{number}",
+                    "problem": f"independent new issue {number}", "evidence": "current material",
+                    "required_change": "targeted correction", "affected_ids": [f"D{number}"],
+                } for number in (3, 4))
+                current = ingest_review_occurrences(old_closed, subject_digest="1" * 64,
+                    request_digest="2" * 64, doc_hashes={"详细设计.md": "3" * 64},
+                    issues=new_issues, iteration=3)
+                for item in tuple(current.issues):
+                    if item.state == IssueState.OPEN:
+                        current = transition_issue(current, item.fingerprint, IssueState.FIXED,
+                            IssueAuthority.AUTHOR, input_digest="4" * 64)
+                        current = transition_issue(current, item.fingerprint, IssueState.VERIFIED,
+                            IssueAuthority.REVIEWER, input_digest="5" * 64)
+
+                def crash(point):
+                    if point == crash_point:
+                        raise InjectedCrash(point)
+
+                with self.assertRaises(InjectedCrash):
+                    store.publish_pass_gate(current, self.gate(),
+                        expected_snapshot_digest=old_closed.snapshot_digest, checkpoint=crash)
+                recovered = store.recover()
+                self.assertEqual(store.recover(), recovered)
+                self.assertTrue(all(item.state == IssueState.CLOSED for item in recovered.issues))
+                self.assertIn(old_closed.issues[0], recovered.issues)
+                self.assertEqual(recovered.events[:len(old_closed.events)], old_closed.events)
 
 
 if __name__ == "__main__":

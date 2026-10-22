@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import io
 import json
 import runpy
@@ -118,6 +119,7 @@ class PrototypeGateTests(unittest.TestCase):
             }]}],
         }
         self.item["dependency_sha256"] = canonical_digest(snapshot)
+        self.dependency_snapshot = snapshot
         self.item["confirmation_source"] = "maintainer_reply"
         self.item["evidence_contexts"] = [{"evidence_id": "P1", "context_id": self.context_id}]
         self.index["screenshots"][0]["applies_to"][0].update({
@@ -160,6 +162,426 @@ class PrototypeGateTests(unittest.TestCase):
     def test_current_human_acceptance_and_current_evidence_pass(self) -> None:
         checks = self._run()
         self.assertEqual(checks.fails, [])
+
+    def test_opt_in_source_baseline_is_part_of_existing_confirmation_digest(self):
+        token, baseline = self._add_source_baseline()
+        # Old confirmation cannot acquire new dependencies by merely appending
+        # a baseline; the original legacy-only fixture above remains valid.
+        self.assertTrue(self._run().fails)
+        self.item['dependency_sha256'] = canonical_digest({**self.dependency_snapshot,
+            'ui_baseline_sha256': canonical_digest(baseline)})
+        self._write_fixtures()
+        self.assertTrue(self._run().fails, 'old human confirmation is not reusable for a new joint digest')
+        identity = confirmation_digest('PAGE-1', 'AREA-1', self.prototype_digest, self.item['dependency_sha256'])
+        write_confirmation(self.req, 'PAGE-1', 'AREA-1', self.prototype_digest,
+            self.item['dependency_sha256'], 'k', self.item['reviewed_at'], f'ACCEPT {identity[:12]}')
+        self.assertEqual(self._run().fails, [])
+        (self.repo / 'frontend/unrelated.css').write_bytes(b'unrelated')
+        self.assertEqual(self._run().fails, [])
+        token.write_bytes(b'red')
+        self.assertTrue(self._run().fails)
+
+    def _add_source_baseline(self):
+        (self.repo / 'frontend').mkdir()
+        token = self.repo / 'frontend/theme.css'
+        token.write_bytes(b'blue')
+        source = {'id': 'SRC-1', 'kind': 'token', 'path': 'frontend/theme.css',
+                  'sha256': hashlib.sha256(b'blue').hexdigest(), 'certainty': 'source_backed'}
+        region = {'page_id': 'PAGE-1', 'area_id': 'AREA-1', 'region_id': 'QUERY',
+            'intent': 'PRESERVE', 'feature_ids': ['F1'], 'acceptance_ids': ['A1'],
+            'source_ids': ['SRC-1'], 'screenshot_ids': ['P1'],
+            'rationale': '沿用现有查询区', 'adjacent_context': None}
+        baseline = {'schema_version': 2, 'sources': [source], 'regions': [region]}
+        self.ui_text += '\n```aek-ui-baseline\n' + json.dumps(baseline) + '\n```\n'
+        self._write_fixtures()
+        return token, baseline
+
+    def _add_observation_baseline(self):
+        from aek.adapters import ui_filesystem as fs
+        from aek.adapters.ui_observation_store import ObservationStore
+        from aek.core.artifact.ui_observation import build_observation
+        _, baseline = self._add_source_baseline()
+        scope = canonical_digest({'repo_root': str(self.repo.absolute()),
+            'requirement_dir': self.req.name, 'change_id': self.index['change_id']})
+        contract = {'schema_version': 2, 'semantic_version': 'ui-observation-v1',
+            'prompt_sha256': hashlib.sha256((ROOT /
+                'skills/design-pipeline/references/screenshot-observation.md').read_bytes()).hexdigest()}
+        source = {'scope_digest': scope, 'evidence_id': 'P1', 'image_sha256': self.image_digest}
+        candidate = {'schema_version': 2, 'regions': [{'region_id': 'QUERY',
+            'observation_kind': 'observed', 'layout': '顶部查询区域', 'controls': [],
+            'style_clues': []}], 'uncertainties': []}
+        record = build_observation(source, contract, ('QUERY',), candidate,
+            provenance={'channel': 'agent_visual', 'model': None,
+                        'observed_at': '2026-10-19T00:00:00Z'})
+        handle = fs.open_absolute_dir(self.material)
+        try:
+            with ObservationStore(handle) as store:
+                digest = store.publish_observation(record)
+                store.bind(scope, None, {'evidence_id': 'P1', 'image_sha256': self.image_digest,
+                    'contract_sha256': canonical_digest(contract), 'observation_sha256': digest})
+        finally:
+            fs.close_dir(handle)
+        baseline['regions'][0]['observations'] = [{'evidence_id': 'P1', 'sha256': digest}]
+        self.ui_text = self.ui_text.split('\n```aek-ui-baseline')[0]
+        self.ui_text += '\n```aek-ui-baseline\n' + json.dumps(baseline) + '\n```\n'
+        self.item['dependency_sha256'] = canonical_digest({**self.dependency_snapshot,
+            'ui_baseline_sha256': canonical_digest(baseline)})
+        self._write_fixtures()
+        identity = confirmation_digest('PAGE-1', 'AREA-1', self.prototype_digest,
+                                       self.item['dependency_sha256'])
+        write_confirmation(self.req, 'PAGE-1', 'AREA-1', self.prototype_digest,
+            self.item['dependency_sha256'], 'k', self.item['reviewed_at'], f'ACCEPT {identity[:12]}')
+        return digest, record
+
+    def test_current_observation_joins_existing_source_and_human_confirmation(self):
+        # Missing new behavior is observed at the real existing Gate boundary,
+        # using actual immutable records and the actual current binding index.
+        self._add_observation_baseline()
+        self.assertEqual(self._run().fails, [])
+
+    def test_revoked_observation_never_uses_still_existing_immutable_file(self):
+        digest, _ = self._add_observation_baseline()
+        index = self.material / 'observations/索引.v2.json'
+        value = json.loads(index.read_text(encoding='utf-8'))
+        value['bindings'] = []
+        index.write_text(json.dumps(value), encoding='utf-8')
+        self.assertTrue((index.parent / (digest + '.json')).is_file())
+        self.assertTrue(self._run().fails)
+
+    def test_changed_observation_text_cannot_reuse_original_confirmation(self):
+        digest, record = self._add_observation_baseline()
+        record['regions'][0]['layout'] = '发生变化的查询布局'
+        (self.material / 'observations' / (digest + '.json')).write_text(
+            json.dumps(record), encoding='utf-8')
+        self.assertTrue(self._run().fails)
+
+    def test_observation_changes_after_html_read_cannot_publish_current_dependencies(self):
+        self._add_observation_baseline()
+        original = check_prototypes.__globals__['_read_beneath']
+        index_path = self.material / 'observations/索引.v2.json'
+        def read_then_revoke(handle, relative, limit):
+            raw = original(handle, relative, limit)
+            if relative == self.path:
+                value = json.loads(index_path.read_text(encoding='utf-8'))
+                value['bindings'] = []
+                index_path.write_text(json.dumps(value), encoding='utf-8')
+            return raw
+        checks, published = Checks('UI设计'), {}
+        with patch.dict(check_prototypes.__globals__, {'_read_beneath': read_then_revoke}):
+            check_prototypes(checks, self.req, self._full_ui_text(), dependency_out=published)
+        self.assertTrue(checks.fails)
+        self.assertNotIn(('PAGE-1', 'AREA-1'), published)
+
+    def test_late_screenshot_context_or_binding_change_is_rechecked_before_publication(self):
+        self._add_observation_baseline()
+        original = check_prototypes.__globals__['_read_beneath']
+        binding_path = self.material / 'observations/索引.v2.json'
+        binding_bytes = binding_path.read_bytes()
+        index_path = self.material / '截图索引.json'
+        screenshot_path = self.material / self.index['screenshots'][0]['path']
+        index_bytes = index_path.read_bytes()
+        for change in ('binding', 'context', 'image'):
+            with self.subTest(change=change):
+                binding_path.write_bytes(binding_bytes)
+                index_path.write_bytes(index_bytes)
+                screenshot_path.write_bytes(self.screenshot_bytes)
+                def read_then_change(handle, relative, limit):
+                    raw = original(handle, relative, limit)
+                    # This happens after the first observation verification,
+                    # while the existing human receipt is being read.
+                    if relative.endswith('.json') and relative != '截图索引.json':
+                        if change == 'binding':
+                            value = json.loads(binding_path.read_text(encoding='utf-8'))
+                            value['bindings'] = []
+                            binding_path.write_text(json.dumps(value), encoding='utf-8')
+                        elif change == 'context':
+                            value = json.loads(index_bytes)
+                            value['screenshots'][0]['applies_to'][0]['content_review']['status'] = 'not_applicable'
+                            index_path.write_text(json.dumps(value), encoding='utf-8')
+                        else:
+                            screenshot_path.write_bytes(b'changed screenshot')
+                    return raw
+                checks, published = Checks('UI设计'), {}
+                with patch.dict(check_prototypes.__globals__, {'_read_beneath': read_then_change}):
+                    check_prototypes(checks, self.req, self._full_ui_text(), dependency_out=published)
+                self.assertTrue(checks.fails)
+                self.assertNotIn(('PAGE-1', 'AREA-1'), published)
+
+    def test_observation_missing_store_is_read_only_and_does_not_synthesize_evidence(self):
+        _, baseline = self._add_source_baseline()
+        baseline['regions'][0]['observations'] = [{'evidence_id': 'P1', 'sha256': 'a' * 64}]
+        self.ui_text = self.ui_text.split('\n```aek-ui-baseline')[0]
+        self.ui_text += '\n```aek-ui-baseline\n' + json.dumps(baseline) + '\n```\n'
+        self.assertTrue(self._run().fails)
+        self.assertFalse((self.material / 'observations').exists())
+
+    def test_changed_controlled_prompt_invalidates_cached_observation(self):
+        self._add_observation_baseline()
+        contract = check_prototypes.__globals__['_ui_observation_contract']()
+        with patch.dict(check_prototypes.__globals__, {'_ui_observation_contract': lambda: {
+                **contract, 'prompt_sha256': '0' * 64}}):
+            self.assertTrue(self._run().fails)
+
+    def test_prompt_changed_during_last_observation_read_cannot_publish_dependency(self):
+        from aek.adapters import ui_filesystem as fs
+        digest, _ = self._add_observation_baseline()
+        kit = Path(self.temp.name) / 'isolated-kit'
+        prompt = kit / 'skills/design-pipeline/references/screenshot-observation.md'
+        prompt.parent.mkdir(parents=True)
+        prompt.write_bytes((ROOT / 'skills/design-pipeline/references' / prompt.name).read_bytes())
+        original = fs.read_at
+        count = 0
+        def read_then_change_prompt(handle, name, limit):
+            nonlocal count
+            raw = original(handle, name, limit)
+            if name == digest + '.json':
+                count += 1
+                if count == 2:
+                    prompt.write_bytes(prompt.read_bytes() + b'\nchanged controlled extraction rules\n')
+            return raw
+        checks, published = Checks('UI设计'), {}
+        with patch.dict(check_prototypes.__globals__, {'_script_dir': kit}), patch(
+                'aek.adapters.ui_filesystem.read_at', side_effect=read_then_change_prompt):
+            check_prototypes(checks, self.req, self._full_ui_text(), dependency_out=published)
+        self.assertEqual(count, 2)
+        self.assertTrue(checks.fails)
+        self.assertNotIn(('PAGE-1', 'AREA-1'), published)
+
+    def test_source_changed_during_last_observation_read_cannot_publish_dependency(self):
+        from aek.adapters import ui_filesystem as fs
+        digest, _ = self._add_observation_baseline()
+        original = fs.read_at
+        count = 0
+        def read_then_change_source(handle, name, limit):
+            nonlocal count
+            raw = original(handle, name, limit)
+            if name == digest + '.json':
+                count += 1
+                if count == 2:
+                    (self.repo / 'frontend/theme.css').write_bytes(b'red')
+            return raw
+        checks, published = Checks('UI设计'), {}
+        with patch('aek.adapters.ui_filesystem.read_at', side_effect=read_then_change_source):
+            check_prototypes(checks, self.req, self._full_ui_text(), dependency_out=published)
+        self.assertEqual(count, 2)
+        self.assertTrue(checks.fails)
+        self.assertNotIn(('PAGE-1', 'AREA-1'), published)
+
+    def test_image_and_selected_context_are_checked_after_last_observation_payload_read(self):
+        from aek.adapters import ui_filesystem as fs
+        digest, _ = self._add_observation_baseline()
+        original = fs.read_at
+        image = self.material / self.index['screenshots'][0]['path']
+        index_path = self.material / '截图索引.json'
+        original_index = index_path.read_bytes()
+        for change in ('image', 'context'):
+            with self.subTest(change=change):
+                count = 0
+                image.write_bytes(self.screenshot_bytes)
+                index_path.write_bytes(original_index)
+                def read_then_change(handle, name, limit):
+                    nonlocal count
+                    raw = original(handle, name, limit)
+                    if name == digest + '.json':
+                        count += 1
+                        if count == 2:
+                            if change == 'image':
+                                image.write_bytes(b'new screenshot')
+                            else:
+                                value = json.loads(original_index)
+                                value['screenshots'][0]['applies_to'][0]['content_review']['status'] = 'not_applicable'
+                                index_path.write_text(json.dumps(value), encoding='utf-8')
+                    return raw
+                checks, published = Checks('UI设计'), {}
+                with patch('aek.adapters.ui_filesystem.read_at', side_effect=read_then_change):
+                    check_prototypes(checks, self.req, self._full_ui_text(), dependency_out=published)
+                self.assertEqual(count, 2)
+                self.assertTrue(checks.fails)
+                self.assertNotIn(('PAGE-1', 'AREA-1'), published)
+
+    def test_later_observation_payload_cannot_revoke_an_earlier_consumer_unnoticed(self):
+        from aek.adapters import ui_filesystem as fs
+        from aek.adapters.ui_observation_store import ObservationStore
+        _, record = self._add_observation_baseline()
+        second_record = copy.deepcopy(record)
+        second_record['evidence_scope']['evidence_id'] = 'P2'
+        handle = fs.open_absolute_dir(self.material)
+        try:
+            with ObservationStore(handle) as store:
+                second_sha = store.publish_observation(second_record)
+                scope = record['evidence_scope']['scope_digest']
+                _, revision = store.binding_snapshot(scope)
+                store.bind(scope, revision, {'evidence_id': 'P2', 'image_sha256': self.image_digest,
+                    'contract_sha256': canonical_digest(record['extraction_contract']),
+                    'observation_sha256': second_sha})
+        finally:
+            fs.close_dir(handle)
+        before_block, baseline_text = self.ui_text.split('\n```aek-ui-baseline\n')
+        before_block = before_block.replace('AREA-1 → UI-EV P1', 'AREA-1 → P1；AREA-2 → P2')
+        baseline = json.loads(baseline_text.split('\n```')[0])
+        second_region = {**copy.deepcopy(baseline['regions'][0]), 'area_id': 'AREA-2',
+            'screenshot_ids': ['P2'], 'observations': [{'evidence_id': 'P2', 'sha256': second_sha}]}
+        baseline['regions'].append(second_region)
+        self.ui_text = before_block + '\n```aek-ui-baseline\n' + json.dumps(baseline) + '\n```\n'
+        page_block = self.ui_text[self.ui_text.index('### PAGE-1'):self.ui_text.index('\n## 原型确认记录')]
+        second = {**copy.deepcopy(self.item), 'area_id': 'AREA-2', 'depends_on': ['P2'],
+                  'evidence_contexts': [{'evidence_id': 'P2', 'context_id': 'P2-CAPTURED'}]}
+        screenshot = copy.deepcopy(self.index['screenshots'][0])
+        screenshot.update(id='P2', path='function/FP01/data/DP01/P2.png')
+        screenshot['applies_to'][0]['context_id'] = 'P2-CAPTURED'
+        screenshot['prototype_refs'] = [{**screenshot['prototype_refs'][0],
+                                        'area_id': 'AREA-2', 'depends_on': ['P2']}]
+        self.index['screenshots'].append(screenshot)
+        for item, region in zip((self.item, second), baseline['regions']):
+            snapshot = copy.deepcopy(self.dependency_snapshot)
+            snapshot['page_design_sha256'] = hashlib.sha256(page_block.encode('utf-8')).hexdigest()
+            snapshot['ui_baseline_sha256'] = canonical_digest({**baseline, 'regions': [region]})
+            if item is second:
+                snapshot['evidence'][0]['id'] = 'P2'
+                snapshot['evidence'][0]['contexts'][0]['context_id'] = 'P2-CAPTURED'
+            item['dependency_sha256'] = canonical_digest(snapshot)
+            identity = confirmation_digest('PAGE-1', item['area_id'], self.prototype_digest,
+                                           item['dependency_sha256'])
+            write_confirmation(self.req, 'PAGE-1', item['area_id'], self.prototype_digest,
+                item['dependency_sha256'], 'k', item['reviewed_at'], f'ACCEPT {identity[:12]}')
+        self._write_fixtures()
+        (self.material / screenshot['path']).write_bytes(self.screenshot_bytes)
+        text = self.ui_text + '<!-- aek-prototypes:required -->\n```aek-prototypes\n' + json.dumps({
+            'schema_version': 1, 'prototypes': [self.item, second]}) + '\n```\n'
+        checks = Checks('UI设计')
+        check_prototypes(checks, self.req, text)
+        self.assertEqual(checks.fails, [])
+        original, count = fs.read_at, 0
+        binding_path = self.material / 'observations/索引.v2.json'
+        def read_then_revoke_earlier(handle, name, limit):
+            nonlocal count
+            raw = original(handle, name, limit)
+            if name == second_sha + '.json':
+                count += 1
+                if count == 2:
+                    value = json.loads(binding_path.read_text(encoding='utf-8'))
+                    value['bindings'] = [row for row in value['bindings'] if row['evidence_id'] != 'P1']
+                    binding_path.write_text(json.dumps(value), encoding='utf-8')
+            return raw
+        checks, published = Checks('UI设计'), {}
+        with patch('aek.adapters.ui_filesystem.read_at', side_effect=read_then_revoke_earlier):
+            check_prototypes(checks, self.req, text, dependency_out=published)
+        self.assertEqual(count, 2)
+        self.assertTrue(checks.fails)
+        self.assertEqual(set(published), {('PAGE-1', 'AREA-2')})
+
+    def test_revocation_invalidates_only_the_observation_consumer(self):
+        self._add_observation_baseline()
+        self.ui_text = self.ui_text.replace('AREA-1 → UI-EV P1', 'AREA-1、AREA-2 → UI-EV P1')
+        before_block, baseline_text = self.ui_text.split('\n```aek-ui-baseline\n')
+        baseline = json.loads(baseline_text.split('\n```')[0])
+        second_region = {**baseline['regions'][0], 'area_id': 'AREA-2'}
+        second_region.pop('observations')
+        baseline['regions'].append(second_region)
+        self.ui_text = before_block + '\n```aek-ui-baseline\n' + json.dumps(baseline) + '\n```\n'
+        page_block = self.ui_text[self.ui_text.index('### PAGE-1'):self.ui_text.index('\n## 原型确认记录')]
+        second = {**copy.deepcopy(self.item), 'area_id': 'AREA-2'}
+        for item, region in zip((self.item, second), baseline['regions']):
+            snapshot = {**self.dependency_snapshot,
+                'page_design_sha256': hashlib.sha256(page_block.encode('utf-8')).hexdigest(),
+                'ui_baseline_sha256': canonical_digest({**baseline, 'regions': [region]})}
+            item['dependency_sha256'] = canonical_digest(snapshot)
+        reverse = copy.deepcopy(self.index['screenshots'][0]['prototype_refs'][0])
+        reverse['area_id'] = 'AREA-2'
+        self.index['screenshots'][0]['prototype_refs'].append(reverse)
+        self._write_fixtures()
+        text = self.ui_text + '<!-- aek-prototypes:required -->\n```aek-prototypes\n' + json.dumps({
+            'schema_version': 1, 'prototypes': [self.item, second]}) + '\n```\n'
+        checks, published = Checks('UI设计'), {}
+        check_prototypes(checks, self.req, text, dependency_out=published, require_confirmation=False)
+        self.assertEqual(checks.fails, [])
+        self.assertEqual(set(published), {('PAGE-1', 'AREA-1'), ('PAGE-1', 'AREA-2')})
+        binding_path = self.material / 'observations/索引.v2.json'
+        value = json.loads(binding_path.read_text(encoding='utf-8'))
+        value['bindings'] = []
+        binding_path.write_text(json.dumps(value), encoding='utf-8')
+        checks, published = Checks('UI设计'), {}
+        check_prototypes(checks, self.req, text, dependency_out=published, require_confirmation=False)
+        self.assertTrue(checks.fails)
+        self.assertEqual(set(published), {('PAGE-1', 'AREA-2')})
+
+    def test_installed_contract_does_not_ignore_a_broken_managed_copy(self):
+        current_contract = GATE['_ui_observation_contract']
+        script_dir = self.repo / '.repo-memory-kit/bin'
+        script_dir.mkdir(parents=True)
+        agents = self.repo / '.agents/skills/design-pipeline/references'
+        agents.mkdir(parents=True)
+        prompt = ROOT / 'skills/design-pipeline/references/screenshot-observation.md'
+        (agents / prompt.name).write_bytes(prompt.read_bytes())
+        with patch.dict(current_contract.__globals__, {'_installed_layout': True, '_script_dir': script_dir}):
+            self.assertEqual(current_contract()['prompt_sha256'], hashlib.sha256(prompt.read_bytes()).hexdigest())
+            claude = self.repo / '.claude/skills/design-pipeline/references'
+            claude.mkdir(parents=True)
+            # Existing but incomplete managed installation is not another
+            # absent client: it must be repaired rather than silently skipped.
+            with self.assertRaises((OSError, ValueError)):
+                current_contract()
+
+    def test_legacy_gate_does_not_read_observations_or_new_prompt_resource(self):
+        with patch.dict(check_prototypes.__globals__, {'_ui_observation_contract': lambda:
+                self.fail('legacy gate must not read the observation contract')}):
+            self.assertEqual(self._run().fails, [])
+        self.assertFalse((self.material / 'observations').exists())
+
+    def test_chinese_requirement_observation_scope_uses_directory_and_machine_id(self):
+        name = '003-中文需求名称'
+        old_req = self.req
+        self.req = self.repo / 'docs/03-SDD' / name
+        old_req.rename(self.req)
+        (self.repo / 'docs/01-需求/CHG-001').rename(self.repo / 'docs/01-需求' / name)
+        self.material = self.repo / 'docs/01-需求' / name / '原始材料/ui-reference'
+        self.index.update(change_id='CHG-003', requirement_dir=name)
+        self.item['approved_root'] = 'docs/03-SDD/' + name
+        self.index['screenshots'][0]['prototype_refs'][0]['approved_root'] = self.item['approved_root']
+        self._add_observation_baseline()
+        self.assertEqual(self._run().fails, [])
+        path = self.material / 'observations/索引.v2.json'
+        value = json.loads(path.read_text(encoding='utf-8'))
+        value['scope_digest'] = '0' * 64
+        path.write_text(json.dumps(value), encoding='utf-8')
+        self.assertTrue(self._run().fails)
+
+    def test_source_change_during_later_html_read_cannot_publish_a_current_dependency(self):
+        token, baseline = self._add_source_baseline()
+        self.item['dependency_sha256'] = canonical_digest({**self.dependency_snapshot,
+            'ui_baseline_sha256': canonical_digest(baseline)})
+        self._write_fixtures()
+        identity = confirmation_digest('PAGE-1', 'AREA-1', self.prototype_digest, self.item['dependency_sha256'])
+        write_confirmation(self.req, 'PAGE-1', 'AREA-1', self.prototype_digest,
+            self.item['dependency_sha256'], 'k', self.item['reviewed_at'], f'ACCEPT {identity[:12]}')
+        self.assertEqual(self._run().fails, [])
+        original = check_prototypes.__globals__['_read_beneath']
+        def read_then_change_token(handle, relative, limit):
+            raw = original(handle, relative, limit)
+            if relative == self.path:
+                token.write_bytes(b'red')
+            return raw
+        checks, published = Checks('UI设计'), {}
+        with patch.dict(check_prototypes.__globals__, {'_read_beneath': read_then_change_token}):
+            check_prototypes(checks, self.req, self._full_ui_text(), dependency_out=published)
+        self.assertTrue(checks.fails)
+        self.assertNotIn(('PAGE-1', 'AREA-1'), published)
+
+    def test_malformed_duplicate_or_unknown_target_baseline_is_rejected_by_existing_gate(self):
+        original = self.ui_text
+        unowned = {'schema_version': 2, 'sources': [], 'regions': [{
+            'page_id': 'PAGE-2', 'area_id': 'AREA-1', 'region_id': 'QUERY', 'intent': 'NEW',
+            'feature_ids': ['F1'], 'acceptance_ids': ['A1'], 'source_ids': [], 'screenshot_ids': [],
+            'rationale': '新增区', 'adjacent_context': '相邻查询区域'}]}
+        block = '\n```aek-ui-baseline\n' + json.dumps(unowned) + '\n```'
+        for suffix in ('\n```aek-ui-baseline\n{}',
+                       '\n```aek-ui-baseline\n{"schema_version":2,"schema_version":2}\n```',
+                       '\n```aek-ui-baseline\n' + (' ' * (64 * 1024 + 1)) + '{}\n```',
+                       block, block + block):
+            with self.subTest(suffix=suffix[:70]):
+                self.ui_text = original + suffix
+                self.assertTrue(self._run().fails)
+        self.ui_text = original
 
     def test_chinese_requirement_directory_binds_machine_identity(self) -> None:
         name = "003-中文需求名称"

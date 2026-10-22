@@ -766,6 +766,15 @@
       "skill-agents-spec-migrate": "canonical_sha256:c604fb2d90b5c54bd2266399da0d70e75a4b2421f8bde9ecc1fbfaf79e43f37b",
       "skill-claude-spec-migrate": "canonical_sha256:c604fb2d90b5c54bd2266399da0d70e75a4b2421f8bde9ecc1fbfaf79e43f37b"
     },
+    "a99b91f": {
+      "agents-md-block": "canonical_sha256:2a440fc74daf8dd45b116b3a2c1a831b1de6ccfc08be780901109766e3ae02f9",
+      "claude-md-block": "canonical_sha256:841492c61f60bad4e1e52b3eb1307bcbc62a57407ec27c12bf5048ec745f56b0",
+      "memory-readme-seed": "canonical_sha256:684534edf60bccd8abfac92682db9d03886613e2900e51775ca0f9135d11ee7a"
+    },
+    "a99b91f:legacy-section": {
+      "agents-md-block": "canonical_sha256:2cea9abfd49241b592a7c71c7570e851b337c0a6dca3089da1719b56469fd33c",
+      "claude-md-block": "canonical_sha256:0e6090b6445fc644340cafc0b7c02b5a2ed5a54beb8c6a2ee0065fccb2211f02"
+    },
     "aa7a498": {
       "bin-memory-build": "canonical_sha256:39939a5ed2589c35dc3dd95fc0a29200f21cda3b8d2f871537f85da2cd4de799",
       "memory-readme-seed": "canonical_sha256:2c728780b4fffe2c8f04adbaee90bed86c1776c9e2b788c1d575788a95fc7846",

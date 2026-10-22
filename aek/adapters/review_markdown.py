@@ -118,11 +118,22 @@ def parse_review_documents(
         for line in text.splitlines(keepends=True):
             fence = _FENCE.match(line)
             if fence:
-                trace_lines.append(re.sub(r"[^\r\n]", " ", line))
                 token = fence.group(1)
+                tab_indented = '\t' in line[:fence.start(1)]
+                if not fence_char and (tab_indented or (token[0] == '`' and '`' in line[fence.end(1):])):
+                    # Tab-indented openers and backticks in backtick info are
+                    # outside this subset. Mark unknown, never hide actual
+                    # source owners inside an invented code block.
+                    parse_complete = False
+                    unknown_edges = True
+                    trace_lines.append(line)
+                    position += len(line)
+                    continue
+                trace_lines.append(re.sub(r"[^\r\n]", " ", line))
                 if not fence_char:
                     fence_char, fence_size = token[0], len(token)
-                elif token[0] == fence_char and len(token) >= fence_size:
+                elif (not tab_indented and token[0] == fence_char and len(token) >= fence_size
+                      and not line[fence.end(1):].strip(' \t\r\n')):
                     fence_char, fence_size = "", 0
                 position += len(line)
                 continue
@@ -139,6 +150,14 @@ def parse_review_documents(
                     title = heading.group(2).strip()
                     if not title:
                         parse_complete = False
+                    # Do not invent additional trace-definition grammar. A
+                    # trace-like title outside the supported colon syntax is
+                    # unknown, rather than an owner silently omitted from
+                    # coverage or incremental-review scope.
+                    if (re.match(r'^(?:TC-[0-9]+|[AFDT][0-9]+)(?![A-Z0-9])', title)
+                            and not re.match(r'^(?:TC-[0-9]+|[AFDT][0-9]+)[：:]', title)):
+                        parse_complete = False
+                        unknown_edges = True
                     while stack and stack[-1][0] >= level:
                         stack.pop()
                     stack.append((level, title))

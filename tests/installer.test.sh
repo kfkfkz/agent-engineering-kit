@@ -7,6 +7,7 @@ set -u
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
 T_HOME="$(mktemp -d)"          # HOME 隔离：tx key 不落真实用户配置目录
+export XDG_CONFIG_HOME="$T_HOME/config"
 trap 'rm -rf "$T" "$T_HOME"' EXIT
 # zvec 位于真实用户 site-packages——先于 HOME 隔离捕获，之后由 PYTHONPATH 补回
 USER_SITE="$(python3 -c 'import site; print(site.getusersitepackages())' 2>/dev/null || true)"
@@ -76,6 +77,12 @@ check "空目录首次安装退出码 0" 0 $?
 
 [ -f "$P/docs/memory/RULES.md" ] && ok "RULES.md 已装" || bad "RULES.md 缺失"
 [ -f "$P/docs/memory/README.md" ] && ok "seed README 已创建" || bad "seed README 缺失"
+[ -f "$P/docs/memory/constitution.md" ] \
+  && cmp -s "$SRC/templates/agent-constitution.md" "$P/docs/memory/constitution.md" \
+  && ok "通用宪章种子已安装" || bad "通用宪章种子缺失或内容不符"
+[ -f "$P/CLAUDE.md" ] && grep -q 'docs/memory/constitution.md' "$P/CLAUDE.md" \
+  && [ -f "$P/AGENTS.md" ] && grep -q 'docs/memory/constitution.md' "$P/AGENTS.md" \
+  && ok "Claude/Codex 根指引都可发现宪章" || bad "根指引缺少宪章入口"
 [ -f "$P/.claude/skills/tdd/SKILL.md" ] && ok "staged 父目录（.claude/skills/tdd）已创建" || bad "技能目录缺失"
 [ -f "$P/.agents/skills/tdd/SKILL.md" ] && ok ".agents 技能已装" || bad ".agents 技能缺失"
 [ -f "$P/.claude/skills/design-pipeline/scripts/ui-reference.py" ] \
@@ -648,14 +655,23 @@ python3 -m installer "$U" > /dev/null 2>&1
 python3 -m installer --uninstall "$U" > "$T/un2.log" 2>&1
 check "完整卸载（唯一残留为 seed）退出码 0" 0 $?
 [ -f "$U/docs/memory/README.md" ] && ok "seed file 永不卸载" || bad "seed 被卸载"
+[ -f "$U/docs/memory/constitution.md" ] && ok "宪章 seed 永不卸载" || bad "宪章 seed 被卸载"
 python3 - "$U" <<'PY' && ok "缩减版 Manifest 只含残留项" || bad "缩减 Manifest 异常"
 import json, sys
 from pathlib import Path
 d = json.loads((Path(sys.argv[1]) / ".repo-memory-kit" / "manifest.json").read_text())
 ids = [e["spec_id"] for e in d["entries"]]
-assert ids == ["memory-readme-seed", "requirements-index"], \
-       f"期望仅 seed 残留（记忆 README + 需求索引），实际 {ids}"
+assert set(ids) == {"memory-constitution-seed", "memory-readme-seed", "requirements-index"}, \
+       f"期望仅 seed 残留（通用宪章、记忆 README、需求索引），实际 {ids}"
 PY
+# 既有项目宪章属于用户；首次安装也必须跳过而非替换。
+PRE="$T/pre-existing-charter"
+mkdir -p "$PRE/docs/memory"
+printf '# Existing project charter\n' > "$PRE/docs/memory/constitution.md"
+python3 -m installer "$PRE" > "$T/pre-existing-charter.log" 2>&1
+check "既有宪章首次安装退出码 0" 0 $?
+grep -q '^# Existing project charter$' "$PRE/docs/memory/constitution.md" \
+  && ok "首次安装保留既有宪章" || bad "首次安装覆盖既有宪章"
 # 再次完整安装后用 --codex-root 卸载：外部链接三段式真实执行
 U2="$T/uninstall3"
 CR="$T/codexroot2"
@@ -1200,17 +1216,20 @@ python3 -m installer "$P19" >/dev/null 2>&1
 N19=$(find "$P19/.claude/skills/archify" -type f | wc -l)
 [ "$N19" -ge 80 ] && ok "17.2 archify 文件齐（$N19 个）" || bad "17.2 文件缺（$N19）"
 
-# 供应链锁定：篡改 vendor → 安装拒绝（SecurityError）
+# 供应链锁定：只篡改临时 kit 副本，不能让并发测试/断电污染主源码。
 cp vendor/archify/SKILL.md "$T/sk.orig"
-echo "# tampered" >> vendor/archify/SKILL.md
-python3 -m installer "$P19" > "$T/tamper.log" 2>&1
+TAMPER_KIT="$T/tampered-kit"
+mkdir -p "$TAMPER_KIT"
+cp -R installer aek vendor templates skills "$TAMPER_KIT/"
+cp VERSION "$TAMPER_KIT/VERSION"
+echo "# tampered" >> "$TAMPER_KIT/vendor/archify/SKILL.md"
+(cd "$TAMPER_KIT" && PYTHONPATH="$TAMPER_KIT" python3 -m installer "$P19") > "$T/tamper.log" 2>&1
 RC_T=$?
 [ "$RC_T" != "0" ] && grep -q "供应链\|快照哈希" "$T/tamper.log" \
     && ok "17.3 vendor 篡改 → 安装拒绝（供应链锁定生效）" \
     || bad "17.3 篡改未拦截: rc=$RC_T"
-cp "$T/sk.orig" vendor/archify/SKILL.md
 [ "$(sha256sum vendor/archify/SKILL.md | cut -d' ' -f1)" = "$(sha256sum "$T/sk.orig" | cut -d' ' -f1)" ] \
-    && ok "17.4 vendor 已还原" || bad "17.4 vendor 还原失败"
+    && ok "17.4 主源码 vendor 从未改写" || bad "17.4 主源码 vendor 被意外改写"
 
 # doctor：Node 在位 → 无 archify 降级
 python3 -m installer --doctor "$P19" > "$T/doc19.log" 2>&1
