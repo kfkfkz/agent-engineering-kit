@@ -26,12 +26,9 @@ LLM 不产生不可验证状态
 LLM 只产生结构化观察和候选内容
 ```
 
-目录结构（原始需求与设计文档分离——`NNN-名称` 两处同名）：
-
-```
-docs/01-需求/NNN-名称/     原始需求.md + 原始材料（维护者产物，不进门禁）
-docs/03-SDD/NNN-名称/     需求分析/概要/UI/详细/API/数据库/任务/测试/联调/终稿 + reviews/
-```
+新需求包默认登记在 `docs/需求/<版本>/<名称>/`。沿已登记的包元数据或项目明确布局分别读取
+原始需求根、设计根及受管索引。旧 `docs/01-需求/NNN-名称` 与 `docs/03-SDD/NNN-名称`
+按原位置接续。原始需求及原始材料由维护者提供，正式门禁读取本阶段参与设计来源。
 
 阶段顺序由冻结的 ArtifactPlan 决定。以下是完整拓扑，不是“每次都做”的固定清单；标记
 `skipped` 的 Artifact 不生成、不评审、不冻结，后继阶段使用计划解析出的最近参与前置：
@@ -82,13 +79,13 @@ Agent 的工具调用中；仅当用户明确要求诊断底层命令时才展�
 
 ### 1. 定位与取上下文
 
-1. 解析 SKILL.md 真实路径（跟随符号链接），向上三级为 kit 仓库根——**模板在
-   `templates/requirements/`**（原始需求→01-需求；需求分析/概要/UI/详细/API/数据库/
-   任务/测试/联调/终稿→03-SDD）。
-2. 目标 SDD 目录 `docs/03-SDD/NNN-名称/`（用户指定或对话中最近的目标）；
-   原始需求在同号 `docs/01-需求/NNN-名称/`——生成需求分析前先读它，不脱离原始需求加戏。
-   需求已指派但 SDD 目录不存在（或索引行缺失）→ Agent 运行
-   `doc-gate init NNN-名称 --repo <仓库根>`（登记单一入口：两处目录+模板骨架+索引行，幂等）。
+1. 解析 SKILL.md 的真实位置以定位 kit 模板，再从目标工作区确定当前仓库。使用明确指定的需求包或
+   当前已登记的包。沿包记录的 `source_root` 读取原始需求，沿 `design_root` 处理阶段文档。
+2. 新需求用本轮已明确的版本与名称，从内部调用
+   `doc-gate init <名称> --version <版本> --repo <仓库根> --json`。
+   默认 `auto` 先检查当前项目布局，随后使用同目录版本包。后续阶段用实际返回的
+   `package.design_root`、`package.source_root` 和 `index_registration`。项目或维护者明确沿用旧双目录时，
+   使用其实际 `NNN-名称` 及 `--layout legacy`。已有包按现有身份打开，目录或索引冲突时说明具体位置。
 3. 生成前先取证：先调用 `memory_recall` MCP，并以 context 绑定当前 Route、stage、`purpose=target_evidence`、subject
    digest 和稳定 session ID；仅在 MCP 不可见/不兼容/调用开始前失败时内部降级到等价
    `memory-recall --context-json`，再失败才做有界 metadata 文本查找。只读取返回的 expanded 正文，
@@ -102,10 +99,14 @@ Agent 的工具调用中；仅当用户明确要求诊断底层命令时才展�
    文本"已冻结"不构成冻结凭证，冻结后改动会被哈希检出。若当前文档在既有凭证后有改动，
    必须先展示本轮差异并重新取得确认；不要自动沿用旧签核。
    **冻结时机提醒**：需求分析冻结前，向维护者确认两件事——开发人员、需求上线
-   时间（回填 `docs/01-需求/README.md` 索引表自己的行）。
+   时间。回填实际包登记的受管索引行。旧双目录使用原索引，第三方索引由对应项目流程更新。
 
 ### 2. Author：按模板生成阶段文档
 
+- 已采用项目外部设计 Skill 时先落实单一写者、当前客户端入口和真实产物路径。通过原 ArtifactPlan 的
+  `--source-map` 绑定外部概要、业务流程、UI 或详细设计。保留原正文，在映射中建立逻辑 ID。当前客户端
+  可见性和调用结果分别观察，配置存在仅说明配置。外部业务流程以当前完整文件和映射送人评审，确认后把
+  内部预检给出的本轮 `approved_input_sha256` 交给原冻结操作。
 - 骨架从模板复制；**不适用的章节写 N/A + 原因，不删节**（结构稳定是确定性校验的前提）。
 - 接地规则：设计令牌/文案/菜单树取自真实源码与运行环境；复用能力一句话引用；
   现状描述必须有代码证据。
@@ -134,8 +135,8 @@ context 的 stage 为 `design`，purpose=`target_evidence` 或审查的 `review_
 - 先从本次需求、场景、验收和概要功能点识别页面、关键交互状态和权限上下文；按布局/行为去重，给出最小截图清单。不要枚举权限、数据范围、版本、视口的全组合；无 UI 影响时标 `N/A + 原因` 并跳过本节。
 - 先确认用户提供的组件体系/版本/主题。用户未知时，先用 `codebase-memory` 定位前端入口、依赖和设计令牌，再读必要配置/源码；记录证据路径或 `unknown`，不得猜测。
 - 已登记的新布局沿同一个包定位器读取材料。所有截图操作使用同一 `--package-ref <仓库相对包路径>`，从实际包元数据取得机器 ID 与材料根。旧目录继续用原参数。
-- 在 `docs/01-需求/<需求目录>/原始材料/ui-reference/` 运行受管 helper `python3 <已安装 design-pipeline>/scripts/ui-reference.py scaffold --repo-root <仓库根>`，UTF-8 请求 JSON 从 stdin 输入。机器标识 `change_id` 和实际目录分别表示：例如目录 `003-中文需求名称` 对应 `change_id: "CHG-003"`、`requirement_dir: "003-中文需求名称"`，编号目录必须使用 `CHG-NNN` 映射；旧 schema 1 省略 `requirement_dir` 时沿用 `change_id` 目录。`requirement_dir` 只能是安全单级目录名，截图/权限等 ID 仍使用原有稳定短 ID 校验。helper 创建 `截图索引.json` 和空 `.png` 占位；不得要求用户在对话附件上传。向用户列出需替换的文件路径、页面/状态、采集权限/版本/视口和脱敏提醒；不覆盖既有图或手改索引。
-- 用户替换后执行 `validate --repo-root <仓库根> --change-id CHG-003 --requirement-dir 003-中文需求名称` 并传播原始 JSON 结果和退出码；`record-review`、`bind-prototype` 使用同一组目录参数，旧 `CHG-*` 目录可省略 `--requirement-dir`。技术有效只说明文件可读；每个 `applies_to` 权限上下文还要独立核实页面内容适用性和当前系统新鲜度。布局可逻辑复用，但不得继承另一上下文的权限/数据可见性结论。图片不可视觉读取、未确认或不适用时，只阻断依赖它的页面/区域基线。
+- 用受管 UI helper 从 UTF-8 JSON 准备占位图和 `截图索引.json`。按返回路径列出待替换的文件、页面/状态、采集权限、版本、视口和脱敏提醒。旧 `003-中文需求名称` 用 `change_id: "CHG-003"` 和该单级 `requirement_dir`。新包以实际 `--package-ref` 定位。
+- 用户替换后沿同一定位参数执行 `validate`、`record-review`、`bind-prototype`。每个 `applies_to` 上下文独立核实图片技术有效、视觉适用和当前性。共享布局仍按各自权限核实。图片不可读取、未确认或不适用时阻断依赖它的页面或区域。
 - 需要观察文本时按需读取[截图观察工作流](references/screenshot-observation-workflow.md)，使用显式v2准备/记录入口；来源当前且区域足够则复用，缺失才读取[提取契约](references/screenshot-observation.md)并用获准通道定向看图，不自动调用模型。观察不代替适用性、必要视觉核对或人工确认；旧安装缺入口时只保留候选，不宣称已缓存。
 - 原型依赖组件、布局或Token源码时按需读取[源码区域基线](references/ui-source-baseline.md)，绑定实际来源及区域意图；沿原联合依赖摘要复核，不把来源哈希当语义批准或扩大上游范围。
 - 对确实可读取的图像做视觉核对；否则请维护者核实。只有已看过材料且上下文对应时才通过受限 `record-review` 更新，使用当前索引 SHA 做 CAS；不手写/替代派生状态。`git_status` 保留 `tracked/untracked/unknown` 语义，`git_staging` 单独报告 `added/modified/renamed/copied/deleted/unmerged/none/unknown`，原始截图已暂存或跟踪时告警；只读检查使用字面路径，不改写 Git 配置或索引，不自动 add/commit。Git 不可用或非仓库时为 `unknown`。
@@ -254,9 +255,8 @@ lifecycle snapshot 的确定性 PASS gate 才能派生 `CLOSED`；Agent 不手�
 .repo-memory-kit/bin/doc-gate gate <SDD目录> --stage <阶段>
 ```
 
-- **PASS（退出码 0）** → 文档冻结（gate.json 记录哈希）→ **回填索引行**：更新
-  `docs/01-需求/README.md` 中本需求的"当前功能开发阶段"列（只动自己的行——
-  多人协作下公共索引冲突面最小）→ 进入下一阶段。
+- **PASS（退出码 0）** → 文档冻结 → 回填实际包登记的受管索引行 → 进入下一阶段。
+  旧双目录更新原索引中本需求的阶段列。第三方生成索引沿项目入口更新。
 - **NEEDS_REVISION（1）** → 只修 gate.json 指定的问题（REV-ID/hard 项），有新相关证据后回步骤 3。
   **定向修改，禁止借机重写全文**——防设计漂移。完成修改后按步骤 4 写 FIXED claim 并重送当前
   Review；不得仅清空 issues.json 或复用旧 receipt 来制造通过。

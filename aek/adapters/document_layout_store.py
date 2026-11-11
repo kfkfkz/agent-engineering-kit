@@ -122,6 +122,10 @@ def _index_path(package):
     return "/".join(common) + "/README.md"
 
 
+def _index_registration(package):
+    return {"status": "REGISTERED", "path": _index_path(package), "change_id": package.change_id}
+
+
 def _inputs(root):
     return _input_hashes(_capture_inputs(root))
 
@@ -275,7 +279,7 @@ def _resume(root, journal, title, version, layout):
         fs.unlink(kit, "document-init.tx.json")
         fs.fsync_dir(kit)
     return package, {"created": [path for path, before, _after, _current in rows if before is None],
-                     "skipped": [], "index_row_added": True}
+                     "skipped": [], "index_row_added": True, "index_registration": _index_registration(package)}
 
 
 def initialize_package(repo: Path, title: str, version: str, *, layout="auto", fault_after=None):
@@ -306,7 +310,8 @@ def initialize_package(repo: Path, title: str, version: str, *, layout="auto", f
                 existing = resolve_package_at(root, package.package_ref)
                 if (existing.title, existing.version, existing.layout) != (title, version, package.layout):
                     raise ValueError("LAYOUT_CONFLICT: location already has another identity")
-                return existing, {"created": [], "skipped": [package.package_ref], "index_row_added": False}
+                return existing, {"created": [], "skipped": [package.package_ref], "index_row_added": False,
+                                  "index_registration": _index_registration(existing)}
             if any(row['change_id'] == package.change_id for row in registrations):
                 raise ValueError('DUPLICATE_ID: generated identity already belongs to another package')
             if _optional(root, package.design_root + "/reviews/package.json") is not None:

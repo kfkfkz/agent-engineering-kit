@@ -106,6 +106,8 @@ class InstalledChineseUiTests(unittest.TestCase):
                 req = repo / initialized['package']['design_root']
                 material = repo / initialized['package']['source_root'] / '原始材料/ui-reference'
                 selector = ('--package-ref', req.relative_to(repo).as_posix())
+                index_ref = initialized['index_registration']['path']
+                self.assertIn(change_id, (repo / index_ref).read_text(encoding='utf-8'))
             else:
                 invoke(gate, "init", NAME, "--repo", str(repo), "--json")
                 change_id, directory = 'CHG-003', NAME
@@ -125,7 +127,9 @@ class InstalledChineseUiTests(unittest.TestCase):
             screenshot = material / "function/FP01/data/DP01/P1.png"
             self.assertEqual(screenshot.read_bytes(), b"")
             self.assertFalse((repo / "docs/01-需求/CHG-003").exists())
-            common = ("--repo-root", str(repo), "--change-id", change_id, *selector)
+            common = ("--repo-root", str(repo), *selector)
+            if not co_located:
+                common += ("--change-id", change_id)
             invoke(helper, "validate", *common, expected=1)
             screenshot.write_bytes(image(b"\x11\x22\x33"))
             invoke(helper, "validate", *common, expected=1)

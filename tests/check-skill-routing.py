@@ -94,6 +94,10 @@ for tool in ("memory-recall", "memory-build", "doc-gate", "route-eval", "governa
 pipeline = (ROOT / "skills/design-pipeline/SKILL.md").read_text(encoding="utf-8")
 if "返回 `repo-delivery`" not in pipeline:
     errors.append("design-pipeline 完成后没有明确返回 repo-delivery")
+for phrase in ("docs/需求/<版本>/<名称>/", "init <名称> --version <版本>", "package.design_root",
+               "package.source_root", "index_registration", "--package-ref"):
+    if phrase not in pipeline:
+        errors.append(f"design-pipeline 缺少实际需求包定位约定: {phrase}")
 
 # Human approval is a decision gate, not a reason to delegate local CLI work.
 # Once approval and signer identity are explicit, the orchestrating Agent must

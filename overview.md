@@ -4,7 +4,7 @@
 
 Agent Engineering Kit（AEK）是一套面向 **AI Coding Agent 与真实软件工程协作** 的仓库级工程控制体系。
 
-当前代码版本为 **1.0.8**。现有主链将 Task Route 与 Governance
+当前代码版本为 **1.0.9**。现有主链将 Task Route 与 Governance
 风险裁决分离，固定 Memory-first / Codebase-first 检索与新鲜度屏障，提供 Review Issue 生命周期、
 WorkUnit 恢复和身份绑定的 Delivery Gate。1.0.4 增加定向安全记录、依赖采用前置与交付复验，
 并明确真实宿主来源、独立证据和执行隔离的边界；变更见 [Changelog](CHANGELOG.md)，正式发布以版本标签与 Releases 为准。

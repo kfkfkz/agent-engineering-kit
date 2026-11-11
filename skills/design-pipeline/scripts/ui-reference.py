@@ -1841,10 +1841,7 @@ def _parser() -> argparse.ArgumentParser:
             sub.add_argument('--format', choices=('json', 'human'), default='json')
         if name in {'scaffold', 'validate', 'record-review', 'bind-prototype'}:
             sub.add_argument('--schema-version', choices=(1, 2), type=int, default=1)
-        if name != "scaffold":
-            sub.add_argument("--change-id", required=True)
-        else:
-            sub.add_argument('--change-id')
+        sub.add_argument('--change-id')
         location = sub.add_mutually_exclusive_group()
         location.add_argument('--requirement-dir')
         location.add_argument('--package-ref', help='explicit registered repository-relative package path')
@@ -1860,10 +1857,14 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="strict")
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.command != 'scaffold' and args.change_id is None and args.package_ref is None:
+        parser.error('provide --change-id or --package-ref')
     explicit_v2 = getattr(args, 'schema_version', 1) == 2
     try:
         package = resolve_package(args.repo_root, args.package_ref) if args.package_ref is not None else None
         if package is not None:
+            if package.layout == 'legacy':
+                fail('legacy directories use --change-id and --requirement-dir')
             if args.change_id is not None and args.change_id != package.change_id:
                 fail('package change ID does not match the explicit selector')
             args.change_id, args.requirement_dir = package.change_id, package.title

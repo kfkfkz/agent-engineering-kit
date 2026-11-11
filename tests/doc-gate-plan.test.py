@@ -137,8 +137,10 @@ class DynamicPlanCliTests(unittest.TestCase):
             "需求分析.md=" + hashlib.sha256(original).hexdigest(), "--json").stdout)
         first = json.loads(self.run_gate("status", str(self.req), "--json").stdout)
         self.assertEqual(first["概要设计"]["state"], "FROZEN")
-        changed = original.replace("现有流程需要一次安全的小幅调整。\n".encode(),
-                                   "现有流程需要一次安全的小幅调整。\r\n".encode())
+        line = "现有流程需要一次安全的小幅调整。".encode("utf-8")
+        ending = b"\r\n" if line + b"\r\n" in original else b"\n"
+        replacement = b"\n" if ending == b"\r\n" else b"\r\n"
+        changed = original.replace(line + ending, line + replacement, 1)
         self.assertNotEqual(changed, original)
         source.write_bytes(changed)
         self.run_gate("gate", str(self.req), "--stage", "需求分析", "--refresh-equivalent",

@@ -14,18 +14,18 @@ AEK 将 Skills、项目记忆、代码图谱接入和可重复执行的门禁安
 - **凭证随版本变化**：代码、文档、策略或证据变化后，重新检查相关结论；中断任务先核验进度和提交状态再继续。
 - **安全审查留下可复核证据**：依赖采用前核对公告与兼容性，交付时复核真实解析版本和发布物；安全发现的修复、独立复验、审批和关闭分别记录。
 
-当前代码版本为 **1.0.8**，正式发布以 [GitHub Releases](https://github.com/kfkfkz/agent-engineering-kit/releases) 为准，完整变化见 [Changelog](CHANGELOG.md)。AEK 不自带模型服务；开发侧离线核验不要求连接模型 API。
+当前代码版本为 **1.0.9**。稳定发布以 [GitHub Releases](https://github.com/kfkfkz/agent-engineering-kit/releases) 为准，完整变化见 [Changelog](CHANGELOG.md)。
 
-1.0.8 改善现有系统的原型设计：截图可局部推进、理解结果可按摘要复用、相关状态可集中对照并一次确认；补齐安全证据覆盖与确定版本检查，首次安装提供用户可维护的通用宪章。不自动登录、上传截图或新增日常全量扫描，详见[使用指南](USAGE.md)。
+1.0.9 支持确定等价的文档格式刷新、按版本组织新需求包，以及将外部设计接入原门禁。显式 schema3 原型可在合格的可信 Linux 宿主中运行固定交互序列。维护者在终端独立确认当前观察。详见[使用指南](USAGE.md)。
 
 安全机械入口 `security-check` 提供只读 evaluate/report/doctor/plan。可选扫描器不自动安装或下载；固定工具执行需可信宿主明确配置、采用与授权，普通 CLI/MCP 不授予扫描、审批或关闭权限。用户仍通过 `security-review` 获得定向审查与补验建议，详见[使用指南](USAGE.md#安全审查与依赖治理)。
 
 ## 快速开始
 
-需要 **Python 3.10+**。从 [Releases](https://github.com/kfkfkz/agent-engineering-kit/releases) 选择正式稳定标签；以下命令须在 v1.0.8 正式 Release 发布后使用，若尚未发布请替换为最新稳定标签：
+需要 **Python 3.10+**。从 [Releases](https://github.com/kfkfkz/agent-engineering-kit/releases) 选择正式稳定标签。下面以 v1.0.9 为例。
 
 ```bash
-git clone --branch v1.0.8 --depth 1 https://github.com/kfkfkz/agent-engineering-kit.git
+git clone --branch v1.0.9 --depth 1 https://github.com/kfkfkz/agent-engineering-kit.git
 cd agent-engineering-kit
 ```
 
