@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -158,9 +158,8 @@ class InteractivePreparationTests(unittest.TestCase):
     def test_original_gate_freezes_external_ui_source_without_a_native_copy(self):
         self.exercise_original_ui_gate(mapped=True)
 
-    def exercise_original_ui_gate(self, *, mapped):
+    def exercise_original_ui_gate(self, *, mapped, runtime=None):
         from aek.adapters.security_host import TerminalHostEventSource
-        from aek.adapters.ui_interactive_host import LinuxInteractiveHostProfile
         from aek.adapters.ui_interactive_renderer import PROFILE_ID, InteractionCapture
         from aek.application.local_host import LocalToolHost
         from aek.core.artifact.ui_preview import RenderConditions
@@ -251,19 +250,20 @@ class InteractivePreparationTests(unittest.TestCase):
                 changed.write_bytes(changed.read_bytes().replace(old_plan.encode(), new_plan.encode())
                                     .replace(old_gate.encode(), new_gate.encode()))
         interaction_path = prototype_base / self.spec_path
-        sequence = interaction_bytes({'action': 'capture', 'state': 'default'})
+        sequence = interaction_bytes({'action': 'capture', 'state': 'default'},
+                                     {'action': 'click', 'selector': 'button'},
+                                     {'action': 'capture', 'state': 'dialog'})
         interaction_path.write_bytes(sequence)
         original_sha = sha(self.interactions)
         path.write_bytes(path.read_bytes().replace(original_sha.encode(), sha(sequence).encode()))
         index.write_bytes(index.read_bytes().replace(original_sha.encode(), sha(sequence).encode()))
         def prepare(selected):
             return commands['_prepare_prototype_selection'](req, [selected], 3)
-        profile = LinuxInteractiveHostProfile(host_fixture.authority, host_fixture.port, runtime=host_fixture.runtime,
-            target=target, conditions=RenderConditions(64, 64), prepare_selection=prepare,
-            read_html=lambda relative: (prototype_base / relative).read_bytes(), sequence='review',
-            read_interaction_spec=lambda _selected: interaction_path.read_bytes(),
+        profile = commands['compose_interaction_profile'](req, authority=host_fixture.authority, source_port=host_fixture.port,
+            runtime=runtime or host_fixture.runtime,
+            target=target, conditions=RenderConditions(64, 64), sequence='review',
             required_components=host_tests['REQUIRED'], adoption_proposals=(host_fixture.proposal,),
-            adoption_source_refs=('advisory', 'compatibility'), clock=host_fixture.authority._clock)
+            adoption_source_refs=('advisory', 'compatibility'))
         profiles = {target: profile}
         host = LocalToolHost(host_source=host_fixture.host, authority=host_fixture.authority,
                              source_port=host_fixture.port, providers={PROFILE_ID: profile})
@@ -271,10 +271,12 @@ class InteractivePreparationTests(unittest.TestCase):
         run = host.prepare(request)
         png = fixtures.png()
         terminal = host_tests['host_fixture'].Terminal
+        renderer = (nullcontext() if runtime is not None else patch(
+            'aek.adapters.ui_interactive_host.render_interaction', return_value=tuple(
+                InteractionCapture(state, png, sha(png)) for state in ('default', 'dialog'))))
         with patch.object(sys, 'stdin', terminal()), redirect_stdout(terminal()), \
                 patch('builtins.input', return_value='RUN ' + run['binding']['plan_digest'][:12]), \
-                patch('aek.adapters.ui_interactive_host.render_interaction',
-                      return_value=(InteractionCapture('default', png, sha(png)),)):
+                renderer:
             result = host.execute(request, reviewer='test-runtime')
         self.assertEqual(result['status'], 'COMPLETED', result)
         args = ('--schema-version', '3', '--target', '/'.join(target), '--reviewer', 'test-maintainer',

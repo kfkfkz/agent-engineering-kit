@@ -26,9 +26,22 @@ from aek.core.security.authority import digest
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--runtime-root', type=Path, required=True)
+    parser.add_argument('--through-doc-gate', action='store_true',
+                        help='also check external source, terminal confirmation, original UI Gate and invalidation')
     args = parser.parse_args()
     static = runpy.run_path(str(ROOT / 'tests/ui-linux-renderer.integration.py'))
     runtime = static['pinned_runtime'](args.runtime_root.absolute())
+    if args.through_doc_gate:
+        cases = runpy.run_path(str(ROOT / 'tests/ui-interactive-prototype.test.py'))
+        case = cases['InteractivePreparationTests']()
+        try:
+            case.setUp()
+            case.exercise_original_ui_gate(mapped=True, runtime=runtime)
+        finally:
+            case.doCleanups()
+        print(json.dumps({'actual_browser': True, 'external_ui_gate': 'FROZEN',
+                          'after_spec_change': 'DRAFT', 'human_approval': False}))
+        return 0
     tests = runpy.run_path(str(ROOT / 'tests/ui-render-host.test.py'))
     html = b'''<!doctype html><form id="form" onsubmit="return false">
 <label>Name <input id="name" required></label>

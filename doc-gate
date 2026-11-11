@@ -2281,11 +2281,14 @@ def _feature_items(req_dir, state, overview=None):
     return {point['id']: {'covers': point['covers']} for point in roles[0]['points']}
 
 
+_MAPPED_DESIGN_STAGES = frozenset({'概要设计', '业务流程设计', 'UI设计', '详细设计'})
+
+
 def _capture_mapped_stage(req_dir, stage, dynamic_state):
     roles = _mapped_stage_roles(dynamic_state, stage)
     if not roles:
         return None
-    if stage not in {'概要设计', '业务流程设计', 'UI设计', '详细设计'}:
+    if stage not in _MAPPED_DESIGN_STAGES:
         raise ValueError('当前阶段尚无外部来源校验入口')
     root, package = _package_locations(req_dir)
     mapping = load_source_map(dynamic_state.plan.source_map)
@@ -2696,31 +2699,28 @@ def _review_subject_digest(
 
 
 def _atomic_review_write(path: Path, content: bytes) -> None:
-    """Publish non-authoritative review evidence without torn files."""
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL
-                 | getattr(os, "O_BINARY", 0), 0o600)
+    """Publish a complete review record through a pinned directory handle."""
+    directory = _open_dir_nofollow(path.parent)
+    temporary = f".{path.name}.tmp-{secrets.token_hex(8)}"
+    owned = False
     try:
-        remaining = content
-        while remaining:
-            written = os.write(fd, remaining)
-            if written <= 0:
-                raise OSError("short review evidence write")
-            remaining = remaining[written:]
-        os.fsync(fd)
+        fd = _ui_fs.open_file(directory, temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                              | getattr(os, "O_BINARY", 0), 0o600)
+        owned = True
+        try:
+            _write_all(fd, content)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        _ui_fs.replace(directory, temporary, directory, path.name)
+        owned = False
+        _ui_fs.fsync_dir(directory)
     finally:
-        os.close(fd)
-    try:
-        os.replace(temporary, path)
-        if os.name != "nt":
-            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+        try:
+            if owned:
+                _ui_fs.unlink(directory, temporary)
+        finally:
+            _ui_fs.close_dir(directory)
 
 
 def _read_review_bytes(path: Path) -> bytes:
@@ -3151,9 +3151,8 @@ def cmd_review_input(req_dir: Path, stage: str, as_json: bool,
             upstream_materials = _capture_upstream_materials(req_dir, stage, dynamic_state)
             checks = run_checks(req_dir, stage, dynamic_state, source_materials=sources,
                                 mapped_stage=mapped, upstream_materials=upstream_materials)
-            (reviews / "hard-checks.json").write_text(
-                json.dumps(checks.to_dict(), ensure_ascii=False, indent=2),
-                encoding="utf-8")
+            _atomic_review_write(reviews / "hard-checks.json",
+                json.dumps(checks.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"))
             if checks.fails:
                 print(f"✗ {stage} 硬校验未过，不能生成评审输入")
                 return 1
@@ -3336,8 +3335,8 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
         _require_approved_upstream(req_dir, dynamic_state, upstream_materials)
     reviews_dir = req_dir / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
-    (reviews_dir / "hard-checks.json").write_text(
-        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_review_write(reviews_dir / "hard-checks.json",
+        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"))
 
     # P1：必审阶段拒绝 --no-review（此前可绕过 AI 评审直接 PASS）
     if no_review and spec["review"] is True:
@@ -3718,8 +3717,8 @@ def _cmd_freeze_locked(req_dir: Path, stage: str, approved_by: str, as_json: boo
         return 3
     reviews_dir = req_dir / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
-    (reviews_dir / "hard-checks.json").write_text(
-        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_review_write(reviews_dir / "hard-checks.json",
+        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"))
     gate = {
         "stage": stage, "status": "PASS",
         "time": datetime.now().isoformat(timespec="seconds"),
@@ -3859,9 +3858,8 @@ def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, ma
         failures.append("上游阶段指纹不可验证")
 
     reviews_dir.mkdir(parents=True, exist_ok=True)
-    (reviews_dir / "hard-checks.json").write_text(
-        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _atomic_review_write(reviews_dir / "hard-checks.json",
+        json.dumps(checks.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"))
     if failures:
         if as_json:
             print(json.dumps({"stage": "计划", "status": "NEEDS_REVISION",
@@ -4943,6 +4941,10 @@ def _verify_composition(req_dir, mapping):
     relative = req_dir.absolute().relative_to(root.absolute()).as_posix()
     if mapping.package_ref != relative or package.package_ref != relative:
         raise ValueError('ROOT_MISMATCH: source mapping belongs to another design package')
+    for artifact in mapping.artifacts:
+        role = ARTIFACT_REGISTRY.get_artifact(artifact['artifact_id'])
+        if role.group_id not in _MAPPED_DESIGN_STAGES:
+            raise ValueError(f'UNSUPPORTED_MAPPING_ROLE: {role.id} requires its original document workflow')
     epoch = capture_composition(root, mapping)
     if epoch.package_revision != package.revision:
         raise ValueError('SOURCE_CHANGED: package revision changed while verifying composition')
@@ -5141,6 +5143,54 @@ def _prototype_preparation_maps(req_dir: Path, targets, *, require_confirmation=
 def _prepare_prototype_selection(req_dir: Path, targets, schema_version=2) -> dict:
     items = _prototype_preparation_maps(req_dir, targets, schema_version=schema_version)
     return _prototype_prepared_payload([items[target] for target in sorted(items)], schema_version)
+
+
+def compose_interaction_profile(req_dir, *, authority, source_port, runtime, target, conditions, sequence,
+                                required_components, adoption_proposals, adoption_source_refs):
+    """Bind trusted host configuration to this package's actual scoped files."""
+    from aek.adapters.security_host import TerminalHostEventSource
+    from aek.adapters.ui_interactive_host import LinuxInteractiveHostProfile
+
+    req_dir = Path(req_dir).absolute()
+    repo, package = _package_locations(req_dir)
+    if (Path(authority.repository_ref) != repo
+            or type(authority.host_source) is not TerminalHostEventSource
+            or _prototype_selection_targets([target]) != (target,)):
+        raise ValueError('INTERACTION_UNAVAILABLE: trusted host does not own this package and target')
+    store = PlanStore(req_dir / 'reviews')
+
+    def current_spec():
+        with store.read_view(req_dir) as view:
+            state = _dynamic_state_from_snapshot(view.snapshot(), req_dir=req_dir)
+        if state is None or state.state != 'FROZEN' or _package_locations(req_dir) != (repo, package):
+            raise ValueError('SOURCE_CHANGED: current interactive package or plan changed')
+        text, mapped = _ui_stage_material(req_dir, state)
+        manifest = _prototype_manifest(text)
+        if manifest['schema_version'] != 3:
+            raise ValueError('interactive host requires explicit schema 3')
+        item, = (row for row in manifest['prototypes'] if _prototype_target(row, 3) == target)
+        root = req_dir if mapped is None else repo / Path(mapped[0]).parent
+        if item['approved_root'] != root.relative_to(repo).as_posix():
+            raise ValueError('SOURCE_CHANGED: prototype root differs from the bound design source')
+        return root, item
+
+    def read_material(relative, *, specification):
+        root, item = current_spec()
+        expected = interaction_reference(item)[0] if specification else item['prototype_path']
+        if relative is not None and expected != relative:
+            raise ValueError('SOURCE_CHANGED: prototype path changed after preparation')
+        handle = _open_dir_nofollow(root)
+        try:
+            return _read_beneath(handle, expected, MAX_INTERACTION_BYTES if specification else MAX_HTML_BYTES)
+        finally:
+            _ui_fs.close_dir(handle)
+
+    return LinuxInteractiveHostProfile(authority, source_port, runtime=runtime, target=target,
+        conditions=conditions, sequence=sequence, required_components=required_components,
+        adoption_proposals=adoption_proposals, adoption_source_refs=adoption_source_refs,
+        clock=authority._clock, prepare_selection=lambda selected: _prepare_prototype_selection(req_dir, [selected], 3),
+        read_html=lambda relative: read_material(relative, specification=False),
+        read_interaction_spec=lambda _selected: read_material(None, specification=True))
 
 
 def _prepare_prototype_v2(req_dir: Path, target: tuple) -> dict:
