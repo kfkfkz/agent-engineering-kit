@@ -5562,7 +5562,11 @@ def cmd_prototype_confirm_v3(req_dir, targets, reviewer, expected_prepare, sourc
         authority = next(iter(authorities.values()))
         results, pending = {}, {}
         for target, (profile, member) in members.items():
-            prior = _read_interactive_confirmation(req_dir, profile, member)
+            try:
+                prior = _read_interactive_confirmation(req_dir, profile, member)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                results[target] = {**member, 'status': 'CONFLICT', 'error': str(exc)}
+                continue
             if prior is None:
                 pending[target] = member
             else:
@@ -5585,20 +5589,27 @@ def cmd_prototype_confirm_v3(req_dir, targets, reviewer, expected_prepare, sourc
                                'event_id': event_id, 'reviewer': reviewer}
                     for target, member in pending.items():
                         try:
-                            _publish_prototype_receipt(req_dir, _interactive_receipt_name(member), receipt)
-                        except FileExistsError:
-                            pass
-                        prior = _read_interactive_confirmation(req_dir, members[target][0], member)
-                        if prior is None:
-                            raise ValueError('confirmation publication could not be verified')
-                        results[target] = {**member, **prior, 'status': 'ACCEPTED'}
+                            try:
+                                _publish_prototype_receipt(req_dir, _interactive_receipt_name(member), receipt)
+                            except FileExistsError:
+                                pass
+                            prior = _read_interactive_confirmation(req_dir, members[target][0], member)
+                            if prior is None:
+                                raise ValueError('confirmation publication could not be verified')
+                            results[target] = {**member, **prior, 'status': 'ACCEPTED'}
+                        except (OSError, ValueError, TypeError, KeyError) as exc:
+                            results[target] = {**member, 'status': 'CONFLICT', 'error': str(exc)}
             else:
                 status = {'REVISE': 'NEEDS_REVISION', 'BLOCK': 'BLOCKED', 'CANCEL': 'CANCELLED'}[decision]
                 for target, member in pending.items():
                     results[target] = {**member, 'status': status}
-        print(json.dumps({'schema_version': 3, 'per_item': [results[target] for target in targets]},
-                         ensure_ascii=False))
-        return 0
+        rows = [results[target] for target in targets]
+        conflict = any(row['status'] == 'CONFLICT' for row in rows)
+        current = all(row['status'] == 'ACCEPTED' for row in rows)
+        print(json.dumps({'schema_version': 3, 'per_item': rows,
+            'projection_status': 'CURRENT' if current else ('PENDING' if conflict else 'UNCHANGED')},
+            ensure_ascii=False))
+        return 3 if conflict else 0
     except (OSError, ValueError, TypeError, KeyError, EOFError) as exc:
         print(json.dumps({'schema_version': 3, 'per_item': [{'status': 'CONFLICT', 'error': str(exc)}]},
                          ensure_ascii=False))

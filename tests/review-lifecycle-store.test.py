@@ -56,6 +56,20 @@ class LifecycleGateStoreTests(unittest.TestCase):
             "doc_hashes": {"详细设计.md": "c" * 64},
         }
 
+    def test_pass_publication_while_review_directory_is_pinned(self) -> None:
+        from aek.adapters import ui_filesystem
+
+        directory = ui_filesystem.open_absolute_dir(self.reviews)
+        try:
+            store = LifecycleGateStore(self.reviews, "详细设计")
+            closed, gate = store.publish_pass_gate(
+                verified_snapshot(), self.gate(), expected_snapshot_digest=None)
+            self.assertEqual(store.load_gate(), gate)
+            self.assertEqual(store.recover(), closed)
+            self.assertEqual(closed.issues[0].state, IssueState.CLOSED)
+        finally:
+            ui_filesystem.close_dir(directory)
+
     def test_crash_before_gate_leaves_verified_and_does_not_authorize_close(self) -> None:
         store = LifecycleGateStore(self.reviews, "详细设计")
         verified = verified_snapshot()

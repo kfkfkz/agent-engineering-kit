@@ -103,8 +103,20 @@ class AtomicFileStore:
             os.close(descriptor)
             descriptor = -1
             self._reject_symlink(path)
-            os.replace(temporary, path)
-            _sync_directory(self.root)
+            if os.name == "nt":
+                # The review transaction may have already pinned this parent.
+                # Keep the rename within that directory instead of reopening
+                # the absolute destination parent with write access.
+                from aek.adapters import ui_filesystem as fs
+                directory = fs.open_absolute_dir(self.root.absolute())
+                try:
+                    fs.replace(directory, temporary.name, directory, path.name)
+                    fs.fsync_dir(directory)
+                finally:
+                    fs.close_dir(directory)
+            else:
+                os.replace(temporary, path)
+                _sync_directory(self.root)
         finally:
             if descriptor >= 0:
                 os.close(descriptor)

@@ -284,6 +284,11 @@ class InteractivePreparationTests(unittest.TestCase):
                 '--interaction-ref', '/'.join(target) + '=' + result['source_ref'])
         self.assertEqual(invoke('prototype-confirm', *args, trusted=False)[0], 3)
         self.assertEqual(invoke('prototype-confirm', *args)[0], 3)
+        preview_status, preview = invoke('prototype-prepare', '--schema-version', '3',
+                                         '--target', '/'.join(target), '--preview-html')
+        self.assertEqual(preview_status, 0, preview)
+        self.assertIn('OBSERVED', preview)
+        self.assertNotIn('<script', preview)
         def choose(prompt):
             import re
             return re.search(r'ACCEPT [0-9a-f]{12}', prompt).group()
@@ -309,6 +314,10 @@ class InteractivePreparationTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(json.loads(invoke('status', '--json')[1])['UI设计']['state'], 'FROZEN')
         initial_receipt = receipt.read_bytes()
+        with patch('builtins.input', side_effect=AssertionError('current confirmation must be reused')):
+            reused, output = invoke('prototype-confirm', *args)
+        self.assertEqual(reused, 0, output)
+        self.assertEqual(json.loads(output)['projection_status'], 'CURRENT')
         interaction_path.write_bytes(sequence + b'\n')
         self.assertEqual(json.loads(invoke('status', '--json')[1])['UI设计']['state'], 'DRAFT')
         self.assertEqual(receipt.read_bytes(), initial_receipt)
