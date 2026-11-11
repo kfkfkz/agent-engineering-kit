@@ -22,6 +22,22 @@ from aek.adapters import ui_filesystem as fs
 
 
 class UiFilesystemTests(unittest.TestCase):
+    def test_directory_identity_comes_from_the_open_directory_not_its_name(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second = root / "相同名称", root / "其他目录"
+            first.mkdir()
+            second.mkdir()
+            opened = [fs.open_absolute_dir(path) for path in (first, first, second)]
+            try:
+                identities = [fs.directory_identity(handle) for handle in opened]
+                self.assertEqual(identities[0], identities[1])
+                self.assertNotEqual(identities[0], identities[2])
+                self.assertTrue(all(isinstance(value, str) and value for value in identities))
+            finally:
+                for handle in opened:
+                    fs.close_dir(handle)
+
     def test_windows_native_rename_abi_uses_leaf_and_null_root(self):
         destination = "材料-image-😀.png"
         pointer_size = struct.calcsize("P")

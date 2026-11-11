@@ -55,16 +55,7 @@ def bwrap_sha(deb):
     raise ValueError('candidate executable is absent')
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--runtime-root', required=True, type=Path)
-    parser.add_argument('--html', type=Path, help='Explicit local static snapshot, never a URL')
-    parser.add_argument('--background-reference', type=Path,
-                        help='Local-only PNG for a screenshot-backed modification-region storyboard')
-    parser.add_argument('--width', type=int, default=1200)
-    parser.add_argument('--height', type=int, default=800)
-    args = parser.parse_args()
-    root = args.runtime_root.absolute()
+def pinned_runtime(root):
     chrome_zip = root / 'chrome-headless-shell-linux64.zip'
     deb = root / 'bubblewrap_0.12.0-1~deb13u1_amd64.deb'
     archive_sha(chrome_zip, '4cea4c32b501aa43cc2b81eb45734af991a6a82feded48380d6dfaf96642a1c1')
@@ -81,10 +72,23 @@ def main():
                 files.append((item.filename[len(prefix):], sha))
     with Path('/usr/bin/prlimit').open('rb') as stream:
         prlimit_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
-    runtime = LinuxRuntime(str(root / 'chrome-headless-shell-linux64'),
+    return LinuxRuntime(str(root / 'chrome-headless-shell-linux64'),
         str(root / 'bwrap-root/usr/bin/bwrap'), '/usr/bin/prlimit', tuple(sorted(files)),
         bwrap_sha(deb), prlimit_sha,
         ('/usr/lib', '/usr/lib64', '/usr/share/fonts', '/usr/share/fontconfig', '/etc/fonts'))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--runtime-root', required=True, type=Path)
+    parser.add_argument('--html', type=Path, help='Explicit local static snapshot, never a URL')
+    parser.add_argument('--background-reference', type=Path,
+                        help='Local-only PNG for a screenshot-backed modification-region storyboard')
+    parser.add_argument('--width', type=int, default=1200)
+    parser.add_argument('--height', type=int, default=800)
+    args = parser.parse_args()
+    root = args.runtime_root.absolute()
+    runtime = pinned_runtime(root)
     fixture_spec = importlib.util.spec_from_file_location('integration_host_fixture',
                                                         ROOT / 'tests/security-workflow.test.py')
     fixture = importlib.util.module_from_spec(fixture_spec)

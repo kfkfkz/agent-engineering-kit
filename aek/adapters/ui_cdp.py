@@ -44,6 +44,8 @@ class CdpPipe:
     A provider must create these private pipes under its own approved process
     scope. No TCP, path, process launch or runtime adoption happens here.
     """
+    _methods = METHODS
+
     def __init__(self, read_fd, write_fd, *, timeout_seconds=35,
                  max_bytes=MAX_PROTOCOL_BYTES, max_events=MAX_EVENTS):
         self._read, self._write, self._selector = read_fd, write_fd, None
@@ -95,7 +97,7 @@ class CdpPipe:
         if self._closed:
             raise CdpError('CDP_CLOSED')
         try:
-            if (type(method) is not str or method not in METHODS
+            if (type(method) is not str or method not in self._methods
                     or (params is not None and type(params) is not dict)
                     or (session is not None and (type(session) is not str or not 1 <= len(session) <= 256))):
                 raise CdpError('CDP_COMMAND_REJECTED')
@@ -158,6 +160,7 @@ class CdpPipe:
                             self.events_seen += 1
                             if self.events_seen > self._max_events:
                                 raise CdpError('CDP_LIMIT_EXCEEDED')
+                            self._observe(message)
                 if response is not None:
                     if time.monotonic() >= self._deadline:
                         raise CdpError('CDP_TIMEOUT')
@@ -167,3 +170,30 @@ class CdpPipe:
             if isinstance(exc, CdpError):
                 raise
             raise CdpError('CDP_PROTOCOL_ERROR') from None
+
+    def _observe(self, message):
+        """The static protocol needs only the aggregate event budget."""
+
+
+class InteractiveCdpPipe(CdpPipe):
+    """Separate command surface for one guarded interactive browser session."""
+    _methods = METHODS | frozenset({
+        'Target.setAutoAttach', 'Browser.setDownloadBehavior', 'Browser.setPermission',
+        'Page.setInterceptFileChooserDialog',
+        'Page.createIsolatedWorld', 'DOM.querySelectorAll', 'DOM.resolveNode',
+        'Runtime.callFunctionOn', 'Input.dispatchKeyEvent',
+    })
+
+    def __init__(self, *args, **kwargs):
+        self._event_guard = None
+        super().__init__(*args, **kwargs)
+
+    def set_event_guard(self, guard):
+        if self._event_guard is not None or not callable(guard) or self._closed:
+            raise CdpError('CDP_GUARD_REJECTED')
+        self._event_guard = guard
+
+    def _observe(self, message):
+        if self._event_guard is None:
+            raise CdpError('CDP_GUARD_REQUIRED')
+        self._event_guard(message)

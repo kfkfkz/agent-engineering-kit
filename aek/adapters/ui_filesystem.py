@@ -323,6 +323,19 @@ def listdir(handle) -> list[str]:
     return os.listdir(handle.require_open().path if os.name == "nt" else handle)
 
 
+def directory_identity(handle) -> str:
+    """Stable identity of an already pinned directory, independent of name."""
+    if os.name == "nt":
+        info = _info(handle.require_open().handle)
+        if not info.attributes & _DIRECTORY or info.attributes & _REPARSE:
+            raise ValueError("expected a pinned real directory")
+        return f"windows:{info.volume}:{info.index_hi}:{info.index_lo}"
+    info = os.fstat(handle)
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError("expected an open directory")
+    return f"posix:{info.st_dev}:{info.st_ino}"
+
+
 def stat_at(handle, name: str):
     name = _component(name)
     if os.name != "nt":

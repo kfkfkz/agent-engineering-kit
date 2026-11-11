@@ -9,10 +9,12 @@ import hashlib
 import json
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Mapping
 
 from aek.core.artifact.registry import ARTIFACT_REGISTRY, ArtifactRegistry
+from aek.core.artifact.document_material_dependency import validate_dependency_identity
+from aek.core.artifact.source_map import SourceMap, load_source_map, mapped_source_path
 from aek.core.planning.facts import FACT_CATALOG, FactResolution
 from aek.core.planning.policy import PlanPreview, preview_plan
 
@@ -36,6 +38,13 @@ def _digest(value: dict[str, object]) -> str:
     data = json.dumps(_normal(value), ensure_ascii=False, sort_keys=True,
                       separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
+
+
+def _material_digest(value: dict[str, object]) -> str:
+    # Material v2 binds actual filesystem spellings and exact identities.
+    # Legacy plan/binding v1 retains its historical NFC contract above.
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _hash(value: str, field: str) -> str:
@@ -81,8 +90,13 @@ class ArtifactPlan:
         raise KeyError(artifact_id)
 
 
+@dataclass(frozen=True)
+class ComposedArtifactPlan(ArtifactPlan):
+    source_map: dict
+
+
 def _plan_payload(plan: ArtifactPlan) -> dict[str, object]:
-    return {
+    payload = {
         "schema_version": plan.schema_version,
         "subject_digest": plan.subject_digest,
         "route": plan.route,
@@ -95,6 +109,52 @@ def _plan_payload(plan: ArtifactPlan) -> dict[str, object]:
             for item in plan.items
         ],
     }
+    if isinstance(plan, ComposedArtifactPlan):
+        payload['source_map'] = plan.source_map
+    return payload
+
+
+def _plan_digest(plan: ArtifactPlan) -> str:
+    return (_material_digest if isinstance(plan, ComposedArtifactPlan) else _digest)(_plan_payload(plan))
+
+
+def compose_plan(plan: ArtifactPlan, source_map: SourceMap) -> ComposedArtifactPlan:
+    """Bind source topology and writer responsibilities, never approval/use."""
+    if not isinstance(plan, ArtifactPlan) or plan.digest != _plan_digest(plan):
+        raise ValueError('invalid base plan')
+    if not isinstance(source_map, SourceMap):
+        raise ValueError('validated source mapping required')
+    checked = load_source_map(source_map._bytes)
+    if checked.package_ref != source_map.package_ref:
+        raise ValueError('source mapping package identity mismatch')
+    if any(plan.by_id(item['artifact_id']).classification == 'skipped' for item in checked.artifacts):
+        raise ValueError('mapped artifact cannot bypass a skipped plan decision')
+    payload = {**_plan_payload(plan), 'schema_version': 2, 'items': plan.items,
+               'source_map': checked.as_dict(topology=True)}
+    result = ComposedArtifactPlan(**payload, digest='')
+    _validate_composed_source_limits(result)
+    return ComposedArtifactPlan(**{**result.__dict__, 'digest': _plan_digest(result)})
+
+
+def artifact_sources(plan: ArtifactPlan, artifact_id: str,
+                     registry: ArtifactRegistry = ARTIFACT_REGISTRY) -> tuple[str, ...]:
+    if isinstance(plan, ComposedArtifactPlan):
+        checked = load_source_map(plan.source_map)
+        for item in checked.artifacts:
+            if item['artifact_id'] == artifact_id:
+                return tuple(item['sources'])
+    return (registry.get_artifact(artifact_id).filename,)
+
+
+def _validate_composed_source_limits(plan: ComposedArtifactPlan,
+                                     registry: ArtifactRegistry = ARTIFACT_REGISTRY) -> None:
+    mapping = load_source_map(plan.source_map)
+    sources = {item['artifact_id']: item['sources'] for item in mapping.artifacts}
+    for group in registry.groups.values():
+        names = {path for ident in group.artifact_ids if plan.by_id(ident).classification != 'skipped'
+                 for path in sources.get(ident, (registry.get_artifact(ident).filename,))}
+        if len(names) > 16:
+            raise ValueError('UNTRUSTED_MAPPING: current stage has more than 16 physical files')
 
 
 def _resolved_prerequisites(
@@ -146,7 +206,7 @@ def resolved_stage_prerequisites(
     registry: ArtifactRegistry = ARTIFACT_REGISTRY,
 ) -> tuple[str, ...]:
     """Return current direct predecessors after bypassing fully skipped groups."""
-    if not isinstance(plan, ArtifactPlan) or plan.digest != _digest(_plan_payload(plan)):
+    if not isinstance(plan, ArtifactPlan) or plan.digest != _plan_digest(plan):
         raise ValueError("invalid plan")
     registry.get_group(stage)
     classifications = {item.artifact_id: item.classification for item in plan.items}
@@ -233,7 +293,7 @@ def freeze_plan(
     plan: ArtifactPlan, *, input_digest: str, generation_mode: str,
     frozen_at: str,
 ) -> PlanCredential:
-    if not isinstance(plan, ArtifactPlan) or plan.digest != _digest(_plan_payload(plan)):
+    if not isinstance(plan, ArtifactPlan) or plan.digest != _plan_digest(plan):
         raise ValueError("plan digest is invalid")
     _hash(input_digest, "input digest")
     if generation_mode not in {"native", "legacy-static"}:
@@ -258,9 +318,40 @@ class StageBinding:
     binding_digest: str
 
 
+@dataclass(frozen=True)
+class MaterialStageBinding(StageBinding):
+    binding_kind: str
+    material_revision: dict
+
+
 def _binding_payload(binding: StageBinding) -> dict[str, object]:
-    return {name: getattr(binding, name) for name in StageBinding.__dataclass_fields__
+    return {name: getattr(binding, name) for name in type(binding).__dataclass_fields__
             if name != "binding_digest"}
+
+
+def material_stage_binding(stage, *, gate_digest, doc_hashes, prerequisite_fingerprints,
+                           context, origin_binding, raw_before, raw_after,
+                           content_digest, previous_revision=None, dependency_identity=None) -> MaterialStageBinding:
+    """Bind checked material facts; this constructor does not grant approval."""
+    origin = None if origin_binding is None else asdict(origin_binding)
+    revision = {"schema_version": 2, "rule_version": "markdown-format-v1",
+                "context": context, "origin_binding": origin,
+                "raw_before": raw_before, "raw_after": raw_after,
+                "content_digest": content_digest, "previous_revision": previous_revision}
+    if dependency_identity is not None:
+        revision["dependency_identity"] = validate_dependency_identity(dependency_identity)
+    revision["event_id"] = _material_digest(revision)
+    shell = MaterialStageBinding(
+        2, stage, gate_digest,
+        origin_binding.plan_credential_digest if origin_binding is not None else None,
+        _hash_map(doc_hashes, "document"),
+        origin_binding.skipped_ids if origin_binding is not None else (),
+        _hash_map(prerequisite_fingerprints, "prerequisite"), "",
+        "planned-material" if origin_binding is not None else "material-only", revision)
+    result = MaterialStageBinding(**{**shell.__dict__, "binding_digest": _material_digest(_binding_payload(shell))})
+    # The same strict decoder validates constructed and persisted values.
+    return load_binding_bytes(json.dumps(asdict(result), ensure_ascii=False, sort_keys=True,
+                                        separators=(",", ":")).encode("utf-8"))
 
 
 def bind_stage(
@@ -269,14 +360,15 @@ def bind_stage(
     prerequisite_fingerprints: Mapping[str, str],
     registry: ArtifactRegistry = ARTIFACT_REGISTRY,
 ) -> StageBinding:
-    if not isinstance(plan, ArtifactPlan) or plan.digest != _digest(_plan_payload(plan)):
+    if not isinstance(plan, ArtifactPlan) or plan.digest != _plan_digest(plan):
         raise ValueError("invalid plan")
     if not _credential_valid(credential) or credential.plan_digest != plan.digest:
         raise ValueError("credential does not bind the plan")
     _hash(gate_digest, "stage gate digest")
     group = registry.get_group(stage)
-    expected_docs = {registry.get_artifact(item).filename for item in group.artifact_ids
-                     if plan.by_id(item).classification != "skipped"}
+    expected_docs = {source for item in group.artifact_ids
+                     if plan.by_id(item).classification != "skipped"
+                     for source in artifact_sources(plan, item, registry)}
     if not expected_docs:
         raise ValueError("a fully skipped stage has no gate binding")
     if set(doc_hashes) != expected_docs:
@@ -298,10 +390,22 @@ def evaluate_binding(
     gate_digest: str, doc_hashes: Mapping[str, str],
     prerequisite_fingerprints: Mapping[str, str],
 ) -> str:
+    if isinstance(binding, MaterialStageBinding):
+        try:
+            checked = load_binding_bytes(json.dumps(asdict(binding), ensure_ascii=False, sort_keys=True,
+                                                   separators=(",", ":")).encode("utf-8"))
+            if checked.binding_kind != "planned-material":
+                return "INVALID"
+            original = load_binding_bytes(json.dumps(checked.material_revision["origin_binding"],
+                ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            return evaluate_binding(original, plan, credential, gate_digest=gate_digest,
+                doc_hashes=doc_hashes, prerequisite_fingerprints=prerequisite_fingerprints)
+        except (KeyError, TypeError, ValueError):
+            return "INVALID"
     if (not isinstance(binding, StageBinding) or binding.schema_version != 1
             or binding.binding_digest != _digest(_binding_payload(binding))):
         return "INVALID"
-    if (not isinstance(plan, ArtifactPlan) or plan.digest != _digest(_plan_payload(plan))
+    if (not isinstance(plan, ArtifactPlan) or plan.digest != _plan_digest(plan)
             or not _credential_valid(credential)):
         return "INVALID"
     try:
@@ -325,7 +429,7 @@ def evaluate_binding(
     return "BOUND"
 
 
-def _load_canonical_object(raw: bytes, fields: frozenset[str]) -> dict[str, object]:
+def _load_canonical_object(raw: bytes, fields: frozenset[str], *, normalize=True) -> dict[str, object]:
     if not isinstance(raw, bytes) or len(raw) > 2_000_000:
         raise ValueError("plan sidecar must be bounded bytes")
 
@@ -343,7 +447,7 @@ def _load_canonical_object(raw: bytes, fields: frozenset[str]) -> dict[str, obje
         raise ValueError("plan sidecar is malformed") from exc
     if not isinstance(value, dict) or frozenset(value) != fields:
         raise ValueError("plan sidecar has unknown or missing fields")
-    if raw != json.dumps(_normal(value), ensure_ascii=False, sort_keys=True,
+    if raw != json.dumps(_normal(value) if normalize else value, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":")).encode("utf-8"):
         raise ValueError("plan sidecar is not canonical JSON")
     return value
@@ -360,8 +464,12 @@ def _string_tuple(value: object, field: str, *, digests: bool = False) -> tuple[
 
 def load_plan_bytes(raw: bytes, registry: ArtifactRegistry = ARTIFACT_REGISTRY) -> ArtifactPlan:
     """Decode a persisted plan without accepting unknown decision-critical fields."""
-    value = _load_canonical_object(raw, frozenset(ArtifactPlan.__dataclass_fields__))
-    if (type(value["schema_version"]) is not int or value["schema_version"] != 1
+    if type(raw) is not bytes or len(raw) > 2_000_000:
+        raise ValueError('plan sidecar must be bounded bytes')
+    header = json.loads(raw.decode('utf-8'))
+    cls = ComposedArtifactPlan if type(header) is dict and header.get('schema_version') == 2 else ArtifactPlan
+    value = _load_canonical_object(raw, frozenset(cls.__dataclass_fields__), normalize=cls is ArtifactPlan)
+    if (type(value["schema_version"]) is not int or value["schema_version"] != (2 if cls is ComposedArtifactPlan else 1)
             or type(value["profile_version"]) is not int
             or value["profile_version"] != 1
             or type(value["policy_version"]) is not int
@@ -405,12 +513,19 @@ def load_plan_bytes(raw: bytes, registry: ArtifactRegistry = ARTIFACT_REGISTRY) 
     plan = ArtifactPlan(
         1, value["subject_digest"], value["route"], 1, 2,
         registry.schema_version, value["facts_digest"], tuple(items), value["digest"])
+    if cls is ComposedArtifactPlan:
+        mapping = load_source_map(value['source_map'])
+        if mapping.as_dict(topology=True) != value['source_map'] or any(
+                plan.by_id(item['artifact_id']).classification == 'skipped' for item in mapping.artifacts):
+            raise ValueError('invalid composed plan source topology')
+        plan = ComposedArtifactPlan(**{**plan.__dict__, 'schema_version': 2, 'source_map': mapping.as_dict()})
+        _validate_composed_source_limits(plan, registry)
     classifications = {item.artifact_id: item.classification for item in plan.items}
     if any(item.resolved_prerequisites != _resolved_closure(
             classifications, registry.get_artifact(item.artifact_id).group_id,
             registry) for item in plan.items):
         raise ValueError("plan prerequisite closure changed")
-    if plan.digest != _digest(_plan_payload(plan)):
+    if plan.digest != _plan_digest(plan):
         raise ValueError("plan digest is invalid")
     return plan
 
@@ -424,7 +539,11 @@ def load_credential_bytes(raw: bytes) -> PlanCredential:
 
 
 def load_binding_bytes(raw: bytes) -> StageBinding:
-    value = _load_canonical_object(raw, frozenset(StageBinding.__dataclass_fields__))
+    if type(raw) is not bytes or len(raw) > 2_000_000:
+        raise ValueError("binding must be bounded bytes")
+    header = json.loads(raw.decode("utf-8"))
+    cls = MaterialStageBinding if type(header) is dict and header.get("schema_version") == 2 else StageBinding
+    value = _load_canonical_object(raw, frozenset(cls.__dataclass_fields__), normalize=cls is StageBinding)
     for name in ("doc_hashes", "prerequisite_fingerprints"):
         pairs = value[name]
         if (not isinstance(pairs, list) or any(
@@ -439,15 +558,66 @@ def load_binding_bytes(raw: bytes) -> StageBinding:
             raise ValueError(f"duplicate or unordered binding {name}")
         value[name] = tuple(tuple(pair) for pair in pairs)
     value["skipped_ids"] = _string_tuple(value["skipped_ids"], "skipped IDs")
-    binding = StageBinding(**value)
-    if (type(binding.schema_version) is not int or binding.schema_version != 1
+    binding = cls(**value)
+    material_only = isinstance(binding, MaterialStageBinding) and binding.binding_kind == "material-only"
+    if (type(binding.schema_version) is not int or binding.schema_version not in (1, 2)
             or not isinstance(binding.stage, str)
             or binding.stage not in ARTIFACT_REGISTRY.groups
             or not isinstance(binding.gate_digest, str)
             or not _DIGEST.fullmatch(binding.gate_digest)
-            or not isinstance(binding.plan_credential_digest, str)
-            or not _DIGEST.fullmatch(binding.plan_credential_digest)
+            or (binding.plan_credential_digest is not None if material_only else
+                not isinstance(binding.plan_credential_digest, str)
+                or not _DIGEST.fullmatch(binding.plan_credential_digest))
             or not isinstance(binding.binding_digest, str)
-            or binding.binding_digest != _digest(_binding_payload(binding))):
+            or binding.binding_digest != (_material_digest(_binding_payload(binding))
+                                         if isinstance(binding, MaterialStageBinding) else _digest(_binding_payload(binding)))):
         raise ValueError("stage binding is invalid")
+    if isinstance(binding, MaterialStageBinding):
+        _validate_material_binding(binding)
     return binding
+
+
+def _validate_material_binding(binding: MaterialStageBinding) -> None:
+    revision = binding.material_revision
+    fields = {"schema_version", "rule_version", "context", "origin_binding", "raw_before",
+              "raw_after", "content_digest", "previous_revision", "event_id"}
+    if (binding.binding_kind not in {"material-only", "planned-material"}
+            or type(revision) is not dict or set(revision) not in (fields, fields | {"dependency_identity"})
+            or type(revision["schema_version"]) is not int or revision["schema_version"] != 2
+            or revision["rule_version"] != "markdown-format-v1"
+            or revision["event_id"] != _material_digest({k: v for k, v in revision.items() if k != "event_id"})):
+        raise ValueError("unknown or damaged material revision")
+    if "dependency_identity" in revision:
+        validate_dependency_identity(revision["dependency_identity"])
+    context = revision["context"]
+    if (type(context) is not dict or set(context) != {"package_ref", "source_root", "policy_digest", "source_set"}
+            or any(type(context[key]) is not str or not context[key] or len(context[key]) > 4096
+                   or any(ord(c) < 32 for c in context[key]) for key in ("package_ref", "source_root"))):
+        raise ValueError("invalid material context")
+    _hash(context["policy_digest"], "material policy")
+    documents = dict(binding.doc_hashes)
+    allowed = {ARTIFACT_REGISTRY.get_artifact(item).filename
+               for item in ARTIFACT_REGISTRY.get_group(binding.stage).artifact_ids}
+    if not documents or len(documents) > 16 or context["source_set"] != sorted(documents):
+        raise ValueError("material source set does not match stage")
+    if binding.binding_kind == "planned-material":
+        for name in documents.keys() - allowed:
+            mapped_source_path(name)
+    for name in ("raw_before", "raw_after", "content_digest"):
+        if type(revision[name]) is not dict or set(revision[name]) != set(documents):
+            raise ValueError("material identity must cover exact sources")
+        _hash_map(revision[name], name)
+    if revision["previous_revision"] is not None:
+        _hash(revision["previous_revision"], "previous material revision")
+    origin = revision["origin_binding"]
+    if binding.binding_kind == "material-only":
+        if origin is not None or binding.skipped_ids or set(documents) != allowed:
+            raise ValueError("material-only binding cannot authorize a dynamic plan")
+    else:
+        if type(origin) is not dict or origin.get("schema_version") != 1:
+            raise ValueError("planned material requires an original v1 binding")
+        original = load_binding_bytes(json.dumps(origin, ensure_ascii=False, sort_keys=True,
+                                                separators=(",", ":")).encode("utf-8"))
+        for name in StageBinding.__dataclass_fields__:
+            if name not in {"schema_version", "binding_digest"} and getattr(binding, name) != getattr(original, name):
+                raise ValueError("material binding changed original plan authority")

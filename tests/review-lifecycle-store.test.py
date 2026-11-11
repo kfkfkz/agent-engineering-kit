@@ -111,6 +111,45 @@ class LifecycleGateStoreTests(unittest.TestCase):
         self.assertEqual(json.loads(raw), gate)
         self.assertEqual(closed.issues[0].state, IssueState.CLOSED)
 
+    def test_original_gate_can_use_a_material_publisher_before_closure(self) -> None:
+        store = LifecycleGateStore(self.reviews, "详细设计")
+        verified = verified_snapshot()
+        published = []
+        def persist(raw):
+            published.append(raw)
+            (self.reviews / "详细设计.gate.json").write_bytes(raw)
+        closed, gate = store.publish_pass_gate(verified, self.gate(),
+            expected_snapshot_digest=None, gate_publisher=persist)
+        actual = (self.reviews / "详细设计.gate.json").read_bytes()
+        self.assertEqual(published, [actual])
+        self.assertEqual(json.loads(actual), gate)
+        self.assertEqual(closed.issues[0].state, IssueState.CLOSED)
+
+    def test_publisher_failure_leaves_verified_not_closed(self) -> None:
+        store = LifecycleGateStore(self.reviews, "详细设计")
+        def reject(_raw):
+            raise OSError("material could not be archived")
+        with self.assertRaises(OSError):
+            store.publish_pass_gate(verified_snapshot(), self.gate(),
+                expected_snapshot_digest=None, gate_publisher=reject)
+        self.assertIsNone(store.load_gate())
+        self.assertEqual(store.load_lifecycle().issues[0].state, IssueState.VERIFIED)
+        self.assertEqual(store.recover().issues[0].state, IssueState.VERIFIED)
+
+    def test_publisher_return_value_is_not_proof_of_actual_gate_publication(self) -> None:
+        for replacement in (None, b'{"status":"PASS"}'):
+            with self.subTest(replacement=replacement), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                store = LifecycleGateStore(root, "详细设计")
+                def fake_success(_raw):
+                    if replacement is not None:
+                        (root / "详细设计.gate.json").write_bytes(replacement)
+                    return None
+                with self.assertRaises(LifecycleConflict):
+                    store.publish_pass_gate(verified_snapshot(), self.gate(),
+                        expected_snapshot_digest=None, gate_publisher=fake_success)
+                self.assertEqual(store.load_lifecycle().issues[0].state, IssueState.VERIFIED)
+
     def test_new_gate_recovers_after_old_gate_closed_a_different_issue(self) -> None:
         for crash_point in ("after_gate", "after_closed"):
             with self.subTest(crash_point=crash_point), tempfile.TemporaryDirectory() as temp:

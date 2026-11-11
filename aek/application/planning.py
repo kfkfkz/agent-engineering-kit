@@ -13,11 +13,13 @@ from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
 from aek.core.artifact.plan import (
-    ArtifactPlan, PlanCredential, StageBinding, bind_stage, build_plan,
+    ArtifactPlan, ComposedArtifactPlan, MaterialStageBinding, PlanCredential, StageBinding, bind_stage, build_plan, compose_plan,
     evaluate_binding, freeze_plan, load_binding_bytes, load_credential_bytes,
     load_plan_bytes, resolved_stage_prerequisites,
 )
+from aek.core.artifact.source_map import SourceMap, load_source_map, source_map_digest, validate_source_map_epoch
 from aek.core.artifact.registry import ARTIFACT_REGISTRY, ArtifactRegistry
+from aek.core.artifact.document_material_dependency import VerifiedConsumption
 from aek.core.planning.facts import (
     FACT_CATALOG, FactResolution, merge_fact_observations,
 )
@@ -97,14 +99,23 @@ def evaluate_stage_states(
             or any(stage not in registry.groups for stage in snapshots)):
         return invalid_map
     direct: dict[str, str] = {}
+    preserved = set()
     required_fields = {"gate_digest", "doc_hashes", "prerequisite_fingerprints"}
     for stage in stages:
         snapshot = snapshots.get(stage)
         if snapshot is None:
             direct[stage] = "UNBOUND"
             continue
+        proof = snapshot.get("verified_consumption") if isinstance(snapshot, Mapping) else None
+        binding = next((item for item in state.bindings if item.stage == stage), None)
+        if proof is not None and (not isinstance(proof, VerifiedConsumption)
+                or not isinstance(binding, MaterialStageBinding)
+                or proof.binding_digest != binding.binding_digest
+                or proof.content_digest != binding.material_revision.get("dependency_identity", {}).get("content_digest")):
+            direct[stage] = "INVALID"
+            continue
         if (not isinstance(snapshot, Mapping)
-                or set(snapshot) != required_fields
+                or set(snapshot) != required_fields | ({"verified_consumption"} if proof is not None else set())
                 or not isinstance(snapshot["gate_digest"], str)
                 or not isinstance(snapshot["doc_hashes"], Mapping)
                 or not isinstance(snapshot["prerequisite_fingerprints"], Mapping)):
@@ -115,6 +126,8 @@ def evaluate_stage_states(
             doc_hashes=snapshot["doc_hashes"],
             prerequisite_fingerprints=snapshot["prerequisite_fingerprints"],
         )
+        if proof is not None:
+            preserved.add(stage)
 
     resolved: dict[str, str] = {}
     visiting: set[str] = set()
@@ -135,7 +148,8 @@ def evaluate_stage_states(
             result = own
         elif any(parent == "INVALID" for parent in parents):
             result = "INVALID"
-        elif any(parent != "BOUND" for parent in parents):
+        elif any(parent != "BOUND" for parent in parents) and not (
+                stage in preserved and all(parent in {"BOUND", "STALE"} for parent in parents)):
             result = "STALE"
         else:
             result = "BOUND"
@@ -171,12 +185,14 @@ def build_git_current_plan(
     repository_root: Path, base_commit: str, route: str,
     *, scan_scope: ChangeScopeScanner,
     required_overlays: tuple[str, ...] = (),
+    source_map: SourceMap | None = None,
 ) -> ArtifactPlan:
     """Build a conservative plan from a freshly captured Git-visible scope."""
     subject, facts = _git_current_facts(repository_root, base_commit, scan_scope)
-    return build_plan(preview_plan(route, subject, facts,
+    plan = build_plan(preview_plan(route, subject, facts,
                                    required_overlays=required_overlays),
                       facts, required_overlays=required_overlays)
+    return compose_plan(plan, source_map) if source_map is not None else plan
 
 
 def _canonical(value: object) -> bytes:
@@ -199,6 +215,9 @@ def git_plan_input_digest(plan: ArtifactPlan, base_commit: str) -> str:
         "registry_version": plan.registry_version,
         "facts_digest": plan.facts_digest,
     }
+    if isinstance(plan, ComposedArtifactPlan):
+        payload['schema_version'] = 2
+        payload['mapping_digest'] = source_map_digest(load_source_map(plan.source_map))
     return hashlib.sha256(json.dumps(
         payload, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -208,12 +227,17 @@ def prepare_git_current_plan(
     store: PlanMutationPort, repository_root: Path, base_commit: str, route: str,
     *, scan_scope: ChangeScopeScanner,
     required_overlays: tuple[str, ...] = (),
+    source_map: SourceMap | None = None, verify_source_map: Callable | None = None,
 ) -> DynamicPlanState:
     """Publish a conservative PREPARED plan and invalidate old consumers."""
     plan = build_git_current_plan(repository_root, base_commit, route,
                                   scan_scope=scan_scope,
-                                  required_overlays=required_overlays)
+                                  required_overlays=required_overlays, source_map=source_map)
+    epoch = _current_composition_epoch(source_map, verify_source_map)
     snapshot, consumers = store.snapshot_with_digest()
+    existing = snapshot.get("artifact-plan.json")
+    if source_map is None and existing is not None and isinstance(load_plan_bytes(existing), ComposedArtifactPlan):
+        raise ValueError("composed plan requires an explicit source mapping or rollback")
     raw_plan = _canonical(plan)
     changes: dict[str, bytes | None] = {"artifact-plan.json": raw_plan}
     if snapshot.get("artifact-plan.json") != raw_plan:
@@ -227,8 +251,8 @@ def prepare_git_current_plan(
         store.publish(changes, expected_consumers=consumers)
     current = build_git_current_plan(repository_root, base_commit, route,
                                      scan_scope=scan_scope,
-                                     required_overlays=required_overlays)
-    if current != plan:
+                                     required_overlays=required_overlays, source_map=source_map)
+    if current != plan or _current_composition_epoch(source_map, verify_source_map) != epoch:
         return DynamicPlanState("INVALID", "Git scope changed while preparing")
     # Build does not receive the credential input identity. Preserve an
     # identical existing credential but report only PREPARED; authorization
@@ -239,6 +263,7 @@ def prepare_git_current_plan(
 def freeze_git_current_plan(
     store: PlanMutationPort, repository_root: Path, base_commit: str,
     input_digest: str, *, scan_scope: ChangeScopeScanner, frozen_at: str,
+    verify_source_map: Callable | None = None,
 ) -> DynamicPlanState:
     """Freeze only the plan reproduced by the current trusted Git facts."""
     snapshot, consumers = store.snapshot_with_digest()
@@ -247,10 +272,12 @@ def freeze_git_current_plan(
         return DynamicPlanState("ABSENT", "no prepared plan")
     try:
         plan = load_plan_bytes(raw_plan)
+        source_map = load_source_map(plan.source_map) if isinstance(plan, ComposedArtifactPlan) else None
+        epoch = _current_composition_epoch(source_map, verify_source_map)
         expected = build_git_current_plan(repository_root, base_commit, plan.route,
             scan_scope=scan_scope,
             required_overlays=tuple(item.artifact_id for item in plan.items
-                                    if item.reason_code == "GOVERNANCE_OVERLAY"))
+                                    if item.reason_code == "GOVERNANCE_OVERLAY"), source_map=source_map)
         if expected != plan:
             return DynamicPlanState("INVALID", "prepared plan is stale")
         existing_raw = snapshot.get("artifact-plan.gate.json")
@@ -275,9 +302,47 @@ def freeze_git_current_plan(
                if snapshot.get(name) != value}
     if changes:
         store.publish(changes, expected_consumers=consumers)
-    return read_git_current_dynamic_state(
+    try:
+        if _current_composition_epoch(source_map, verify_source_map) != epoch:
+            raise ValueError('composition changed while freezing')
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        rollback = _restore_failed_composed_freeze(store, snapshot, changes)
+        return DynamicPlanState('INVALID', str(exc) + rollback)
+    state = read_git_current_dynamic_state(
         store, repository_root, base_commit, input_digest,
-        scan_scope=scan_scope)
+        scan_scope=scan_scope, verify_source_map=verify_source_map)
+    if source_map is not None and state.state != 'FROZEN':
+        rollback = _restore_failed_composed_freeze(store, snapshot, changes)
+        return DynamicPlanState('INVALID', state.reason + rollback)
+    return state
+
+
+def _restore_failed_composed_freeze(store, before, changes):
+    """Restore only our exact postimage through the original consumer CAS."""
+    if not changes:
+        return ''
+    intended = dict(before)
+    for name, raw in changes.items():
+        if raw is None:
+            intended.pop(name, None)
+        else:
+            intended[name] = raw
+    try:
+        current, consumers = store.snapshot_with_digest()
+        if current != intended:
+            return '; credential cleanup not applied: concurrent state changed'
+        store.publish({name: before.get(name) for name in changes}, expected_consumers=consumers)
+        return '; attempted credential publication restored'
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return '; credential cleanup requires recovery: ' + type(exc).__name__
+
+
+def _current_composition_epoch(source_map, verifier):
+    if source_map is None:
+        return None
+    if not callable(verifier):
+        raise ValueError('composed plan requires a current source verifier')
+    return validate_source_map_epoch(source_map, verifier(source_map))
 
 
 def bind_current_stage(
@@ -286,11 +351,12 @@ def bind_current_stage(
     doc_hashes: Mapping[str, str],
     prerequisite_fingerprints: Mapping[str, str],
     scan_scope: ChangeScopeScanner,
+    verify_source_map: Callable | None = None,
 ) -> DynamicPlanState:
     """Publish one binding; callers still re-evaluate current stage inputs."""
     state = read_git_current_dynamic_state(
         store, repository_root, base_commit, input_digest,
-        scan_scope=scan_scope)
+        scan_scope=scan_scope, verify_source_map=verify_source_map)
     if state.state != "FROZEN" or state.plan is None or state.credential is None:
         return state
     try:
@@ -311,13 +377,14 @@ def bind_current_stage(
         store.publish({name: raw_binding}, expected_consumers=consumers)
     return read_git_current_dynamic_state(
         store, repository_root, base_commit, input_digest,
-        scan_scope=scan_scope)
+        scan_scope=scan_scope, verify_source_map=verify_source_map)
 
 
 def bind_frozen_stage(
     store: PlanMutationPort, expected_input_digest: str, stage: str, *,
     gate_digest: str, doc_hashes: Mapping[str, str],
     prerequisite_fingerprints: Mapping[str, str],
+    verify_source_map: Callable | None = None,
 ) -> DynamicPlanState:
     """Bind execution-time documents to an already authenticated plan.
 
@@ -325,7 +392,7 @@ def bind_frozen_stage(
     gate. During execution, the frozen credential is the plan authority while
     current gate/document/prerequisite bytes are rechecked per stage.
     """
-    state = read_frozen_dynamic_state(store, expected_input_digest)
+    state = read_frozen_dynamic_state(store, expected_input_digest, verify_source_map=verify_source_map)
     if state.state != "FROZEN" or state.plan is None or state.credential is None:
         return state
     try:
@@ -344,7 +411,7 @@ def bind_frozen_stage(
     raw_binding = _canonical(binding)
     if snapshot.get(name) != raw_binding:
         store.publish({name: raw_binding}, expected_consumers=consumers)
-    return read_frozen_dynamic_state(store, expected_input_digest)
+    return read_frozen_dynamic_state(store, expected_input_digest, verify_source_map=verify_source_map)
 
 
 def rollback_dynamic_state(store: PlanMutationPort) -> None:
@@ -356,17 +423,18 @@ def rollback_dynamic_state(store: PlanMutationPort) -> None:
 def read_git_current_dynamic_state(
     store: PlanSnapshotPort, repository_root: Path, base_commit: str,
     expected_input_digest: str, *, scan_scope: ChangeScopeScanner,
+    verify_source_map: Callable | None = None,
 ) -> DynamicPlanState:
     """Validate a persisted plan against a new trusted scope capture."""
     try:
         subject, facts = _git_current_facts(repository_root, base_commit, scan_scope)
     except (OSError, ValueError, RuntimeError) as exc:
         return DynamicPlanState("INVALID", f"current Git scope unavailable: {exc}")
-    return read_dynamic_state(store, subject, expected_input_digest, facts)
+    return read_dynamic_state(store, subject, expected_input_digest, facts, verify_source_map=verify_source_map)
 
 
 def read_frozen_dynamic_state(
-    store: PlanSnapshotPort, expected_input_digest: str,
+    store: PlanSnapshotPort, expected_input_digest: str, *, verify_source_map: Callable | None = None,
 ) -> DynamicPlanState:
     """Read a post-freeze plan using its credential as the fact authority."""
     if (not isinstance(expected_input_digest, str)
@@ -380,7 +448,7 @@ def read_frozen_dynamic_state(
                 return DynamicPlanState("INVALID", "orphan credential or binding")
             return DynamicPlanState("ABSENT", "no dynamic sidecars")
         plan = load_plan_bytes(raw_plan)
-    except (RuntimeError, ValueError, TypeError, KeyError) as exc:
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
         return DynamicPlanState("INVALID", str(exc))
 
     class CapturedSnapshot:
@@ -389,13 +457,13 @@ def read_frozen_dynamic_state(
 
     return read_dynamic_state(
         CapturedSnapshot(), plan.subject_digest, expected_input_digest,
-        _credential_authority=True)
+        _credential_authority=True, verify_source_map=verify_source_map)
 
 
 def read_dynamic_state(
     store: PlanSnapshotPort, expected_subject_digest: str, expected_input_digest: str,
     verified_facts: Mapping[str, FactResolution] | None = None,
-    *, _credential_authority: bool = False,
+    *, _credential_authority: bool = False, verify_source_map: Callable | None = None,
 ) -> DynamicPlanState:
     if (not callable(getattr(store, "snapshot", None))
             or not isinstance(expected_subject_digest, str)
@@ -433,8 +501,12 @@ def read_dynamic_state(
                 preview_plan(plan.route, expected_subject_digest, verified_facts,
                              required_overlays=overlays),
                 verified_facts, required_overlays=overlays)
+            if isinstance(plan, ComposedArtifactPlan):
+                rebuilt = compose_plan(rebuilt, load_source_map(plan.source_map))
             if rebuilt != plan:
                 return DynamicPlanState("INVALID", "plan no longer matches verified facts")
+        source_map = load_source_map(plan.source_map) if isinstance(plan, ComposedArtifactPlan) else None
+        epoch = _current_composition_epoch(source_map, verify_source_map)
         bindings: list[StageBinding] = []
         for name in binding_names:
             binding = load_binding_bytes(snapshot[name])
@@ -447,7 +519,9 @@ def read_dynamic_state(
             ) != "BOUND":
                 return DynamicPlanState("INVALID", "binding conflicts with plan")
             bindings.append(binding)
+        if _current_composition_epoch(source_map, verify_source_map) != epoch:
+            return DynamicPlanState('INVALID', 'composition changed during plan verification')
         return DynamicPlanState("FROZEN", "plan credential verified", plan,
                                 credential, tuple(bindings))
-    except (RuntimeError, ValueError, TypeError, KeyError) as exc:
+    except (OSError, RuntimeError, ValueError, TypeError, KeyError) as exc:
         return DynamicPlanState("INVALID", str(exc))

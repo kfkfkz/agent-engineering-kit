@@ -22,7 +22,7 @@ import time
 from aek.core.artifact.ui_preview import RenderConditions
 from aek.core.security.authority import RuntimeGrant, digest, runtime_binding
 from aek.adapters.ui_renderer import ProviderUnavailable, RenderSession
-from aek.adapters.ui_cdp import CdpError, CdpPipe
+from aek.adapters.ui_cdp import CdpError, CdpPipe, InteractiveCdpPipe
 from aek.adapters import ui_filesystem as ui_fs
 
 _SYSTEM_ROOTS = frozenset(('/usr/lib', '/usr/lib64', '/usr/share/fonts',
@@ -111,11 +111,12 @@ class _NativeProcess:
     The provider never treats this helper alone as an isolated renderer.
     """
     def __init__(self, argv, *, timeout, max_bytes, max_events,
-                 max_rss_bytes=512 * 1024 * 1024, max_processes=64, passed_fds=()):
+                 max_rss_bytes=512 * 1024 * 1024, max_processes=64, passed_fds=(), channel_type=CdpPipe):
         self.argv = argv
         self.timeout, self.max_bytes, self.max_events = timeout, max_bytes, max_events
         self.max_rss_bytes, self.max_processes = max_rss_bytes, max_processes
         self.passed_fds = passed_fds
+        self._channel_type = channel_type
         self.pid = None
         self.channel = None
         self.reaped = False
@@ -218,7 +219,8 @@ class _NativeProcess:
                 or type(self.max_bytes) is not int or not 64 <= self.max_bytes <= 2_000_000
                 or type(self.max_events) is not int or not 0 <= self.max_events <= 2000
                 or type(self.max_rss_bytes) is not int or not 65536 <= self.max_rss_bytes <= 512 * 1024 * 1024
-                or type(self.max_processes) is not int or not 1 <= self.max_processes <= 64):
+                or type(self.max_processes) is not int or not 1 <= self.max_processes <= 64
+                or self._channel_type not in (CdpPipe, InteractiveCdpPipe)):
             raise CdpError('RENDER_PROCESS_UNAVAILABLE')
         if (type(self.passed_fds) is not tuple or len(self.passed_fds) > 520
                 or any(type(fd) is not int or fd < 0 for fd in self.passed_fds)):
@@ -269,7 +271,7 @@ class _NativeProcess:
             # CdpPipe owns these even if its constructor fails.
             descriptors.remove(controller_read)
             descriptors.remove(controller_write)
-            self.channel = CdpPipe(controller_read, controller_write,
+            self.channel = self._channel_type(controller_read, controller_write,
                 timeout_seconds=max(0.001, self._deadline - time.monotonic()),
                 max_bytes=self.max_bytes, max_events=self.max_events)
             descriptors.remove(stderr_read)
@@ -436,6 +438,9 @@ def linux_runtime_fingerprint(runtime):
 
 
 class LinuxRenderProvider:
+    _plan_type = LinuxRenderPlan
+    _channel_type = CdpPipe
+
     def __init__(self, runtime, *, authority, grant, adoption_validator):
         self.runtime, self.authority, self.grant = runtime, authority, grant
         self._adoption_validator = adoption_validator
@@ -454,7 +459,7 @@ class LinuxRenderProvider:
     def _authorize(self, snapshot_sha256, conditions, plan):
         from aek.core.security.authority import canonical
         if (sys.platform != 'linux' or type(self.runtime) is not LinuxRuntime
-                or type(plan) is not LinuxRenderPlan or type(self.grant) is not RuntimeGrant
+                or type(plan) is not self._plan_type or type(self.grant) is not RuntimeGrant
                 or self.authority is None or not callable(self._adoption_validator)
                 or type(plan.timeout_seconds) not in (int, float) or not 0 < plan.timeout_seconds <= 35
                 or type(plan.max_output_bytes) is not int or not 8192 <= plan.max_output_bytes <= 2_000_000
@@ -572,7 +577,7 @@ class LinuxRenderProvider:
             self._session, self._phase = None, 'STARTING'
             with self._pin_runtime() as pinned, _NativeProcess(self._argv(plan, pinned),
                     timeout=plan.timeout_seconds, max_bytes=plan.max_output_bytes,
-                    max_events=plan.max_items, passed_fds=pinned[0]) as channel:
+                    max_events=plan.max_items, passed_fds=pinned[0], channel_type=self._channel_type) as channel:
                 if channel.rpc('Browser.getVersion').get('product') != self.runtime.browser_product:
                     raise CdpError('RENDER_RUNTIME_MISMATCH')
                 # Do not yield a process until both the pinned plan and the

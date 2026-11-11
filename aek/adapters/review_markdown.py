@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 from aek.core.review.incremental import ReviewSnapshot, SectionSnapshot
@@ -94,6 +94,15 @@ class ReviewMaterialParser:
                 stage, dict(sources), dependency_fingerprint)
             self._materials[key] = material
         return material
+
+    def rebind_dependency(self, material: ReviewMaterial, dependency_fingerprint: str) -> ReviewMaterial:
+        """Retain the same parsed bytes when the computed context key changes."""
+        _validate_review_sources(material.snapshot.stage, material.document_map(), dependency_fingerprint)
+        key = (material.snapshot.stage, dependency_fingerprint, material.documents)
+        if key not in self._materials:
+            self._materials[key] = replace(material, snapshot=replace(material.snapshot,
+                dependency_fingerprint=dependency_fingerprint))
+        return self._materials[key]
 
 
 def parse_review_documents(

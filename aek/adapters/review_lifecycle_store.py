@@ -75,11 +75,13 @@ class LifecycleGateStore:
         *,
         expected_snapshot_digest: str | None,
         checkpoint: Checkpoint | None = None,
+        gate_publisher: Callable[[bytes], None] | None = None,
     ) -> tuple[LifecycleSnapshot, dict[str, object]]:
         """Publish in recovery-safe order; checkpoint exists for crash tests."""
         if (not isinstance(gate, dict) or gate.get("stage") != self.stage
                 or gate.get("status") != "PASS"
                 or "lifecycle_snapshot_digest" in gate
+                or (gate_publisher is not None and not callable(gate_publisher))
                 or any(item.state == IssueState.BLOCKED
                        for item in verified.issues)):
             raise ValueError("PASS gate is not eligible for lifecycle closure")
@@ -90,7 +92,12 @@ class LifecycleGateStore:
         bound_gate = dict(gate)
         bound_gate["lifecycle_snapshot_digest"] = verified.snapshot_digest
         gate_bytes = self._gate_bytes(bound_gate)
-        self.files.write(self.gate_name, gate_bytes)
+        if gate_publisher is None:
+            self.files.write(self.gate_name, gate_bytes)
+        else:
+            gate_publisher(gate_bytes)
+        if self.files.read(self.gate_name) != gate_bytes:
+            raise LifecycleConflict("Gate publisher did not persist the exact bound bytes")
         if checkpoint is not None:
             checkpoint("after_gate")
         gate_digest = hashlib.sha256(gate_bytes).hexdigest()

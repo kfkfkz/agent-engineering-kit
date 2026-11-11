@@ -120,6 +120,117 @@ class DynamicPlanCliTests(unittest.TestCase):
             "plan-status", str(self.req), "--base", self.base, "--json")
         return json.loads(proc.stdout)
 
+    def test_equivalent_refresh_preserves_the_original_dynamic_descendant_identity(self):
+        self.write_valid_requirements()
+        self.run_gate("plan-prepare", str(self.req), "--base", self.base, "--route", "standard", "--json")
+        self.run_gate("plan-freeze", str(self.req), "--base", self.base, "--json")
+        # Controlled original Gate fixtures isolate binding propagation from
+        # document authoring; these are not real maintainer approvals.
+        for stage in ("需求分析", "概要设计"):
+            self.write_gate(stage, (stage + ".md",))
+            self.run_gate("plan-bind", str(self.req), "--base", self.base, "--stage", stage, "--json")
+        source = self.req / "需求分析.md"
+        original = source.read_bytes()
+        before = (self.req / "reviews/需求分析.gate.json").read_bytes()
+        initialized = json.loads(self.run_gate("gate", str(self.req), "--stage", "需求分析",
+            "--refresh-equivalent", "--expected-revision", "none", "--source-hash",
+            "需求分析.md=" + hashlib.sha256(original).hexdigest(), "--json").stdout)
+        first = json.loads(self.run_gate("status", str(self.req), "--json").stdout)
+        self.assertEqual(first["概要设计"]["state"], "FROZEN")
+        changed = original.replace("现有流程需要一次安全的小幅调整。\n".encode(),
+                                   "现有流程需要一次安全的小幅调整。\r\n".encode())
+        self.assertNotEqual(changed, original)
+        source.write_bytes(changed)
+        self.run_gate("gate", str(self.req), "--stage", "需求分析", "--refresh-equivalent",
+            "--expected-revision", initialized["revision"], "--source-hash",
+            "需求分析.md=" + hashlib.sha256(changed).hexdigest(), "--json")
+        after = json.loads(self.run_gate("status", str(self.req), "--json").stdout)
+        self.assertEqual(after["需求分析"]["state"], "FROZEN")
+        self.assertEqual(after["概要设计"]["state"], "FROZEN")
+        self.assertEqual((self.req / "reviews/需求分析.gate.json").read_bytes(), before)
+
+    def test_explicit_new_approval_creates_a_planned_material_baseline(self):
+        self.write_valid_requirements()
+        self.run_gate("plan-prepare", str(self.req), "--base", self.base, "--route", "standard", "--json")
+        self.run_gate("plan-freeze", str(self.req), "--base", self.base, "--json")
+        self.run_gate("freeze", str(self.req), "--by", "fixture-maintainer", "--schema-version", "2", "--json")
+        report = json.loads(self.run_gate("status", str(self.req), "--schema-version", "2", "--json").stdout)
+        revision = report["stages"]["需求分析"]["material"]["revision"]
+        self.assertIsInstance(revision, str)
+        binding = json.loads((self.req / "reviews/需求分析.plan-binding.json").read_bytes())
+        self.assertEqual(binding["binding_kind"], "planned-material")
+        self.assertEqual(report["stages"]["需求分析"]["state"], "FROZEN")
+
+    def test_stage_binding_requires_the_parent_identity_in_the_published_approval(self):
+        from aek.adapters.plan_transaction import PlanStore
+
+        self.write_valid_requirements()
+        self.run_gate("plan-prepare", str(self.req), "--base", self.base, "--route", "standard", "--json")
+        self.run_gate("plan-freeze", str(self.req), "--base", self.base, "--json")
+        self.run_gate("freeze", str(self.req), "--by", "fixture-maintainer", "--json")
+        self.write_gate("概要设计", ("概要设计.md",))
+        path = self.req / "reviews/概要设计.gate.json"
+        gate = json.loads(path.read_bytes())
+        gate["upstream_fingerprints"] = {"需求分析": "0" * 64}
+        path.write_bytes(json.dumps(gate, ensure_ascii=False).encode("utf-8"))
+        commands = runpy.run_path(str(DOC_GATE))
+        with PlanStore(self.req / "reviews").locked_view(self.req) as view:
+            state = commands["_dynamic_state_from_snapshot"](view.snapshot(), req_dir=self.req)
+            self.assertEqual(commands["_bind_dynamic_gate"](self.req, state, "概要设计", view), 3)
+            self.assertNotIn("概要设计.plan-binding.json", view.snapshot())
+
+    def test_planned_material_storage_failure_cannot_persist_a_legacy_downgrade(self):
+        self.write_valid_requirements()
+        self.run_gate("plan-prepare", str(self.req), "--base", self.base, "--route", "standard", "--json")
+        self.run_gate("plan-freeze", str(self.req), "--base", self.base, "--json")
+        self.run_gate("freeze", str(self.req), "--by", "fixture-maintainer", "--schema-version", "2", "--json")
+        path = self.req / "reviews/需求分析.plan-binding.json"
+        before = path.read_bytes()
+        source = self.req / "需求分析.md"
+        source.write_bytes(source.read_bytes().replace("现有流程需要一次安全的小幅调整。".encode(), "重新确认的需求内容。".encode()))
+        program = """import pathlib,runpy,sys
+from aek.application.document_material import DocumentMaterials
+ns=runpy.run_path(sys.argv[1])
+def fail(*args,**kwargs):
+    raise OSError('controlled material storage failure')
+DocumentMaterials.baseline=fail
+raise SystemExit(ns['cmd_freeze'](pathlib.Path(sys.argv[2]),'需求分析','fixture-maintainer',True))
+"""
+        result = subprocess.run([sys.executable, "-X", "utf8", "-c", program, str(DOC_GATE), str(self.req)],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertEqual(path.read_bytes(), before)
+        current = json.loads(self.run_gate("status", str(self.req), "--json").stdout)
+        self.assertEqual(current["需求分析"]["state"], "DRAFT")
+
+    def test_material_plan_keeps_execution_updates_and_refreshes_only_format_changes(self):
+        self.write_valid_requirements()
+        tasks = self.req / "任务清单.md"
+        tasks.write_text("# tasks\n## 任务\n- [ ] T1：任务\n## 执行记录\n| T1 | 进行中 |\n## 完成标准\n完成。\n", encoding="utf-8")
+        tests = self.req / "测试方案.md"
+        tests.write_text("# tests\n\n普通正文。\n", encoding="utf-8")
+        self.run_gate("plan-prepare", str(self.req), "--base", self.base, "--route", "standard", "--json")
+        self.run_gate("plan-freeze", str(self.req), "--base", self.base, "--json")
+        for stage, documents in (("需求分析", ("需求分析.md",)), ("概要设计", ("概要设计.md",)),
+                                 ("详细设计", ("详细设计.md",)), ("计划", ("任务清单.md", "测试方案.md"))):
+            self.write_gate(stage, documents)
+            self.run_gate("plan-bind", str(self.req), "--base", self.base, "--stage", stage, "--json")
+        def refresh(revision):
+            return json.loads(self.run_gate("gate", str(self.req), "--stage", "计划", "--refresh-equivalent",
+                "--expected-revision", revision, "--source-hash", "任务清单.md=" + hashlib.sha256(tasks.read_bytes()).hexdigest(),
+                "--source-hash", "测试方案.md=" + hashlib.sha256(tests.read_bytes()).hexdigest(), "--json").stdout)
+        initialized = refresh("none")
+        tasks.write_text(tasks.read_text(encoding="utf-8").replace("- [ ] T1", "- [x] T1")
+            .replace("| T1 | 进行中 |", "| T1 | 完成 | actual | tests passed |"), encoding="utf-8")
+        self.assertEqual(self.status()["effective_stage_states"]["计划"], "BOUND")
+        tests.write_bytes(tests.read_bytes() + b"\n\n")
+        self.assertEqual(self.status()["effective_stage_states"]["计划"], "STALE")
+        refreshed = refresh(initialized["revision"])
+        self.assertEqual(refreshed["status"], "REFRESHED")
+        self.assertEqual(self.status()["effective_stage_states"]["计划"], "BOUND")
+        tasks.write_text(tasks.read_text(encoding="utf-8").replace("T1：任务", "T1：更改定义"), encoding="utf-8")
+        self.assertEqual(self.status()["effective_stage_states"]["计划"], "STALE")
+
     def test_execution_projection_keeps_legacy_newline_identity_but_raw_evidence_does_not(self):
         namespace = runpy.run_path(str(DOC_GATE))
         tasks = "# tasks\n## 任务\n- [ ] T1：确认\n## 执行记录\n| T1 | 进行中 |\n## 完成标准\n完成。\n"

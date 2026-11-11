@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from aek.adapters.evidence import _open_windows
+from aek.adapters import ui_filesystem as fs
+from aek.adapters.document_layout import registered_packages_at
+from aek.core.artifact.registry import ARTIFACT_REGISTRY
 from aek.core.planning.facts import FactObservation
 
 
@@ -113,15 +116,50 @@ def _read_regular(root: Path, path: str, *, plain_document: bool = True) -> byte
         os.close(fd)
 
 
-def _safe_document(path: str) -> bool:
+def _safe_document(path: str, registered=()) -> bool:
+    if path.rsplit('/', 1)[-1].casefold() in {'agents.md', 'claude.md', 'skill.md'}:
+        return False
     return ((path.startswith(("docs/01-需求/", "docs/03-SDD/",
                               "docs/delivery-receipts/"))
              and path.endswith((".md", ".rst")))
+            or (path.endswith(('.md', '.rst')) and any(path.startswith(root + '/')
+                for _package, source, design, _revision in registered for root in (source, design)))
             or path in {"README.md", "CHANGELOG.md"})
 
 
-def _control_state(path: str) -> bool:
+_REGISTERED_CONTROLS = frozenset({
+    'artifact-plan.json', 'artifact-plan.gate.json', 'artifact-plan.tx.json', '.artifact-plan.lock',
+    'package.json', 'hard-checks.json', '计划.closeout.json',
+} | {stage + '.' + suffix for stage in ARTIFACT_REGISTRY.groups for suffix in (
+    'gate.json', 'gate.log', 'issues.json', 'review-request.json', 'review-current.json',
+    'review-receipt.json', 'review-baseline.json', 'issue-claims.json', 'issue-lifecycle.json', 'plan-binding.json')})
+
+
+def _registered_document_packages(root, paths):
+    """Resolve only registered packages touched by this finite Git path set."""
+    handle = fs.open_absolute_dir(root.absolute())
+    try:
+        # A project's source root may be disjoint from its registered design
+        # root. Reverse-map actual metadata; never guess titles or siblings.
+        packages = [package for package in registered_packages_at(handle)
+                    if any(path.startswith(root + '/') for path in paths
+                           for root in (package.source_root, package.design_root))]
+        return tuple((package.package_ref, package.source_root, package.design_root, package.revision)
+                     for package in packages)
+    finally:
+        fs.close_dir(handle)
+
+
+def _control_state(path: str, registered=()) -> bool:
     parts = path.split("/")
+    for package, _source, _design, _revision in registered:
+        prefix = package + '/reviews/'
+        if path.startswith(prefix):
+            leaf = path[len(prefix):]
+            if leaf in _REGISTERED_CONTROLS or (leaf.startswith('materials/')
+                    and len(leaf) == len('materials/') + 64
+                    and all(c in '0123456789abcdef' for c in leaf[len('materials/'):])):
+                return True
     return (
         path.startswith(".repo-memory-kit/")
         or path.startswith("docs/delivery-receipts/")
@@ -161,12 +199,13 @@ def scan_negative_risks(repository_root: Path, base_ref: str) -> NegativeRiskSca
     diff_args = ("diff", "--no-renames", "--no-ext-diff", "--no-textconv")
     all_tracked = _names(_git(root, *diff_args, "--name-only", "-z", base_oid, "--"))
     all_untracked = _names(_git(root, "ls-files", "--others", "--exclude-standard", "-z"))
-    tracked = tuple(path for path in all_tracked if not _control_state(path))
-    untracked = tuple(path for path in all_untracked if not _control_state(path))
+    registered = _registered_document_packages(root, (*all_tracked, *all_untracked))
+    tracked = tuple(path for path in all_tracked if not _control_state(path, registered))
+    untracked = tuple(path for path in all_untracked if not _control_state(path, registered))
     patch = (_git(root, *diff_args, "--binary", base_oid, "--", *tracked)
              if tracked else b"")
     paths = tuple(sorted(set(tracked + untracked)))
-    safe = all(_safe_document(path) for path in paths)
+    safe = all(_safe_document(path, registered) for path in paths)
     # Binary, symlink and submodule changes cannot be justified as plain docs.
     if any(marker in patch for marker in (
             b"GIT binary patch", b"Binary files ", b"mode 120000",
@@ -209,12 +248,12 @@ def scan_negative_risks(repository_root: Path, base_ref: str) -> NegativeRiskSca
             except (OSError, UnicodeDecodeError, ValueError):
                 safe = False
                 break
-    current_tracked = tuple(path for path in _names(_git(
-        root, *diff_args, "--name-only", "-z", base_oid, "--"))
-        if not _control_state(path))
-    current_untracked = tuple(path for path in _names(_git(
-        root, "ls-files", "--others", "--exclude-standard", "-z"))
-        if not _control_state(path))
+    current_all_tracked = _names(_git(root, *diff_args, '--name-only', '-z', base_oid, '--'))
+    current_all_untracked = _names(_git(root, 'ls-files', '--others', '--exclude-standard', '-z'))
+    if _registered_document_packages(root, (*current_all_tracked, *current_all_untracked)) != registered:
+        raise ValueError('registered documentation layout changed during scan')
+    current_tracked = tuple(path for path in current_all_tracked if not _control_state(path, registered))
+    current_untracked = tuple(path for path in current_all_untracked if not _control_state(path, registered))
     current_patch = (_git(root, *diff_args, "--binary", base_oid, "--",
                           *current_tracked) if current_tracked else b"")
     if (patch != current_patch or tracked != current_tracked

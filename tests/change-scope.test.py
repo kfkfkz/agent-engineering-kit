@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import json
 import sys
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from aek.adapters.change_scope import resolve_base_commit, scan_negative_risks
 from aek.core.planning.facts import FACT_CATALOG, merge_fact_observations
+from aek.adapters.document_layout_store import initialize_package
 
 
 class ChangeScopeTests(unittest.TestCase):
@@ -32,6 +34,23 @@ class ChangeScopeTests(unittest.TestCase):
     def git(self, *args: str) -> str:
         return subprocess.run(["git", "-C", str(self.root), *args],
                               check=True, capture_output=True, text=True).stdout
+
+    def register_package(self, *, project=False):
+        kit = self.root / '.repo-memory-kit'
+        kit.mkdir()
+        if project:
+            (kit / 'document-layout.json').write_text(json.dumps({'schema_version': 1,
+                'source_root': 'docs/版本/{version}/需求/{title}',
+                'design_root': 'docs/版本/{version}/设计/{title}'}, ensure_ascii=False), encoding='utf-8')
+        templates = self.root / 'docs/01-需求/_模板'
+        templates.mkdir(parents=True)
+        for name in ('原始需求.md', '需求分析.md'):
+            (templates / name).write_text('# document\n', encoding='utf-8')
+        package, _ = initialize_package(self.root, '查询', '1.0.9')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'register package')
+        self.base = self.git('rev-parse', 'HEAD').strip()
+        return package
 
     def states(self) -> tuple[str, str]:
         result = scan_negative_risks(self.root, self.base)
@@ -138,6 +157,58 @@ class ChangeScopeTests(unittest.TestCase):
         self.assertEqual(after.subject_digest, before.subject_digest)
         self.assertEqual(after.scope_digest, before.scope_digest)
         self.assertEqual(after.changed_paths, before.changed_paths)
+
+    def test_registered_package_control_state_does_not_self_invalidate_or_hide_code(self) -> None:
+        package = self.register_package()
+        document = self.root / package.design_root / '需求分析.md'
+        document.write_text('# 需求分析\n更新真实需求。\n', encoding='utf-8')
+        before = scan_negative_risks(self.root, self.base)
+        self.assertTrue(before.scope_complete)
+        reviews = self.root / package.design_root / 'reviews'
+        (reviews / 'artifact-plan.json').write_text('{"generated":true}\n', encoding='utf-8')
+        (reviews / '.artifact-plan.lock').write_bytes(b'lock')
+        (reviews / '需求分析.plan-binding.json').write_bytes(b'{}')
+        after = scan_negative_risks(self.root, self.base)
+        self.assertEqual(after.subject_digest, before.subject_digest)
+        self.assertEqual(after.scope_digest, before.scope_digest)
+        self.assertEqual(after.changed_paths, before.changed_paths)
+        code = reviews / 'worker.py'
+        code.write_bytes(b'execute_sql()\n')
+        unsafe = scan_negative_risks(self.root, self.base)
+        self.assertFalse(unsafe.scope_complete)
+        self.assertIn(code.relative_to(self.root).as_posix(), unsafe.changed_paths)
+        self.assertNotEqual(unsafe.subject_digest, before.subject_digest)
+
+    def test_disjoint_registered_source_root_is_recognized_without_design_delta(self):
+        package = self.register_package(project=True)
+        source = self.root / package.source_root / '原始需求.md'
+        source.write_text('# 原始需求\n只修改已登记的来源。\n', encoding='utf-8')
+        result = scan_negative_risks(self.root, self.base)
+        self.assertTrue(result.scope_complete)
+        self.assertEqual(result.changed_paths, (source.relative_to(self.root).as_posix(),))
+
+    def test_agent_instruction_files_in_registered_docs_are_not_plain_negative_evidence(self):
+        package = self.register_package()
+        for name in ('AGENTS.md', 'CLAUDE.md', 'SKILL.md', 'Agents.md'):
+            with self.subTest(name=name):
+                source = self.root / package.source_root / name
+                source.write_text('# Agent instructions\nRun commands and read configuration.\n', encoding='utf-8')
+                result = scan_negative_risks(self.root, self.base)
+                self.assertFalse(result.scope_complete)
+                self.assertIn(source.relative_to(self.root).as_posix(), result.changed_paths)
+                security = merge_fact_observations('security_sensitive', result.subject_digest,
+                    tuple(row for row in result.observations if row.fact_id == 'security_sensitive'))
+                self.assertNotEqual(security.state, 'false')
+                source.unlink()
+
+    def test_unregistered_similar_layout_does_not_get_control_exclusion(self) -> None:
+        reviews = self.root / 'docs/需求/1.0.9/未登记/reviews'
+        reviews.mkdir(parents=True)
+        control = reviews / 'artifact-plan.json'
+        control.write_bytes(b'{}')
+        result = scan_negative_risks(self.root, self.base)
+        self.assertIn(control.relative_to(self.root).as_posix(), result.changed_paths)
+        self.assertFalse(result.scope_complete)
 
     def test_delivery_receipt_control_state_does_not_self_invalidate_subject(self) -> None:
         self.guide.write_text("after\n")

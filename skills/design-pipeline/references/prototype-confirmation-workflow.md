@@ -51,3 +51,11 @@ doc-gate prototype-prepare <SDD目录> --target PAGE-1/AREA-1/default/CTX-A --ta
 - 已完成项的当前性仍由原 Gate 重验。旧集合内另一项发生变化，不自动撤销无依赖关系的当前项；共享截图、Token等实际依赖变化仍会传播。
 
 新旧确认均绑定实际原型与依赖；截图、观察、组件/Token、权限或文档依据变化，只使依赖它们的结论失效。共享依赖可以影响多个对象，无关上下文保留。最终仍走原 Doc Gate，不新增审批框架。
+
+## 带脚本原型
+
+- 显式使用 schema3 和 `prototype_mode: interactive-v1`。每项增加 `interaction_spec` 的相对 JSON 路径与原始 SHA-256，反向引用保存同一版本和字段。外部 UI 源使用来源映射中页面清单所在的真实目录作为批准根。
+- 动作规格使用 `{"schema_version":1,"sequences":[{"name":"review","steps":[...]}]}`。动作限 `click`、`fill`、`select`、`key`、`capture`，合计最多 32 步。`capture` 必须包含该项目要核验的状态。原型采用内联脚本和样式，外部资源需另行解决。
+- 只读准备使用 `prototype-prepare --schema-version 3`。保留实际准备摘要。没有可信观察时对照显示 `PENDING`。在合格 Linux 环境，由可信组合根以固定 `aek-interactive-render-linux-v1` profile 接入原 LocalToolHost，维护者在宿主终端明确授权当前固定计划。
+- 宿主完成后，通过同一可信组合根展示实际状态截图和参考图，再以 schema3 调用原 `prototype-confirm`。对每个目标传入对应的 `--interaction-ref PAGE/AREA/STATE/context=interaction-…`、当前准备摘要和维护者姓名。终端签核与运行授权分别进行。
+- 使用同一可信宿主上下文做预检、评审、冻结和后续状态核对。普通 CLI/MCP 只能读取材料。当前宿主、观察或人工凭证缺失时保留待核验，用户继续入口为 design-pipeline。

@@ -190,6 +190,70 @@ class TerminalHostEventSource(HostEventSource):
         token = self._publish(event, binding, plan)
         return authority.on_user_confirmation(token, binding=binding)
 
+    @staticmethod
+    def _prototype_terminal():
+        try:
+            read_fd, display_fd = sys.stdin.fileno(), sys.stdout.fileno()
+            return (os.name == 'posix' and os.isatty(read_fd) and os.isatty(display_fd)
+                    and os.fstat(read_fd).st_rdev == os.fstat(display_fd).st_rdev
+                    and os.tcgetpgrp(read_fd) == os.getpgrp())
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def confirm_prototypes(self, authority, *, selection, reviewer, revalidate):
+        """Record a direct decision on the displayed immutable observations."""
+        if not self._prototype_terminal():
+            raise SecurityAuthorityError('INTERACTIVE_TERMINAL_REQUIRED')
+        repo = Path(authority.repository_ref)
+        if (authority.host_source is not self or not repo.is_absolute()
+                or self._root.is_relative_to(repo) or self._key_file.is_relative_to(repo)
+                or type(reviewer) is not str or not 1 <= len(reviewer.strip()) <= 120
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in reviewer)
+                or not callable(revalidate) or not self.capabilities()['available']):
+            raise SecurityAuthorityError('HOST_PROTOTYPE_CONTEXT_UNAVAILABLE')
+        displayed = canonical(selection)
+        if len(displayed) > 48 * 1024 or revalidate() is not True:
+            raise SecurityAuthorityError('HOST_PROTOTYPE_CONTEXT_CHANGED')
+        plan = json.loads(displayed)
+        binding = {'operation': 'confirm-prototype', 'plan_digest': digest(plan)}
+        phrase = 'ACCEPT ' + binding['plan_digest'][:12]
+        print('已查看当前状态的受控截图和对应设计后，请确认下列原型。')
+        print(displayed.decode('utf-8'))
+        decision = input(f'输入 {phrase}，或 REVISE/BLOCK/CANCEL：').strip()
+        if decision in {'REVISE', 'BLOCK', 'CANCEL'}:
+            return decision, None
+        if (decision != phrase or revalidate() is not True or canonical(selection) != displayed
+                or not self._prototype_terminal()):
+            raise SecurityAuthorityError('HOST_PROTOTYPE_CONTEXT_CHANGED')
+        now = self._clock()
+        if now >= timestamp(authority.expires_at):
+            raise SecurityAuthorityError('HOST_PLAN_EXPIRED')
+        event = HostEvent(uuid.uuid4().hex, 'user-confirmation', reviewer, authority.task_id,
+            authority.repository_ref, authority.scope_ref, authority.current_identity.envelope_digest,
+            'confirm-prototype', digest(binding), now.isoformat(), authority.expires_at)
+        token = self._publish(event, binding, plan)
+        self._tokens.pop(token)
+        return 'ACCEPT', event.event_id
+
+    def verify_prototype_confirmation(self, authority, event_id, selection, reviewer):
+        try:
+            if (authority.host_source is not self or type(event_id) is not str or len(event_id) != 32
+                    or any(ch not in '0123456789abcdef' for ch in event_id)):
+                return False
+            with self._store() as (root, key):
+                body = self._read_signed(root, key, 'event-' + event_id + '.json')
+            event = HostEvent(**body['event'])
+            return (event.event_id == event_id and event.kind == 'user-confirmation'
+                    and event.operation == 'confirm-prototype' and event.actor == reviewer
+                    and (event.task_id, event.repository_ref, event.scope_ref, event.identity_digest)
+                    == (authority.task_id, authority.repository_ref, authority.scope_ref,
+                        authority.current_identity.envelope_digest)
+                    and body['plan'] == selection and body['binding'] == {
+                        'operation': 'confirm-prototype', 'plan_digest': digest(selection)}
+                    and self.restore(event))
+        except (OSError, TypeError, ValueError, KeyError):
+            return False
+
     def _attempt_identity(self, authority, plan, binding):
         fields = {'plan_digest', 'repository_ref', 'scope_ref', 'identity_digest', 'tool_id',
                   'executable_digest', 'action', 'network_mode', 'write_scope', 'timeout_seconds',

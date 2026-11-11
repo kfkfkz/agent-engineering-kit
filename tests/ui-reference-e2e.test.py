@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import runpy
+import shutil
 import struct
 import subprocess
 import sys
@@ -68,6 +69,15 @@ def image(pixel: bytes) -> bytes:
 
 class InstalledChineseUiTests(unittest.TestCase):
     def test_installed_chinese_directory_to_human_confirmation_freeze_and_invalidation(self):
+        self._assert_installed_workflow(co_located=False)
+
+    def test_registered_co_located_directory_to_confirmation_freeze_and_invalidation(self):
+        self._assert_installed_workflow(co_located=True)
+
+    def test_project_layout_with_separate_source_root_keeps_the_complete_ui_workflow(self):
+        self._assert_installed_workflow(co_located=True, project=True)
+
+    def _assert_installed_workflow(self, *, co_located, project=False):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             repo = base / "项目仓库"
@@ -85,10 +95,24 @@ class InstalledChineseUiTests(unittest.TestCase):
             invoke([sys.executable, "-m", "installer"], "--link-strategy", "copy", str(repo))
             gate = [sys.executable, str(repo / ".repo-memory-kit/bin/doc-gate")]
             helper = [sys.executable, str(repo / ".agents/skills/design-pipeline/scripts/ui-reference.py")]
-            invoke(gate, "init", NAME, "--repo", str(repo), "--json")
-            req = repo / "docs/03-SDD" / NAME
-            material = repo / "docs/01-需求" / NAME / "原始材料/ui-reference"
-            request = {"schema_version": 1, "change_id": "CHG-003", "requirement_dir": NAME,
+            if co_located:
+                if project:
+                    (repo / '.repo-memory-kit/document-layout.json').write_text(json.dumps({
+                        'schema_version': 1, 'source_root': 'docs/版本/{version}/需求/{title}',
+                        'design_root': 'docs/版本/{version}/设计/{title}'}), encoding='utf-8')
+                initialized = json.loads(invoke(gate, "init", "查询页面", "--version", "1.0.9", "--repo", str(repo), "--json").stdout)
+                change_id = initialized['package']['change_id']
+                directory = '查询页面'
+                req = repo / initialized['package']['design_root']
+                material = repo / initialized['package']['source_root'] / '原始材料/ui-reference'
+                selector = ('--package-ref', req.relative_to(repo).as_posix())
+            else:
+                invoke(gate, "init", NAME, "--repo", str(repo), "--json")
+                change_id, directory = 'CHG-003', NAME
+                req = repo / "docs/03-SDD" / NAME
+                material = repo / "docs/01-需求" / NAME / "原始材料/ui-reference"
+                selector = ('--requirement-dir', NAME)
+            request = {"schema_version": 1, "change_id": change_id, "requirement_dir": directory,
                        "design_system": {"name": "Ant Design", "source": "user", "evidence": []},
                        "coverage": [{"kind": "feature", "id": "F1", "screenshot_ids": ["P1"]},
                                     {"kind": "acceptance", "id": "A1", "screenshot_ids": ["P1"]}],
@@ -96,12 +120,12 @@ class InstalledChineseUiTests(unittest.TestCase):
                                         "purpose": "查看查询结果", "feature_ids": ["F1"],
                                         "acceptance_ids": ["A1"],
                                         "permissions": {"function_id": "FP01", "data_id": "DP01"}}]}
-            invoke(helper, "scaffold", "--repo-root", str(repo), payload=request)
+            invoke(helper, "scaffold", "--repo-root", str(repo), *(selector if co_located else ()), payload=request)
             index_path = material / "截图索引.json"
             screenshot = material / "function/FP01/data/DP01/P1.png"
             self.assertEqual(screenshot.read_bytes(), b"")
             self.assertFalse((repo / "docs/01-需求/CHG-003").exists())
-            common = ("--repo-root", str(repo), "--change-id", "CHG-003", "--requirement-dir", NAME)
+            common = ("--repo-root", str(repo), "--change-id", change_id, *selector)
             invoke(helper, "validate", *common, expected=1)
             screenshot.write_bytes(image(b"\x11\x22\x33"))
             invoke(helper, "validate", *common, expected=1)
@@ -122,7 +146,10 @@ class InstalledChineseUiTests(unittest.TestCase):
                         "## 总体方案\n显示结果。\n## 功能点设计\n" + FEATURE
                         + "\n## 方案取舍\n沿用组件。\n## 数据与接口影响\n沿用接口。\n## 风险\n无新增风险。\n")
             (req / "概要设计.md").write_bytes(overview.encode("utf-8"))
-            invoke(gate, "freeze", str(req), "--stage", "需求分析", "--by", "k")
+            invoke(gate, "freeze", str(req), "--stage", "需求分析", "--by", "k",
+                   *(("--schema-version", "2") if co_located and not project else ()))
+            if co_located:
+                self.assertEqual(json.loads((req / 'reviews/需求分析.plan-binding.json').read_bytes())['schema_version'], 2)
             invoke(gate, "gate", str(req), "--stage", "概要设计", "--no-review")
 
             prototype = b"<!doctype html><html><head><style>body{color:#222}</style></head><body>List preview</body></html>"
@@ -137,13 +164,18 @@ class InstalledChineseUiTests(unittest.TestCase):
                    payload={"schema_version": 1, "artifact_plan_id": "legacy-static-003",
                             "gate_digest": gate_hash, "approved_root": root_rel, "prototype_refs": [ref]})
             design_hash = canonical(request["design_system"])
-            dependency = canonical({"design_system_sha256": design_hash, "page_design_sha256": digest(PAGE.encode("utf-8")),
+            dependency_snapshot = {"design_system_sha256": design_hash, "page_design_sha256": digest(PAGE.encode("utf-8")),
                 "features": {"F1": FEATURE}, "acceptance": {"A1": "查询结果与错误可区分。（场景 1）"},
                 "evidence": [{"id": "P1", "sha256": digest(screenshot.read_bytes()),
                     "semantic": {"page": "查询列表", "state": "default", "purpose": "查看查询结果",
                                  "feature_ids": ["F1"], "acceptance_ids": ["A1"]},
                     "contexts": [{"context_id": "P1-CAPTURED", "permissions": {"function_id": "FP01", "data_id": "DP01"},
-                                  "system_version": None, "viewport": None, "relation": "captured"}]}]})
+                                  "system_version": None, "viewport": None, "relation": "captured"}]}]}
+            if co_located:
+                package = initialized['package']
+                dependency_snapshot['package_identity'] = {key: package[key]
+                    for key in ('change_id', 'revision', 'source_root', 'design_root')}
+            dependency = canonical(dependency_snapshot)
             record = {**ref, "artifact_plan_id": "legacy-static-003", "gate_digest": gate_hash,
                       "approved_root": root_rel, "status": "ACCEPTED", "reviewer": "k", "reviewed_at": TIME,
                       "confirmation_source": "maintainer_reply", "design_system_sha256": design_hash,
@@ -170,6 +202,33 @@ class InstalledChineseUiTests(unittest.TestCase):
             invoke(gate, "gate", str(req), "--stage", "UI设计", "--json")
             state = json.loads(invoke(gate, "status", str(req), "--json").stdout)
             self.assertEqual(state["UI设计"]["state"], "FROZEN")
+            if co_located and not project:
+                from aek.core.artifact.document_layout import make_package, package_bytes
+                metadata = req / 'reviews/package.json'
+                registration = repo / '.repo-memory-kit/document-packages.json'
+                original_metadata, original_registration = metadata.read_bytes(), registration.read_bytes()
+                approval_paths = [req / 'reviews' / (stage + suffix) for stage in ('需求分析', '概要设计')
+                                  for suffix in ('.gate.json', '.plan-binding.json')]
+                approvals = {path: path.read_bytes() for path in approval_paths}
+                changed = make_package(change_id=package['change_id'], title=package['title'], version=package['version'],
+                    layout='project', source_root=package['source_root'] + '/replacement', design_root=package['design_root'])
+                shutil.copytree(material, repo / changed.material_root)
+                metadata.write_bytes(package_bytes(changed))
+                registered = json.loads(original_registration)
+                registered['packages'][0]['revision'] = changed.revision
+                registration.write_text(json.dumps(registered, ensure_ascii=False), encoding='utf-8')
+                invoke(gate, 'freeze', str(req), '--stage', '需求分析', '--by', 'k')
+                invoke(gate, 'gate', str(req), '--stage', '概要设计', '--no-review')
+                changed_check = json.loads(invoke(gate, 'check', str(req), '--stage', 'UI设计', '--json', expected=1).stdout)
+                self.assertIn('prototype dependency digest is stale', json.dumps(changed_check))
+                # Restore this fixture's original approved state so the next
+                # assertions still prove image invalidation independently.
+                metadata.write_bytes(original_metadata)
+                registration.write_bytes(original_registration)
+                for path, raw in approvals.items():
+                    path.write_bytes(raw)
+                restored = json.loads(invoke(gate, 'status', str(req), '--json').stdout)
+                self.assertEqual(restored['UI设计']['state'], 'FROZEN')
             screenshot.write_bytes(image(b"\x44\x55\x66"))
             state = json.loads(invoke(gate, "status", str(req), "--json").stdout)
             self.assertEqual(state["UI设计"]["state"], "DRAFT")

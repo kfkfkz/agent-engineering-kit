@@ -33,6 +33,9 @@ from aek.adapters import ui_filesystem as fs
 from aek.adapters.ui_image import PngValidationError, validate_png_reader
 from aek.adapters.ui_observation_store import ObservationStore, extraction_contract, observation_scope
 from aek.core.artifact import ui_observation as observation
+from aek.core.artifact.ui_interaction import interaction_reference
+from aek.adapters.document_layout import resolve_package, resolve_package_at
+from aek.core.artifact.document_layout import relative_parts
 
 
 INDEX_NAME = "截图索引.json"
@@ -100,11 +103,11 @@ def _id(value: Any, where: str) -> str:
     return value
 
 
-def _requirement_dir(value: Any) -> str:
+def _requirement_dir(value: Any, *, registered: bool = False) -> str:
     """Directory identity is a basename, independently of machine IDs."""
     name = _text(value, "requirement_dir", maximum=180)
     if (name in {".", ".."} or name[-1] in {".", " "}
-            or unicodedata.normalize("NFC", name) != name
+            or (not registered and unicodedata.normalize("NFC", name) != name)
             or any(ch in name for ch in '/\\:<>"|?*')
             or any(ord(ch) < 32 for ch in name)
             or re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?", name)):
@@ -166,11 +169,13 @@ def _parse_context(value: Any, captured: dict[str, Any], where: str) -> dict[str
     return result
 
 
-def validate_request(value: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def validate_request(value: Any, *, package=None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     root = _keys(value, {"schema_version", "change_id", "design_system", "coverage", "screenshots"}, {"requirement_dir"}, "request")
     if type(root["schema_version"]) is not int or root["schema_version"] != 1:
         fail("schema_version must be integer 1")
     change_id = _id(root["change_id"], "change_id")
+    if package is not None and (change_id != package.change_id or root.get('requirement_dir') != package.title):
+        fail('request identity does not match the registered package')
     ds = _keys(root["design_system"], {"name", "source", "evidence"}, {"version", "theme"}, "design_system")
     design_system = {"name": _text(ds["name"], "design_system.name"),
                      "source": ds["source"], "evidence": ds["evidence"]}
@@ -298,8 +303,9 @@ def validate_request(value: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
                   "design_system": design_system, "coverage": coverage,
                   "screenshots": screenshots}
     if "requirement_dir" in root:
-        normalized["requirement_dir"] = _requirement_dir(root["requirement_dir"])
-        _validate_requirement_identity(change_id, normalized["requirement_dir"])
+        normalized["requirement_dir"] = _requirement_dir(root["requirement_dir"], registered=package is not None)
+        if package is None:
+            _validate_requirement_identity(change_id, normalized["requirement_dir"])
     return normalized, screenshots
 
 
@@ -307,11 +313,34 @@ _open_absolute_dir = fs.open_absolute_dir
 _open_child_dir = fs.open_child_dir
 
 
+def _location_parts(repo_fd, directory, package=None, *, role='source'):
+    if package is None:
+        return (*MATERIAL_PARTS, directory) if role == 'source' else ('docs', '03-SDD', directory)
+    current = resolve_package_at(repo_fd, package.package_ref)
+    if current != package or directory != package.title:
+        fail('package CAS conflict: registered identity changed')
+    return relative_parts(package.source_root if role == 'source' else package.design_root)
+
+
+def _material_relative(directory, package=None):
+    return (package.material_root if package is not None else
+            'docs/01-需求/' + directory + '/原始材料/ui-reference')
+
+
+def _scope_directory(directory, package=None):
+    return directory if package is None else package.package_ref + '\0' + package.revision
+
+
+def _check_package_current(repo_fd, directory, package=None):
+    if package is not None:
+        _location_parts(repo_fd, directory, package)
+
+
 @contextlib.contextmanager
-def _material_parent(repo_fd: Any, change_id: str, *, create: bool) -> Iterator[tuple[Any, Any]]:
+def _material_parent(repo_fd: Any, change_id: str, *, create: bool, package=None) -> Iterator[tuple[Any, Any]]:
     current = fs.dup_dir(repo_fd)
     try:
-        for part in (*MATERIAL_PARTS, change_id, "原始材料"):
+        for part in (*_location_parts(repo_fd, change_id, package), "原始材料"):
             child = _open_child_dir(current, part, create=create)
             fs.close_dir(current)
             current = child
@@ -359,11 +388,11 @@ def _index_bytes(index: dict[str, Any]) -> bytes:
     return (json.dumps(index, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
 
-def _validate_stored_index(index: Any, change_id: str, requirement_dir: str) -> dict[str, Any]:
+def _validate_stored_index(index: Any, change_id: str, requirement_dir: str, *, package=None) -> dict[str, Any]:
     root = _keys(index, {"schema_version", "change_id", "design_system", "coverage", "screenshots"}, {"requirement_dir"}, "index")
     if type(root["schema_version"]) is not int or root["schema_version"] != 1 or root["change_id"] != change_id:
         fail("index schema_version or change_id is invalid")
-    if _requirement_dir(root.get("requirement_dir", root["change_id"])) != requirement_dir:
+    if _requirement_dir(root.get("requirement_dir", root["change_id"]), registered=package is not None) != requirement_dir:
         fail("index requirement_dir does not match its actual requirement directory")
     if not isinstance(root["screenshots"], list):
         fail("index screenshots must be a list")
@@ -449,8 +478,11 @@ def _validate_stored_index(index: Any, change_id: str, requirement_dir: str) -> 
                         "gate_digest", "approved_root"}
             if isinstance(ref, dict) and 'schema_version' in ref:
                 fields |= {'schema_version', 'state_id', 'context_id'}
-                if type(ref['schema_version']) is not int or ref['schema_version'] != 2:
+                if type(ref['schema_version']) is not int or ref['schema_version'] not in (2, 3):
                     fail('invalid versioned prototype reference')
+                if ref['schema_version'] == 3:
+                    fields |= {'prototype_mode', 'interaction_spec'}
+                    interaction_reference(ref)
                 if (ref.get('state_id') != row['state'] or type(ref.get('context_id')) is not str
                         or sum(context['context_id'] == ref['context_id'] for context in contexts) != 1):
                     fail('prototype reference state/context does not match actual screenshot')
@@ -472,7 +504,7 @@ def _validate_stored_index(index: Any, change_id: str, requirement_dir: str) -> 
                "screenshots": source_rows}
     if "requirement_dir" in root:
         request["requirement_dir"] = root["requirement_dir"]
-    expected, _ = validate_request(request)
+    expected, _ = validate_request(request, package=package)
     for actual, derived in zip(root["screenshots"], expected["screenshots"]):
         for key in ("id", "page", "state", "purpose", "feature_ids", "acceptance_ids",
                     "permissions", "system_version", "viewport", "path", "placeholder_sha256"):
@@ -497,13 +529,13 @@ def _replace_index(root_fd: Any, data: bytes) -> None:
         raise
 
 
-def _load_index(root_fd: Any, change_id: str, requirement_dir: str) -> tuple[dict[str, Any], bytes]:
+def _load_index(root_fd: Any, change_id: str, requirement_dir: str, *, package=None) -> tuple[dict[str, Any], bytes]:
     raw = _read_at(root_fd, INDEX_NAME, 8 * 1024 * 1024)
     try:
         index = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=_unique_object)
     except (UnicodeError, json.JSONDecodeError) as exc:
         fail(f"截图索引无法解析: {exc}")
-    return _validate_stored_index(index, change_id, requirement_dir), raw
+    return _validate_stored_index(index, change_id, requirement_dir, package=package), raw
 
 
 def _png_validate_fd(fd: int, file_size: int) -> tuple[int, int]:
@@ -567,10 +599,10 @@ def _git_status(repo_root: Path, relative_path: str) -> tuple[str, str]:
     return tracked, staging
 
 
-def _material_root(repo_fd: Any, change_id: str, *, create: bool = False) -> tuple[Any, Any]:
+def _material_root(repo_fd: Any, change_id: str, *, create: bool = False, package=None) -> tuple[Any, Any]:
     parent = fs.dup_dir(repo_fd)
     try:
-        for part in (*MATERIAL_PARTS, change_id, "原始材料"):
+        for part in (*_location_parts(repo_fd, change_id, package), "原始材料"):
             child = _open_child_dir(parent, part, create=create)
             fs.close_dir(parent)
             parent = child
@@ -703,7 +735,9 @@ def _v2_targets(index, selectors):
     return selected
 
 
-def _v2_result(repo_root, index, raw, operation, selected, status):
+def _v2_result(repo_root, index, raw, operation, selected, status, *, package=None):
+    if package is not None and resolve_package(repo_root, package.package_ref) != package:
+        fail('package CAS conflict: registered identity changed before response')
     targets, gaps = [], []
     directory = index.get('requirement_dir', index['change_id'])
     for row in index['screenshots']:
@@ -727,7 +761,7 @@ def _v2_result(repo_root, index, raw, operation, selected, status):
             and context['freshness'] == 'confirmed_current' for context in contexts)
         action = 'REPLACE_IMAGE' if not valid else 'CONTINUE_DESIGN' if ready else 'VERIFY_APPLICABILITY'
         targets.append({'id': row['id'], 'page': row['page'], 'state': row['state'],
-            'full_path': str(repo_root.absolute() / 'docs/01-需求' / directory / '原始材料/ui-reference' / row['path']),
+            'full_path': str(repo_root.absolute() / _material_relative(directory, package) / row['path']),
             'file_status': row['validation']['status'], 'permissions': row['permissions'], 'contexts': contexts,
             'git_status': row.get('git_status', 'unknown'), 'git_staging': row.get('git_staging', 'unknown'),
             'next_action': action})
@@ -738,23 +772,24 @@ def _v2_result(repo_root, index, raw, operation, selected, status):
             'coverage': 'PARTIAL' if gaps else 'COMPLETE', 'truncated': len(gaps) > 128}
 
 
-def _scaffold_v2(repo_root, request, change_id=None, requirement_dir=None):
+def _scaffold_v2(repo_root, request, change_id=None, requirement_dir=None, *, package=None):
     if type(request) is not dict:
         fail('scaffold v2 requires an explicit request object')
     change_id = _id(change_id if change_id is not None else request.get('change_id'), 'change_id')
-    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else request.get('requirement_dir'))
-    _validate_requirement_identity(change_id, requirement_dir)
+    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else request.get('requirement_dir'), registered=package is not None)
+    if package is None:
+        _validate_requirement_identity(change_id, requirement_dir)
     value = _v2_request(request, 'scaffold', change_id, requirement_dir, {'design_system', 'coverage', 'screenshots'})
     index, _ = validate_request({key: item for key, item in {**value, 'schema_version': 1}.items()
-                                if key not in {'targets', 'expected_index_sha256'}})
+                                if key not in {'targets', 'expected_index_sha256'}}, package=package)
     repo_fd = _open_absolute_dir(repo_root)
     try:
         if value['expected_index_sha256'] is not None:
-            parent, root = _material_root(repo_fd, requirement_dir)
+            parent, root = _material_root(repo_fd, requirement_dir, package=package)
             fs.close_dir(parent)
             try:
                 with _exclusive_lock(root, timeout=5):
-                    actual, raw = _load_index(root, change_id, requirement_dir)
+                    actual, raw = _load_index(root, change_id, requirement_dir, package=package)
                     if _sha(raw) != value['expected_index_sha256']:
                         fail('index CAS conflict: expected SHA-256 does not match current index')
                     def static_scope(item):
@@ -771,13 +806,13 @@ def _scaffold_v2(repo_root, request, change_id=None, requirement_dir=None):
                         if row['id'] in selected and row['validation']['status'] == 'valid'})
                     if _read_at(root, INDEX_NAME, 8 * 1024 * 1024) != raw:
                         fail('index CAS conflict: index changed during scaffold')
-                    return _v2_result(repo_root, actual, raw, 'scaffold', selected, 'created_or_identical')
+                    return _v2_result(repo_root, actual, raw, 'scaffold', selected, 'created_or_identical', package=package)
             finally:
                 fs.close_dir(root)
         # Only a new index can resolve against the request's static manifest.
         # Existing projection selectors must use its actual persisted refs.
         selected = _v2_targets(index, value['targets'])
-        with _material_parent(repo_fd, requirement_dir, create=True) as (parent, unused):
+        with _material_parent(repo_fd, requirement_dir, create=True, package=package) as (parent, unused):
             fs.close_dir(unused)
             with _exclusive_lock(parent, timeout=5):
                 try:
@@ -789,34 +824,37 @@ def _scaffold_v2(repo_root, request, change_id=None, requirement_dir=None):
                     fail('index CAS conflict: create requires an absent material index')
                 if set(selected) != {row['id'] for row in index['screenshots']}:
                     fail('scaffold v2 targets must exactly name the initial screenshot set')
+                _check_package_current(repo_fd, requirement_dir, package)
                 _create_staging(parent, index, allow_identical=False)
                 root = _open_child_dir(parent, 'ui-reference')
                 try:
-                    actual, raw = _load_index(root, change_id, requirement_dir)
+                    actual, raw = _load_index(root, change_id, requirement_dir, package=package)
                     _check_update_images(root, actual, set())
-                    return _v2_result(repo_root, actual, raw, 'scaffold', selected, 'created_or_identical')
+                    return _v2_result(repo_root, actual, raw, 'scaffold', selected, 'created_or_identical', package=package)
                 finally:
                     fs.close_dir(root)
     finally:
         fs.close_dir(repo_fd)
 
 
-def _scaffold(repo_root: Path, request: Any, *, include_details: bool = False) -> dict[str, Any]:
-    index, _ = validate_request(request)
+def _scaffold(repo_root: Path, request: Any, *, include_details: bool = False, package=None) -> dict[str, Any]:
+    index, _ = validate_request(request, package=package)
     repo_fd = _open_absolute_dir(repo_root)
     try:
         parent = fs.dup_dir(repo_fd)
         try:
-            for part in (*MATERIAL_PARTS, index.get("requirement_dir", index["change_id"]), "原始材料"):
+            for part in (*_location_parts(repo_fd, index.get("requirement_dir", index["change_id"]), package), "原始材料"):
                 child = _open_child_dir(parent, part, create=True)
                 fs.close_dir(parent)
                 parent = child
+            _check_package_current(repo_fd, index.get('requirement_dir', index['change_id']), package)
             _create_staging(parent, index)
         finally:
             fs.close_dir(parent)
         if include_details:
             return _v2_result(repo_root, index, _index_bytes(index), 'scaffold',
-                {row['id']: None for row in index['screenshots']}, 'created_or_identical')
+                {row['id']: None for row in index['screenshots']}, 'created_or_identical', package=package)
+        _check_package_current(repo_fd, index.get('requirement_dir', index['change_id']), package)
         return {"change_id": index["change_id"], "status": "created_or_identical",
                 "screenshots": [{"id": row["id"], "path": row["path"], "status": "pending"}
                                 for row in index["screenshots"]]}
@@ -825,10 +863,11 @@ def _scaffold(repo_root: Path, request: Any, *, include_details: bool = False) -
 
 
 def _validate_command(repo_root: Path, change_id: str, requirement_dir: str | None = None, *,
-                      include_details: bool = False, request_v2: Any = None) -> tuple[dict[str, Any], int]:
+                      include_details: bool = False, request_v2: Any = None, package=None) -> tuple[dict[str, Any], int]:
     change_id = _id(change_id, "change_id")
-    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id)
-    _validate_requirement_identity(change_id, requirement_dir)
+    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id, registered=package is not None)
+    if package is None:
+        _validate_requirement_identity(change_id, requirement_dir)
     selected = None
     if request_v2 is not None:
         value = _keys(request_v2, {'schema_version', 'change_id', 'requirement_dir',
@@ -843,11 +882,11 @@ def _validate_command(repo_root: Path, change_id: str, requirement_dir: str | No
         selected = {}  # Resolve IDs or complete projection keys only after the safe index load.
     repo_fd = _open_absolute_dir(repo_root)
     try:
-        parent_fd, root_fd = _material_root(repo_fd, requirement_dir)
+        parent_fd, root_fd = _material_root(repo_fd, requirement_dir, package=package)
         fs.close_dir(parent_fd)
         try:
             with _exclusive_lock(root_fd, timeout=5 if selected is not None else None):
-                index, old_raw = _load_index(root_fd, change_id, requirement_dir)
+                index, old_raw = _load_index(root_fd, change_id, requirement_dir, package=package)
                 if selected is not None:
                     if _sha(old_raw) != request_v2['expected_index_sha256']:
                         fail('index CAS conflict: expected SHA-256 does not match current index')
@@ -896,7 +935,7 @@ def _validate_command(repo_root: Path, change_id: str, requirement_dir: str | No
                             context["freshness"] = {"status": "unknown"}
                     row["validation"] = validation
                     row["git_status"], row["git_staging"] = _git_status(
-                        repo_root, "docs/01-需求/" + requirement_dir + "/原始材料/ui-reference/" + path)
+                        repo_root, _material_relative(requirement_dir, package) + "/" + path)
                     if row["git_staging"] not in {"none", "unknown"}:
                         row["git_warning"] = "原始截图存在 Git 暂存变更（" + row["git_staging"] + "）；工具仅诊断，不改写 Git 索引或配置"
                     elif row["git_status"] == "tracked":
@@ -938,15 +977,17 @@ def _validate_command(repo_root: Path, change_id: str, requirement_dir: str | No
                     if _read_at(root_fd, INDEX_NAME, 8 * 1024 * 1024) != old_raw:
                         fail('index CAS conflict: index changed during validation')
                 new_raw = _index_bytes(index)
+                _check_package_current(repo_fd, requirement_dir, package)
                 if new_raw != old_raw:
                     _replace_index(root_fd, new_raw)
                 if selected is not None:
                     return (_v2_result(repo_root, index, new_raw, 'validate', selected,
-                                       'pending' if pending else 'ready'), 4 if pending else 0)
+                                       'pending' if pending else 'ready', package=package), 4 if pending else 0)
                 if include_details:
                     return (_v2_result(repo_root, index, new_raw, 'validate',
                         {row['id']: None for row in index['screenshots']},
-                        'pending' if pending else 'ready'), 1 if pending else 0)
+                        'pending' if pending else 'ready', package=package), 1 if pending else 0)
+                _check_package_current(repo_fd, requirement_dir, package)
                 return ({"change_id": change_id, "status": "pending" if pending else "ready",
                          "screenshots": result_rows}, 1 if pending else 0)
         finally:
@@ -1017,10 +1058,11 @@ def _check_update_images(root_fd: Any, index: dict[str, Any], targets: set[str])
 
 
 def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: Any, operation: str,
-                  requirement_dir: str | None = None, *, explicit_v2: bool = False) -> dict[str, Any]:
+                  requirement_dir: str | None = None, *, explicit_v2: bool = False, package=None) -> dict[str, Any]:
     change_id = _id(change_id, "change_id")
-    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id)
-    _validate_requirement_identity(change_id, requirement_dir)
+    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id, registered=package is not None)
+    if package is None:
+        _validate_requirement_identity(change_id, requirement_dir)
     if not DIGEST_RE.fullmatch(expected_sha):
         fail("--expected-index-sha256 must be lowercase SHA-256")
     request_v2 = None
@@ -1034,12 +1076,12 @@ def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: A
         payload['schema_version'] = 1 if operation == 'record-review' else 2
     repo_fd = _open_absolute_dir(repo_root)
     try:
-        parent, root_fd = _material_root(repo_fd, requirement_dir)
+        parent, root_fd = _material_root(repo_fd, requirement_dir, package=package)
         fs.close_dir(parent)
         try:
             with _exclusive_lock(root_fd, timeout=5 if explicit_v2 or operation == 'bind-prototype'
-                    and isinstance(payload, dict) and payload.get('schema_version') == 2 else None):
-                index, old_raw = _load_index(root_fd, change_id, requirement_dir)
+                    and isinstance(payload, dict) and payload.get('schema_version') in (2, 3) else None):
+                index, old_raw = _load_index(root_fd, change_id, requirement_dir, package=package)
                 if _sha(old_raw) != expected_sha:
                     fail("index CAS conflict: expected SHA-256 does not match current index")
                 selected_v2 = _v2_targets(index, request_v2['targets']) if explicit_v2 else None
@@ -1120,8 +1162,8 @@ def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: A
                             "confirmed_sha256": digest}
                 else:
                     _keys(payload, {"schema_version", "artifact_plan_id", "gate_digest", "approved_root", "prototype_refs"}, set(), operation)
-                    if type(payload["schema_version"]) is not int or payload["schema_version"] not in (1, 2):
-                        fail("bind-prototype schema_version must be 1 or explicit 2")
+                    if type(payload["schema_version"]) is not int or payload["schema_version"] not in (1, 2, 3):
+                        fail("unsupported bind-prototype schema version")
                     version = payload['schema_version']
                     _text(payload["artifact_plan_id"], "artifact_plan_id", maximum=120)
                     if not isinstance(payload["gate_digest"], str) or not DIGEST_RE.fullmatch(payload["gate_digest"]):
@@ -1133,12 +1175,18 @@ def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: A
                         fail("prototype_refs must be a non-empty list")
                     for ref in payload["prototype_refs"]:
                         fields = {"prototype_path", "prototype_sha256", "page_id", "area_id", "feature_ids", "acceptance_ids", "change_intent", "depends_on"}
-                        _keys(ref, fields | ({'state_id', 'context_id'} if version == 2 else set()), set(), "prototype_ref")
-                        if version == 2:
+                        if version >= 2:
+                            fields |= {'state_id', 'context_id'}
+                        if version == 3:
+                            fields |= {'prototype_mode', 'interaction_spec'}
+                        _keys(ref, fields, set(), "prototype_ref")
+                        if version == 3:
+                            interaction_reference(ref)
+                        if version >= 2:
                             if type(ref['state_id']) is not str or ref['state_id'] not in STATES:
                                 fail('invalid prototype state identity')
                             _id(ref['context_id'], 'prototype context_id')
-                            ref['schema_version'] = 2
+                            ref['schema_version'] = version
                         relative = PurePosixPath(_text(ref["prototype_path"], "prototype_path", maximum=500))
                         if relative.is_absolute() or ".." in relative.parts or "\\" in str(relative):
                             fail("prototype_path must remain below the approved root")
@@ -1161,7 +1209,7 @@ def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: A
                             fail("prototype ref must depend on at least one known screenshot UI-EV")
                         for evidence_id in ref["depends_on"]:
                             target = next((row for row in index["screenshots"] if row["id"] == evidence_id), None)
-                            if version == 2 and (target is None or target['state'] != ref['state_id']
+                            if version >= 2 and (target is None or target['state'] != ref['state_id']
                                     or sum(context['context_id'] == ref['context_id']
                                            for context in target['applies_to']) != 1):
                                 fail('prototype state/context or dependency does not match actual screenshot')
@@ -1188,13 +1236,16 @@ def _update_index(repo_root: Path, change_id: str, expected_sha: str, payload: A
                 # Locks serialize writers, not user edits to images. Reopen and
                 # recheck the actual referenced bytes before publishing facts.
                 _check_update_images(root_fd, index, targets)
-                if explicit_v2 and _read_at(root_fd, INDEX_NAME, 8 * 1024 * 1024) != old_raw:
+                if ((explicit_v2 or payload.get('schema_version') == 3)
+                        and _read_at(root_fd, INDEX_NAME, 8 * 1024 * 1024) != old_raw):
                     fail('index CAS conflict: index changed during update')
                 new_raw = _index_bytes(index)
+                _check_package_current(repo_fd, requirement_dir, package)
                 if new_raw != old_raw:
                     _replace_index(root_fd, new_raw)
                 if explicit_v2:
-                    return _v2_result(repo_root, index, new_raw, operation, selected_v2, 'updated')
+                    return _v2_result(repo_root, index, new_raw, operation, selected_v2, 'updated', package=package)
+                _check_package_current(repo_fd, requirement_dir, package)
                 return {"change_id": change_id, "status": "updated", "operation": operation,
                         "index_sha256": _sha(new_raw)}
         finally:
@@ -1209,14 +1260,14 @@ def _observation_contract() -> dict[str, Any]:
 
 
 def _observation_source(index: dict[str, Any], repo_root: Path, requirement_dir: str,
-                        evidence_id: str, context_ref: str) -> tuple[dict, dict, dict]:
+                        evidence_id: str, context_ref: str, *, package=None) -> tuple[dict, dict, dict]:
     row = next((item for item in index['screenshots'] if item['id'] == evidence_id), None)
     if row is None:
         fail('unknown observation evidence ID')
     context = next((item for item in row['applies_to'] if item['context_id'] == context_ref), None)
     if context is None:
         fail('unknown observation context reference')
-    scope = observation_scope(repo_root, requirement_dir, index['change_id'])
+    scope = observation_scope(repo_root, _scope_directory(requirement_dir, package), index['change_id'])
     source = {'scope_digest': scope, 'evidence_id': evidence_id,
               'image_sha256': row['validation']['content_sha256']}
     # Context identity is separate from interpretation and is rechecked on record.
@@ -1249,10 +1300,11 @@ def _observation_failure(exc: Exception) -> tuple[dict, int]:
 
 
 def _observation_command(repo_root: Path, change_id: str, expected_sha: str,
-                         payload: Any, operation: str, requirement_dir: str | None) -> tuple[dict, int]:
+                         payload: Any, operation: str, requirement_dir: str | None, *, package=None) -> tuple[dict, int]:
     change_id = _id(change_id, 'change_id')
-    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id)
-    _validate_requirement_identity(change_id, requirement_dir)
+    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id, registered=package is not None)
+    if package is None:
+        _validate_requirement_identity(change_id, requirement_dir)
     if not DIGEST_RE.fullmatch(expected_sha):
         fail('expected index digest must be lowercase SHA-256')
     fields = ({'schema_version', 'evidence_id', 'context_ref', 'required_regions'}
@@ -1265,11 +1317,11 @@ def _observation_command(repo_root: Path, change_id: str, expected_sha: str,
         fail('observation request exceeds byte limit')
     repo_fd = _open_absolute_dir(repo_root)
     try:
-        parent, root_fd = _material_root(repo_fd, requirement_dir)
+        parent, root_fd = _material_root(repo_fd, requirement_dir, package=package)
         fs.close_dir(parent)
         try:
             with _exclusive_lock(root_fd, timeout=5):
-                index, raw = _load_index(root_fd, change_id, requirement_dir)
+                index, raw = _load_index(root_fd, change_id, requirement_dir, package=package)
                 if _sha(raw) != expected_sha:
                     fail('CONFLICT: screenshot index changed')
                 contract = _observation_contract()
@@ -1302,7 +1354,7 @@ def _observation_command(repo_root: Path, change_id: str, expected_sha: str,
                         fail('required region count exceeds limit')
                 _check_update_images(root_fd, index, {evidence_id})
                 row, source, context = _observation_source(index, repo_root, requirement_dir,
-                                                          evidence_id, context_ref)
+                                                          evidence_id, context_ref, package=package)
                 with ObservationStore(root_fd) as store:
                     bindings, revision = store.binding_snapshot(source['scope_digest'])
                     snapshot_ref = f"observations/snapshots/{source['image_sha256']}.png"
@@ -1331,6 +1383,7 @@ def _observation_command(repo_root: Path, change_id: str, expected_sha: str,
                                     if item['evidence_id'] == evidence_id), None)
                                 if current_revision != revision or current_binding != binding:
                                     fail('CONFLICT: observation binding changed during reuse')
+                                _check_package_current(repo_fd, requirement_dir, package)
                                 return {'schema_version': 2, 'status': 'REUSED',
                                     'observation_ref': 'observations/' + binding['observation_sha256'] + '.json',
                                     'observation_sha256': binding['observation_sha256'],
@@ -1354,7 +1407,9 @@ def _observation_command(repo_root: Path, change_id: str, expected_sha: str,
                         _check_update_images(root_fd, index, {evidence_id})
                         if _sha(_read_at(root_fd, INDEX_NAME, 8 * 1024 * 1024)) != expected_sha:
                             fail('CONFLICT: screenshot index changed during preparation')
+                        _check_package_current(repo_fd, requirement_dir, package)
                         digest = store.publish_preparation(baseline)
+                        _check_package_current(repo_fd, requirement_dir, package)
                         return {'schema_version': 2, 'status': 'NEEDS_EVIDENCE',
                             'prepare_ref': f'observations/preparations/{digest}.json',
                             'prepare_sha256': digest, 'snapshot_ref': snapshot_ref,
@@ -1385,6 +1440,7 @@ def _observation_command(repo_root: Path, change_id: str, expected_sha: str,
                         store.verify_snapshot(source['image_sha256'], limit=MAX_FILE_BYTES)
                         if _observation_contract() != contract:
                             fail('STALE: extraction contract changed during observation')
+                        _check_package_current(repo_fd, requirement_dir, package)
                         store.bind(source['scope_digest'], prepared['binding_index_sha256'], {
                             'evidence_id': evidence_id, 'image_sha256': source['image_sha256'],
                             'contract_sha256': output['contract_digest'], 'observation_sha256': digest})
@@ -1393,6 +1449,7 @@ def _observation_command(repo_root: Path, change_id: str, expected_sha: str,
                         # Replaying this preparation must still recheck sources.
                         error, status = _observation_failure(exc)
                         return {**output, **error, 'association_status': 'PENDING'}, status
+                    _check_package_current(repo_fd, requirement_dir, package)
                     return {**output, 'status': 'PARTIAL' if record['coverage']['missing_regions']
                             else 'RECORDED', 'association_status': 'BOUND'}, 0
         finally:
@@ -1439,14 +1496,14 @@ def _query_text(region):
         for control in region['controls']], *region['style_clues']])
 
 
-def _query_area(repo_root, repo_fd, requirement_dir, area, context_ref, evidence_states):
+def _query_area(repo_root, repo_fd, requirement_dir, area, context_ref, evidence_states, *, package=None):
     """A current source baseline may narrow an already authorized context."""
     from aek.adapters.ui_baseline import read_baseline
     from aek.core.artifact.ui_baseline import validate_baseline, MAX_BASELINE_BYTES
     def mapping():
         current = fs.dup_dir(repo_fd)
         try:
-            for part in ('docs', '03-SDD', requirement_dir):
+            for part in _location_parts(repo_fd, requirement_dir, package, role='design'):
                 child = fs.open_child_dir(current, part)
                 fs.close_dir(current)
                 current = child
@@ -1485,15 +1542,16 @@ def _query_area(repo_root, repo_fd, requirement_dir, area, context_ref, evidence
 
 
 def _observation_query(repo_root: Path, change_id: str, payload: Any, requirement_dir: str | None,
-                       control_context: str, *, index_factory=None) -> tuple[dict, int]:
+                       control_context: str, *, index_factory=None, package=None) -> tuple[dict, int]:
     """Control-selected root/context; request may narrow, never select authority.
 
     A host may inject an adopted SQLite factory. The standalone CLI has no
     runtime adoption authority, so it explicitly uses the bounded file path.
     """
     change_id = _id(change_id, 'change_id')
-    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id)
-    _validate_requirement_identity(change_id, requirement_dir)
+    requirement_dir = _requirement_dir(requirement_dir if requirement_dir is not None else change_id, registered=package is not None)
+    if package is None:
+        _validate_requirement_identity(change_id, requirement_dir)
     control_context = _id(control_context, 'control context')
     request = _keys(payload, {'schema_version', 'query', 'context_ref'},
                     {'page', 'area', 'state', 'limit'}, 'observation-query')
@@ -1513,7 +1571,7 @@ def _observation_query(repo_root: Path, change_id: str, payload: Any, requiremen
             fail('invalid area identity')
     repo_fd = _open_absolute_dir(repo_root)
     try:
-        parent, root_fd = _material_root(repo_fd, requirement_dir)
+        parent, root_fd = _material_root(repo_fd, requirement_dir, package=package)
         fs.close_dir(parent)
         try:
             with _exclusive_lock(root_fd, timeout=5):
@@ -1521,20 +1579,20 @@ def _observation_query(repo_root: Path, change_id: str, payload: Any, requiremen
                 def check_deadline():
                     if time.monotonic() >= deadline:
                         raise TimeoutError('observation query deadline exceeded')
-                index, _ = _load_index(root_fd, change_id, requirement_dir)
+                index, _ = _load_index(root_fd, change_id, requirement_dir, package=package)
                 candidates, context_sha = _query_candidates(index, control_context, request)
                 area_evidence_states = {row['id']: row['state'] for row, _, _ in candidates}
                 area_snapshot, area_regions = None, None
                 if 'area' in request:
                     try:
                         area_snapshot, area_regions = _query_area(repo_root, repo_fd, requirement_dir,
-                            request['area'], control_context, area_evidence_states)
+                            request['area'], control_context, area_evidence_states, package=package)
                     except (OSError, ValueError):
                         fail('NEEDS_EVIDENCE: current area mapping is unavailable')
                     candidates = [candidate for candidate in candidates if candidate[0]['id'] in area_regions]
                 if len(candidates) > 256:
                     fail('query source count exceeds limit')
-                scope = observation_scope(repo_root, requirement_dir, change_id)
+                scope = observation_scope(repo_root, _scope_directory(requirement_dir, package), change_id)
                 contract = _observation_contract()
                 contract_sha = _sha(observation.canonical_bytes(contract))
                 gaps, loaded, total_bytes = [], {}, 0
@@ -1665,12 +1723,12 @@ def _observation_query(repo_root: Path, change_id: str, payload: Any, requiremen
                     if area_regions is not None:
                         try:
                             if _query_area(repo_root, repo_fd, requirement_dir, request['area'],
-                                    control_context, area_evidence_states) != (area_snapshot, area_regions):
+                                    control_context, area_evidence_states, package=package) != (area_snapshot, area_regions):
                                 raise ValueError('area mapping changed')
                         except (OSError, ValueError, UiReferenceError):
                             invalid.update(loaded)
                             gaps.append({'reason_code': 'SCOPE_CHANGED'})
-                    final_index, _ = _load_index(root_fd, change_id, requirement_dir)
+                    final_index, _ = _load_index(root_fd, change_id, requirement_dir, package=package)
                     final_candidates, final_context_sha = _query_candidates(final_index, control_context, request)
                     if area_regions is not None:
                         final_candidates = [candidate for candidate in final_candidates if candidate[0]['id'] in area_regions]
@@ -1714,6 +1772,7 @@ def _observation_query(repo_root: Path, change_id: str, payload: Any, requiremen
                         'source_generation': generation, 'hits': hits, 'gaps': gaps, 'truncated': truncated,
                         'limits': {'sources': 256, 'source_bytes': 8 * 1024 * 1024, 'hits': limit,
                                    'snippet_chars': 512, 'query_chars': 256, 'seconds': 2}}
+                    _check_package_current(repo_fd, requirement_dir, package)
         finally:
             fs.close_dir(root_fd)
     finally:
@@ -1784,10 +1843,11 @@ def _parser() -> argparse.ArgumentParser:
             sub.add_argument('--schema-version', choices=(1, 2), type=int, default=1)
         if name != "scaffold":
             sub.add_argument("--change-id", required=True)
-            sub.add_argument("--requirement-dir")
         else:
             sub.add_argument('--change-id')
-            sub.add_argument('--requirement-dir')
+        location = sub.add_mutually_exclusive_group()
+        location.add_argument('--requirement-dir')
+        location.add_argument('--package-ref', help='explicit registered repository-relative package path')
         if name in {"record-review", "bind-prototype", "observation-prepare", "observation-record"}:
             sub.add_argument("--expected-index-sha256", required=True)
         if name == 'observation-query':
@@ -1802,11 +1862,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     explicit_v2 = getattr(args, 'schema_version', 1) == 2
     try:
+        package = resolve_package(args.repo_root, args.package_ref) if args.package_ref is not None else None
+        if package is not None:
+            if args.change_id is not None and args.change_id != package.change_id:
+                fail('package change ID does not match the explicit selector')
+            args.change_id, args.requirement_dir = package.change_id, package.title
         if args.command == "scaffold":
             request = read_json_stdin()
-            output = (_scaffold_v2(args.repo_root, request, args.change_id, args.requirement_dir)
+            if package is not None:
+                if (request.get('change_id') != package.change_id
+                        or request.get('requirement_dir', package.title) != package.title):
+                    fail('scaffold request does not match the registered package')
+                request = {**request, 'requirement_dir': package.title}
+            output = (_scaffold_v2(args.repo_root, request, args.change_id, args.requirement_dir, package=package)
                       if explicit_v2 else _scaffold(args.repo_root, request,
-                                                    include_details=args.format == 'human'))
+                                                    include_details=args.format == 'human', package=package))
             status = 0
         elif args.command == "validate":
             request_v2 = read_json_stdin() if args.schema_version == 2 else None
@@ -1814,16 +1884,16 @@ def main(argv: list[str] | None = None) -> int:
                 fail('validate v2 requires an explicit request object')
             output, status = _validate_command(args.repo_root, args.change_id, args.requirement_dir,
                 include_details=args.format == 'human',
-                request_v2=request_v2)
+                request_v2=request_v2, package=package)
         elif args.command in {'observation-prepare', 'observation-record'}:
             output, status = _observation_command(args.repo_root, args.change_id,
-                args.expected_index_sha256, read_json_stdin(), args.command, args.requirement_dir)
+                args.expected_index_sha256, read_json_stdin(), args.command, args.requirement_dir, package=package)
         elif args.command == 'observation-query':
             output, status = _observation_query(args.repo_root, args.change_id, read_json_stdin(),
-                args.requirement_dir, args.context_ref)
+                args.requirement_dir, args.context_ref, package=package)
         else:
             output = _update_index(args.repo_root, args.change_id, args.expected_index_sha256,
-                                   read_json_stdin(), args.command, args.requirement_dir, explicit_v2=explicit_v2)
+                                   read_json_stdin(), args.command, args.requirement_dir, explicit_v2=explicit_v2, package=package)
             status = 0
         print(_human_summary(output) if getattr(args, 'format', 'json') == 'human'
               else json.dumps(output, ensure_ascii=False, sort_keys=True))

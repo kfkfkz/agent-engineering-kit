@@ -27,6 +27,7 @@ class SelfContainedHtml(HTMLParser):
     """Shared conservative validator for the existing Gate and renderer."""
     _URL_ATTRS = {"src", "srcset", "imagesrcset", "attributionsrc", "poster", "data", "action", "formaction",
                   "background", "ping", "lowsrc", "dynsrc", "longdesc", "codebase", "archive", "manifest"}
+    _inline_interaction = False
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -56,13 +57,14 @@ class SelfContainedHtml(HTMLParser):
         attrs_map = {name.lower(): (value or "") for name, value in attrs}
         if len(attrs_map) != len(attrs):
             self.errors.append(f"duplicate HTML attribute: {tag}")
-        if any(name.startswith("on") for name in attrs_map):
+        if not self._inline_interaction and any(name.startswith("on") for name in attrs_map):
             self.errors.append("event-handler attributes are not allowed")
         if any(name in {"xlink:href", "xml:base"} for name in attrs_map):
             self.errors.append("namespaced resource references are not allowed")
-        if tag.lower() in {"iframe", "frame", "object", "embed", "applet", "portal", "base", "form"}:
+        if tag in {"iframe", "frame", "object", "embed", "applet", "portal", "base"} or (
+                tag == "form" and not self._inline_interaction):
             self.errors.append(f"forbidden resource element: {tag}")
-        if tag.lower() == "script":
+        if tag == "script" and not self._inline_interaction:
             self.errors.append("script execution is disabled in prototype previews")
         if tag.lower() == "meta" and attrs_map.get("http-equiv", "").lower() == "refresh":
             self.errors.append("automatic navigation is not allowed in prototype previews")
@@ -195,16 +197,22 @@ def build_static_preview(selection: dict, items: list[PreviewItem]) -> PreviewRe
         return base64.b64encode(raw).decode('ascii')
     if (type(selection) is not dict or set(selection) != {
             'schema_version', 'status', 'per_item', 'prepare_sha256'}
-            or type(selection['schema_version']) is not int or selection['schema_version'] != 2
+            or type(selection['schema_version']) is not int or selection['schema_version'] not in (2, 3)
             or selection['status'] != 'PREPARED' or type(selection['per_item']) is not list
             or not 1 <= len(selection['per_item']) <= 32):
         raise PreviewRejected('invalid prepared preview selection')
     fields = {'page_id', 'area_id', 'state_id', 'context_id', 'prototype_path',
               'prototype_sha256', 'dependency_sha256', 'scope_digest', 'evidence_contexts'}
+    interactive = selection['schema_version'] == 3
+    if interactive:
+        fields |= {'mode', 'spec_sha256', 'interaction_status'}
     for row in selection['per_item']:
         if (type(row) is not dict or set(row) != fields
                 or any(type(row[key]) is not str or len(row[key]) > 500
                        for key in fields - {'evidence_contexts'})
+                or (interactive and (row['mode'] != 'interactive-v1'
+                    or row['interaction_status'] != 'PENDING'
+                    or not re.fullmatch(r'[0-9a-f]{64}', row['spec_sha256'])))
                 or not re.fullmatch(r'PAGE-[1-9][0-9]*', row['page_id'])
                 or not re.fullmatch(r'AREA-[1-9][0-9]*', row['area_id'])
                 or row['state_id'] not in {'default', 'loading', 'empty', 'error', 'dialog', 'drawer', 'permission'}
@@ -300,7 +308,10 @@ def build_static_preview(selection: dict, items: list[PreviewItem]) -> PreviewRe
         if seen != set(allowed):
             references.append('<p>部分参考图未提供；未完成完整对照。</p>')
         rendered = '<p>渲染：UNAVAILABLE；尚未生成渲染图。</p>'
-        if item.render is not None:
+        if interactive and item.render is None:
+            rendered = ('<p>交互观察：PENDING；尚未取得受控运行证据。</p>'
+                        '<p>交互规格 SHA-256：<code>' + text(row['spec_sha256']) + '</code></p>')
+        elif item.render is not None:
             result = item.render
             if (type(result) is not RenderResult or type(result.status) is not str
                     or result.status not in {'RENDERED', 'UNAVAILABLE', 'REJECTED', 'FAILED'}
@@ -309,6 +320,8 @@ def build_static_preview(selection: dict, items: list[PreviewItem]) -> PreviewRe
                     or any(type(value) is not str or len(value) > 512 for value in result.unknowns)
                     or (result.input_sha256 is not None and result.input_sha256 != row['prototype_sha256'])):
                 raise PreviewRejected('invalid preview render snapshot')
+            if interactive and (result.status != 'RENDERED' or result.reason_code != 'INTERACTION_CAPTURE_COMPLETE'):
+                raise PreviewRejected('interactive preview needs the observed interaction state')
             complete = all(value is not None for value in (result.input_sha256, result.png,
                 result.output_sha256, result.conditions, result.runtime_sha256, result.plan_sha256))
             if result.status != 'RENDERED':
@@ -328,7 +341,10 @@ def build_static_preview(selection: dict, items: list[PreviewItem]) -> PreviewRe
                         or any(type(value) is not str or not re.fullmatch(r'[0-9a-f]{64}', value)
                                for value in (result.runtime_sha256, result.plan_sha256))):
                     raise PreviewRejected('render snapshot digest or identity mismatch')
-                rendered = ('<p>渲染：RENDERED（快照数据，不认证工具来源）</p>'
+                label = ('<p>交互观察：OBSERVED（待维护者确认）</p><p>交互规格 SHA-256：<code>'
+                    + text(row['spec_sha256']) + '</code></p>' if interactive
+                    else '<p>渲染：RENDERED（快照数据，不认证工具来源）</p>')
+                rendered = (label +
                     '<p>条件：' + text(checked['width']) + ' × ' + text(checked['height'])
                     + '；DPR=' + text(checked['dpr']) + '；主题=' + text(checked['theme']) + '</p>'
                     '<p>输出 PNG SHA-256：<code>' + text(result.output_sha256) + '</code></p>'
@@ -338,7 +354,7 @@ def build_static_preview(selection: dict, items: list[PreviewItem]) -> PreviewRe
                     + encoded_image(result.png) + '">'
                     + ''.join('<p>未核实：' + text(value) + '</p>' for value in result.unknowns))
         sections.append('<section><h2>' + text(' / '.join(item.target)) + '</h2>'
-            '<p>原型人工打开路径：<code>' + text(row['prototype_path']) + '</code></p>'
+            '<p>' + ('原型来源路径' if interactive else '原型人工打开路径') + '：<code>' + text(row['prototype_path']) + '</code></p>'
             '<p>输入 HTML SHA-256：<code>' + text(row['prototype_sha256']) + '</code></p>'
             '<p>依赖 SHA-256：<code>' + text(row['dependency_sha256']) + '</code></p>'
             '<p>作用域 SHA-256：<code>' + text(row['scope_digest']) + '</code></p>'
