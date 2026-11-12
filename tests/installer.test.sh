@@ -106,7 +106,7 @@ check "空目录首次安装退出码 0" 0 $?
 [ -f "$P/CLAUDE.md" ] && [ -f "$P/AGENTS.md" ] && [ ! -f "$P/.gitignore" ] \
   && [ "$(grep -c '<!-- repo-memory-kit:start -->' "$P/CLAUDE.md")" -eq 1 ] \
   && [ "$(grep -c '<!-- repo-memory-kit:start -->' "$P/AGENTS.md")" -eq 1 ] \
-  && grep -q "第一次检索必须先用 \`codebase-memory\`" "$P/AGENTS.md" \
+  && grep -Fq "第一次结构检索必须先用 \`codebase-memory\` 绑定当前工作树和图谱" "$P/AGENTS.md" \
   && ok "空仓库创建受管根指引且不擅建 .gitignore" \
   || bad "空仓库根指引创建/容器边界错误"
 # 事务目录清理（done 后 tx/<id> 应删除）
