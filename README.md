@@ -45,7 +45,7 @@ python -m installer "D:\code\your-project"
 
 基础安装在取得 AEK 源码后可离线执行。安装器管理自己的资源，并保留用户记忆和根指引的非受管内容；首次安装还会在 `docs/memory/constitution.md` 提供一份可编辑的通用协作宪章种子，已有宪章不会被覆盖，卸载也会保留。
 
-如果 Codex 通常从父级 workspace 启动，安装时指定 workspace 根目录：
+多仓库工作区中，建议从目标仓库打开 Codex 会话，使用仓库自身的 Skill。若父级工作区专用于一个项目，也可以显式公开该项目的 Skill：
 
 ```bash
 ./install.sh --codex-root /path/to/workspace /path/to/workspace/your-project

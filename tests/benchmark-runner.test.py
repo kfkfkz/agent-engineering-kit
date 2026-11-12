@@ -372,6 +372,7 @@ class PreparedWorkspaceTests(unittest.TestCase):
                     self.value["execution"][key] = previous
 
     def test_committed_receipt_recovers_crash_before_final_state_without_reexecution(self):
+        from aek.adapters.atomic_file import AtomicFileStore
         from adapters.fake_run import run_fake
         from adapters.workspace import load_prepared_pair
         prepared = prepare_pair(self.scenario(), self.outputs)
@@ -379,16 +380,16 @@ class PreparedWorkspaceTests(unittest.TestCase):
             "from pathlib import Path\nimport sys\n"
             "p=Path(sys.argv[1])/'counter.txt'\n"
             "p.write_text(str(int(p.read_text())+1) if p.exists() else '1')\n")
-        real_replace = os.replace
+        real_write = AtomicFileStore.write
 
-        def crash_before_state_publish(source, destination):
-            if Path(destination).name == "state.json":
-                value = json.loads(Path(source).read_bytes())
+        def crash_before_state_publish(store, name, content):
+            if name == "state.json":
+                value = json.loads(content)
                 if value["steps"][0]["state"] == "COMPLETED":
                     raise KeyboardInterrupt
-            return real_replace(source, destination)
+            return real_write(store, name, content)
 
-        with mock.patch("aek.adapters.atomic_file.os.replace", side_effect=crash_before_state_publish):
+        with mock.patch.object(AtomicFileStore, "write", crash_before_state_publish):
             with self.assertRaises(KeyboardInterrupt):
                 run_fake(prepared, "vanilla", script, script_sha256=digest, timeout_seconds=2)
         state_path, = (prepared.root / "work-units").glob("*/state.json")

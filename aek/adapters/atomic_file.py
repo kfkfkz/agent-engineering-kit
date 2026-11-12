@@ -111,12 +111,11 @@ class AtomicFileStore:
                 directory = fs.open_absolute_dir(self.root.absolute())
                 try:
                     fs.replace(directory, temporary.name, directory, path.name)
-                    fs.fsync_dir(directory)
                 finally:
                     fs.close_dir(directory)
             else:
                 os.replace(temporary, path)
-                _sync_directory(self.root)
+            _sync_directory(self.root)
         finally:
             if descriptor >= 0:
                 os.close(descriptor)

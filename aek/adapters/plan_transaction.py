@@ -67,15 +67,14 @@ def _json_bytes(value: object) -> bytes:
 
 @contextmanager
 def _lock_file(directory, *, name=_LOCK) -> Iterator[None]:
-    fd = fs.open_file(directory, name, os.O_RDWR | os.O_CREAT | _BINARY)
+    fd = fs.open_file(directory, name, os.O_RDWR | os.O_CREAT | _BINARY,
+                      shared_lock_file=True)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise PlanInvalid("plan lock is not a regular file")
         if os.name == "nt":
             import msvcrt
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
-                os.fsync(fd)
+            # The CRT locks past EOF, including an empty installer lock file.
             os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
             try:

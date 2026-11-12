@@ -31,7 +31,9 @@ class AtomicFileStoreTests(unittest.TestCase):
 
     def test_publish_failure_keeps_old_bytes_and_cleans_temporary(self) -> None:
         self.store.write("state.json", b"old")
-        with patch("aek.adapters.atomic_file.os.replace",
+        publish = ("aek.adapters.ui_filesystem.replace" if os.name == "nt"
+                   else "aek.adapters.atomic_file.os.replace")
+        with patch(publish,
                    side_effect=OSError("injected before publish")):
             with self.assertRaises(OSError):
                 self.store.write("state.json", b"new")

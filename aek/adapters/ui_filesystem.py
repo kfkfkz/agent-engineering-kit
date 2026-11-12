@@ -92,6 +92,8 @@ if os.name == "nt":
     _DIRECTORY = 0x10
     _BACKUP = 0x02000000
     _OPEN_REPARSE = 0x00200000
+    _SHARE_READ = 0x01
+    _SHARE_WRITE = 0x02
 
     class _Info(ctypes.Structure):
         _fields_ = [("attributes", wintypes.DWORD), ("created", wintypes.FILETIME),
@@ -143,8 +145,9 @@ if os.name == "nt":
             _win_error()
         return result
 
-    def _win_open(path, access, disposition=3, *, directory=None, allow_reparse=False):
-        handle = _kernel.CreateFileW(str(path), access, 1, None, disposition,
+    def _win_open(path, access, disposition=3, *, directory=None, allow_reparse=False,
+                  share_mode=_SHARE_READ):
+        handle = _kernel.CreateFileW(str(path), access, share_mode, None, disposition,
                                     _BACKUP | _OPEN_REPARSE, None)
         if handle == _INVALID:
             _win_error(path)
@@ -275,7 +278,8 @@ def open_child_dir(handle, name: str, *, create: bool = False):
     return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=handle)
 
 
-def open_file(handle, name: str, flags: int, mode: int = 0o600) -> int:
+def open_file(handle, name: str, flags: int, mode: int = 0o600, *,
+              shared_lock_file: bool = False) -> int:
     name = _component(name)
     if os.name != "nt":
         # O_NONBLOCK prevents FIFO/device placeholders from blocking before
@@ -293,7 +297,10 @@ def open_file(handle, name: str, flags: int, mode: int = 0o600) -> int:
     if flags & (os.O_WRONLY | os.O_RDWR):
         access |= _WRITE
     disposition = 1 if flags & os.O_CREAT and flags & os.O_EXCL else (4 if flags & os.O_CREAT else 3)
-    raw = _win_open(handle.path / name, access, disposition, directory=False)
+    # Byte-range lock files must allow other contenders to open their handles.
+    # Keep delete sharing disabled so the file identity stays pinned.
+    share_mode = _SHARE_READ | _SHARE_WRITE if shared_lock_file else _SHARE_READ
+    raw = _win_open(handle.path / name, access, disposition, directory=False, share_mode=share_mode)
     try:
         # Never truncate until the opened handle has passed the reparse check.
         fd = msvcrt.open_osfhandle(raw, (flags & (os.O_WRONLY | os.O_RDWR | os.O_APPEND)) | os.O_BINARY)

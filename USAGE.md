@@ -10,7 +10,7 @@
 # 只预览安装计划
 ./install.sh --dry-run /path/to/project
 
-# Codex 从父级 workspace 启动时，让项目技能在该目录可见
+# 父级工作区专用于一个项目时，让该项目的技能在父目录可见
 ./install.sh --codex-root /path/to/workspace /path/to/workspace/project
 
 # 明确使用受管副本，适用于不能使用 symlink 的环境
@@ -30,7 +30,9 @@
 
 POSIX 默认使用 workspace 技能链接，Windows 默认使用副本。Windows compatible 文件后端采用 reparse-point 预检；若需要针对恶意本机并发进程的 POSIX 文件安全保证，使用 WSL。macOS 使用 POSIX 后端，自动 CI 平台为 Ubuntu 和 Windows。
 
-安装后重新打开目标项目的 Agent 会话。Codex 从 workspace 根目录启动时，应在更新时继续传 `--codex-root`，保证新技能链接或副本也被创建和核验。
+安装后从目标仓库重新打开 Agent 会话。一个父级工作区若包含多个仓库，各仓库使用自己的 Skill，安装和更新时省略 `--codex-root`。父级链接或副本绑定到安装时指定的仓库，同名 Skill 不会随目标仓库切换。
+
+专用父级工作区仍可显式传 `--codex-root`，后续更新和核验时使用同一路径。省略该参数会停止创建父级入口，已有入口需另行处理。清理旧入口时先核对来源，保留项目内的 Skill 和用户自定义内容。
 
 ## 项目记忆与代码图谱
 
