@@ -241,8 +241,8 @@ def run_doctor_checks(target: Path,
         if configured_paths else "configured=unknown；未发现项目级配置证据"))
     for state_name, reason in (
         ("visible", "需由当前宿主工具清单或实际调用证明"),
-        ("indexed", "需由 list_projects/index_status 的 canonical root 匹配证明"),
-        ("fresh", "需由代码身份、generation 与全路径 coverage 证明"),
+        ("indexed", "需核对 list_projects/index_status 的索引范围与实际工作树"),
+        ("fresh", "需由代码身份、generation 与相关路径 coverage 证明"),
     ):
         findings.append(Finding(
             f"codebase-capability-{state_name}", "<host-observation>",
