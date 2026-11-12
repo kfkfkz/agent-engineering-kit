@@ -817,6 +817,10 @@
       "agents-md-block": "canonical_sha256:ea73e6045b796312c0c8758051f906a412a9a05b4ff1dbc9ae7402ef60328f65",
       "claude-md-block": "canonical_sha256:002c3ce5900872ccd594fc96f215d01142ad475bb3264816b342324f033284c7"
     },
+    "93bae19": {
+      "lib-aek-adapters-ui_cdp-py": "canonical_sha256:92e08ba90ed820d8e033c9ebf1571753d1766c81b3441c6b0ed2a2a37fabe161",
+      "lib-aek-adapters-ui_interactive_renderer-py": "canonical_sha256:29fec364d97ecb474ed1529122e8469b0d7574781c5e863d62484f2f6474a8a5"
+    },
     "a327ba4": {
       "skill-agents-security-review-reference-security-source": "canonical_sha256:2a24a038f82997f73998f8438d71e5f55f8dccdb0f416c6d92d49557fd84b39a",
       "skill-claude-security-review-reference-security-source": "canonical_sha256:2a24a038f82997f73998f8438d71e5f55f8dccdb0f416c6d92d49557fd84b39a"
