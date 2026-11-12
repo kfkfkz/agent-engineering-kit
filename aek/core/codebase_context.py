@@ -96,8 +96,6 @@ class DirtyState:
         return cls(identity_digest, 0, "", (), (), -1)
 
     def with_refresh_started(self) -> "DirtyState":
-        if self.dirty_epoch < 1:
-            raise ValueError("clean codebase does not need refresh")
         return replace(self, refresh_started_epoch=self.dirty_epoch)
 
 
@@ -110,6 +108,8 @@ class CodebaseBarrierPlan:
     dirty_epoch: int
     confidence: str
     primary_tool: str
+    graph_paths: tuple[str, ...] = ()
+    source_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -120,15 +120,15 @@ class CodebaseObservation:
     identity_digest: str
     covered_paths: tuple[str, ...]
     metadata_match_paths: tuple[str, ...]
+    source_only_paths: tuple[str, ...] = ()
 
 
 _STRUCTURAL = re.compile(
     r"\b(callers?|callees?|calls?|symbols?|functions?|classes?|methods?|"
-    r"dependencies|dependents?|impact|architecture|implements?|inherits?|"
-    r"调用|被谁调用|符号|函数|类|方法|依赖|影响|架构)\b", re.I)
-_TEXTUAL = re.compile(
-    r"\b(exact|literal|error text|message|config|yaml|toml|json|dockerfile|"
-    r"字面量|错误文案|配置|非代码)\b", re.I)
+    r"dependencies|dependents?|impact|architecture|implements?|inherits?)\b"
+    r"|调用|符号|函数|(?<!\w)类(?!\w)|类定义|哪个类|方法定义|依赖|影响范围|架构|继承关系", re.I)
+_EXPLICIT_TEXT = re.compile(
+    r"\b(exact|literal|error text)\b|字面量|错误文案|精确匹配", re.I)
 _NON_CODE_SUFFIXES = {".md", ".txt", ".rst", ".json", ".yaml", ".yml",
                       ".toml", ".ini", ".cfg", ".csv", ".tsv"}
 
@@ -136,7 +136,7 @@ _NON_CODE_SUFFIXES = {".md", ".txt", ".rst", ".json", ".yaml", ".yml",
 def classify_query(query: str) -> QueryKind:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("codebase query is required")
-    if _TEXTUAL.search(query):
+    if _EXPLICIT_TEXT.search(query):
         return QueryKind.TEXTUAL
     if _STRUCTURAL.search(query):
         return QueryKind.STRUCTURAL
@@ -175,7 +175,7 @@ def mark_dirty(
         raise ValueError("dirty change batch is invalid")
     code_paths = tuple(sorted({_safe_path(path) for path in paths
                                if _is_code_path(path)}))
-    if not code_paths:
+    if not code_paths and identity_digest == state.code_identity_digest:
         return state
     same_batch = batch_id == state.active_batch_id
     merged_paths = tuple(sorted(set(state.changed_paths) | set(code_paths))) \
@@ -192,9 +192,11 @@ def mark_dirty(
 def _plan(
     action: str, reason: str, state: DirtyState, paths: tuple[str, ...], *,
     confidence: str, primary_tool: str, tools: tuple[str, ...],
+    graph_paths: tuple[str, ...] = (), source_paths: tuple[str, ...] = (),
 ) -> CodebaseBarrierPlan:
     return CodebaseBarrierPlan(
-        action, reason, tools, paths, state.dirty_epoch, confidence, primary_tool)
+        action, reason, tools, paths, state.dirty_epoch, confidence, primary_tool,
+        graph_paths, source_paths)
 
 
 def plan_barrier(
@@ -208,12 +210,16 @@ def plan_barrier(
     paths = tuple(sorted(set(state.changed_paths) | set(candidates)))
     if kind == QueryKind.TEXTUAL:
         return _plan("BOUNDED_SOURCE", "TEXTUAL_QUERY", state, paths,
-                     confidence="high", primary_tool="rg", tools=("rg",))
+                     confidence="high", primary_tool="rg", tools=("rg",), source_paths=paths)
     if not capabilities.visible:
         return _plan("BOUNDED_SOURCE", "MCP_NOT_VISIBLE", state, paths,
                      confidence="degraded", primary_tool="source",
-                     tools=("bounded_source",))
+                     tools=("bounded_source",), source_paths=paths)
     if not capabilities.indexed:
+        if state.refresh_started_epoch == state.dirty_epoch:
+            return _plan("BOUNDED_SOURCE", "PROJECT_INDEX_UNPROVEN", state, paths,
+                         confidence="degraded", primary_tool="source", tools=("bounded_source",),
+                         source_paths=paths)
         return _plan("REFRESH_ONCE", "PROJECT_NOT_INDEXED", state, paths,
                      confidence="unknown", primary_tool="index_repository",
                      tools=("list_projects", "index_repository", "index_status"))
@@ -231,28 +237,42 @@ def verify_observation(
     plan: CodebaseBarrierPlan, state: DirtyState,
     observation: CodebaseObservation,
 ) -> CodebaseBarrierPlan:
-    if plan.required_action != "CHECK_STATUS":
+    if plan.required_action != "CHECK_STATUS" or plan.dirty_epoch != state.dirty_epoch:
         raise ValueError("only a status plan accepts a freshness observation")
     required = set(plan.required_paths)
-    complete = (
+    if not set(state.changed_paths) <= required:
+        raise ValueError("status plan omits changed paths")
+    covered = {_safe_path(path) for path in observation.covered_paths}
+    matched = {_safe_path(path) for path in observation.metadata_match_paths}
+    source_only = {_safe_path(path) for path in observation.source_only_paths}
+    if not matched <= covered or not source_only <= required or matched & source_only:
+        raise ValueError("codebase coverage partitions are invalid")
+    current = (
         observation.canonical_root == observation.expected_root
         and bool(observation.generation)
         and observation.identity_digest == state.code_identity_digest
-        and set(observation.covered_paths) == required
-        and set(observation.metadata_match_paths) == required
     )
-    if complete:
+    graph = required & matched if current else set()
+    gaps = required - graph
+    if current and not gaps:
         return _plan("USE_GRAPH", "AUTO_REFRESH_CURRENT", state,
                      plan.required_paths, confidence="high",
                      primary_tool="search_graph",
                      tools=("search_graph", "trace_path", "get_code_snippet",
-                            "check_index_coverage"))
-    if state.refresh_started_epoch != state.dirty_epoch:
+                            "check_index_coverage"), graph_paths=tuple(sorted(graph)))
+    if (not current or gaps - source_only) and state.refresh_started_epoch != state.dirty_epoch:
         return _plan("REFRESH_ONCE", "INDEX_STALE_OR_UNPROVEN", state,
                      plan.required_paths, confidence="unknown",
                      primary_tool="index_repository",
                      tools=("index_repository", "index_status",
                             "check_index_coverage"))
-    return _plan("BOUNDED_SOURCE", "REFRESH_DID_NOT_PROVE_FRESH", state,
+    if graph:
+        return _plan("USE_GRAPH", "GRAPH_WITH_SOURCE_GAPS", state, plan.required_paths,
+                     confidence="degraded", primary_tool="search_graph",
+                     tools=("search_graph", "trace_path", "get_code_snippet", "bounded_source"),
+                     graph_paths=tuple(sorted(graph)), source_paths=tuple(sorted(gaps)))
+    reason = "SOURCE_ONLY_COVERAGE" if current and gaps <= source_only else "REFRESH_DID_NOT_PROVE_FRESH"
+    return _plan("BOUNDED_SOURCE", reason, state,
                  plan.required_paths, confidence="degraded",
-                 primary_tool="source", tools=("bounded_source",))
+                 primary_tool="source", tools=("bounded_source",),
+                 source_paths=tuple(sorted(gaps)))

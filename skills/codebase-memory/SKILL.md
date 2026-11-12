@@ -10,9 +10,9 @@ description: "使用 codebase-memory-mcp 知识图谱完成代码结构检索、
 ## 前置检查
 
 1. 确认当前会话存在 `list_projects`、`search_graph`、`trace_path`、`get_code_snippet`、`check_index_coverage` 等 codebase-memory 工具。
-2. 分别记录 capability 四态：`configured` 只表示配置存在，`visible` 由当前工具清单/调用证明，`indexed` 由 canonical root 匹配的 `list_projects/index_status` 证明，`fresh` 还必须由当前代码身份、generation 与相关路径 coverage 的 `metadata_match` 共同证明；禁止以前态推导后态。
-3. Agent/生成器写代码、Git/SVN 更新、切分支或合并后，将当前批次全部代码路径合并并视为 freshness UNKNOWN。下一次结构查询、影响分析或交付门禁前先取 status+coverage；后台索引已追平则复用，否则每个 dirty epoch 最多显式刷新一次，再重新取证。不得按文件反复刷新。
-4. 工具不可用时不得假装使用过图谱：只允许有界源码回退，并在结构性、否定性或完整性结论上停止或标注“图谱不可用，置信度降低”。`memory-check` 要求图谱时遵循其更严格的停止规则。
+2. Git 仓库先用内部 `.repo-memory-kit/bin/codebase-context resolve <实际代码目录> --context-json -`，输入对象 `{"projects": [...]}`，数组来自 `list_projects`。根目录仅有子索引时按任务涉及的子目录解析。用所选项目的 `index_status(verbose=true)` 核对 `worktree_root`、`index_root` 和 `head`，也可将 MCP 原结果作为输入对象的 `index_status` 字段交给同一命令。无 aek 安装时直接核对这些字段。
+3. `configured`、`visible`、`indexed`、`fresh` 分开记录。索引归属和 HEAD 核对通过后，仍以当前代次及相关文件 coverage 判定新鲜度。写代码、Git/SVN 更新、切分支或合并后重验身份，即使没有源码 diff。当前批次共享一次 status/coverage 与最多一次显式刷新。
+4. 已证明覆盖的路径用图谱，源码仅补读缺口。`metadata_match` 只证明文件元数据相符，仍须补读解析缺口。用 `codebase-context observe` 时，将明确跳过、排除或未收录的路径放入 `source_only_paths`，沿返回的 `graph_paths` 与 `source_paths` 取证。工具不可见或刷新后仍无可用覆盖时有界回退并披露置信度；`memory-check` 遵循更严格的停止规则。
 
 ## 取证等级
 

@@ -1,12 +1,14 @@
 """Atomic local carrier for codebase dirty state and freshness receipts."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict
 import json
 from pathlib import Path
 import re
 
 from aek.adapters.atomic_file import AtomicFileStore
+from aek.adapters import ui_filesystem
 from aek.core.codebase_context import DirtyState
 
 
@@ -29,6 +31,15 @@ class CodebaseStateStore:
         if worktree.is_symlink() or directory.is_symlink():
             raise ValueError("codebase freshness scope is a symlink")
         self.files = AtomicFileStore(directory)
+
+    @contextmanager
+    def locked(self):
+        directory = ui_filesystem.open_absolute_dir(self.files.root.absolute())
+        try:
+            with ui_filesystem.exclusive_lock(directory, timeout=5):
+                yield
+        finally:
+            ui_filesystem.close_dir(directory)
 
     def load_state(self) -> DirtyState | None:
         raw = self.files.read("state.json")

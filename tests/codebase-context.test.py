@@ -36,6 +36,12 @@ class CodebaseContextTests(unittest.TestCase):
                          QueryKind.STRUCTURAL)
         self.assertEqual(classify_query("find exact error text in yaml"),
                          QueryKind.TEXTUAL)
+        for query in ("查多租户分支的调用链和影响范围", "谁调用 TenantFilter",
+                      "查 TenantFilter 的配置和调用链"):
+            with self.subTest(query=query):
+                self.assertEqual(classify_query(query), QueryKind.STRUCTURAL)
+        self.assertEqual(classify_query("查调用失败的错误文案"), QueryKind.TEXTUAL)
+        self.assertEqual(classify_query("找配置值"), QueryKind.TEXTUAL)
 
     def test_continuous_code_writes_share_one_dirty_epoch(self) -> None:
         state = DirtyState.clean("identity-a")
@@ -43,11 +49,17 @@ class CodebaseContextTests(unittest.TestCase):
                            paths=("aek/a.py",), reason="agent_write")
         second = mark_dirty(first, batch_id="batch-1", identity_digest="identity-c",
                             paths=("aek/b.py",), reason="generator_write")
-        docs = mark_dirty(second, batch_id="batch-2", identity_digest="identity-d",
+        docs = mark_dirty(second, batch_id="batch-2", identity_digest="identity-c",
                           paths=("docs/readme.md",), reason="docs_write")
         self.assertEqual(second.dirty_epoch, 1)
         self.assertEqual(second.changed_paths, ("aek/a.py", "aek/b.py"))
         self.assertEqual(docs, second)
+
+    def test_checkout_identity_changes_even_without_code_paths(self) -> None:
+        dirty = mark_dirty(DirtyState.clean("before"), batch_id="switch",
+                           identity_digest="after", paths=("docs/readme.md",), reason="git_switch")
+        self.assertEqual((dirty.code_identity_digest, dirty.dirty_epoch, dirty.changed_paths),
+                         ("after", 1, ()))
 
     def test_path_classification_is_pure_and_preserves_dotfiles(self) -> None:
         state = mark_dirty(
@@ -112,6 +124,17 @@ class CodebaseContextTests(unittest.TestCase):
         stopped = verify_observation(plan, attempted, stale)
         self.assertEqual(stopped.required_action, "BOUNDED_SOURCE")
         self.assertEqual(stopped.confidence, "degraded")
+
+    def test_source_only_sql_does_not_trigger_refresh_or_drop_graph_paths(self) -> None:
+        state = DirtyState.clean("tenant")
+        plan = plan_barrier(QueryKind.STRUCTURAL, CapabilityState(True, True, True, False), state,
+                            candidate_paths=("Tenant.java", "migration.sql"))
+        proof = CodebaseObservation("/tenant/backend", "/tenant/backend", "g1", "tenant",
+                                    ("Tenant.java",), ("Tenant.java",), ("migration.sql",))
+        result = verify_observation(plan, state, proof)
+        self.assertEqual((result.required_action, result.graph_paths, result.source_paths),
+                         ("USE_GRAPH", ("Tenant.java",), ("migration.sql",)))
+        self.assertEqual(result.confidence, "degraded")
 
 
 if __name__ == "__main__":

@@ -6,18 +6,15 @@
 
 - 非平凡的功能实现、缺陷修复、重构或迁移，使用 `repo-delivery` 技能先做低成本 Route Card 分流，再按 Direct / Bounded / Standard / Initiative 最轻安全路线提取适用门禁；只有正向证据才升径，并遵循 `execution_profile` 限制上下文、设计与验证深度；复用项目既有 spec/SDD，不另建平行文档体系。
 - 显式启动：Claude Code 使用 `/repo-delivery [任务描述]`；Codex 使用 `$repo-delivery [任务描述]`。自然语言请求仍可自动触发。
-- 代码结构、调用链、依赖和影响分析第一次检索必须先用 `codebase-memory` 图工具；grep/rg 只用于字面量、配置、非代码文件或 coverage 明示缺口。代码写入、Git/SVN 更新、切分支或合并后，下一次结构查询前按完整变更批次核验 status+coverage；后台未追平时每个 dirty epoch 最多刷新一次，并披露代次、动作和置信度。
-- Bug、测试失败或异常行为先使用 `systematic-debugging` 建立根因链，再进入修复；不得用试错补丁替代诊断。
-- 可观察行为默认使用 `tdd` 逐个纵向切片实现；难测、过度 mock 或散弹修改应作为架构信号回到设计链。
+- 第一次结构检索必须先用 `codebase-memory` 绑定当前工作树和图谱。字面量、配置、非代码及 coverage 缺口用有界源码检索；切分支、更新或写入后重验。
+- 普通缺陷在当前任务定位根因并定向回归；根因不明或反复失败用 `systematic-debugging`，项目要求测试先行或关键行为需要回归时用 `tdd`。
 - 新依赖、外部集成、通用组件或关键选型先用 `reuse-research`，形成采用/扩展/组合/自建的证据化决策。
 - 认证授权、外部输入、敏感操作、依赖或 Agent 配置变更使用 `security-review`；高危结论必须有利用路径并做对抗式复核。
 - 设计定稿由 `design-pipeline` 负责；代码交付用 `delivery-gate`，收口前用 `route-eval` 对照 Route Card 检查最低路线与最终 diff 漂移。验证结论以治理 profile 要求的持久回执为证，无回执不得声称验证通过。
 - 已有 `.specify/specs` 先用 `spec-migrate` 检查；只有明确要求时才增量迁移，待核验标记不等于设计完成。
 - 项目建有 `docs/03-SDD/` 时，功能的设计交付物（业务流程设计/详细设计/API/验收）以其版本目录为载体。
 - 任务中断或跨 Agent/会话移交时使用 `task-handoff`，以当前源码和权威 spec 复核交接内容。
-- 项目历史知识先调 `memory_recall` MCP；context.purpose 用 `target_evidence`（普通取证）或 `review_required`（评审），业务说明写 query。仅在 MCP 不可见、不兼容或调用前失败时降级 CLI，再失败才有界文本查找。成功只消费 expanded，不重复检索；无命中/截断不代表无约束
-- 会话开始先读 `docs/memory/PROFILE.md`（L3 画像，存在时），再查 `README.md` 索引。
-- 修改代码前先查 `docs/memory/pitfalls/`，命中相关条目必须先读全文；状态为「待验证」的条目不得作为修改依据。
+- 需要项目历史知识时优先用 `memory_recall` MCP，按 `repo-delivery` 的取证约定处理降级和已有证据。项目画像、索引及坑点按任务需要读取；待验证条目仅作为核查线索。
 - Bug 修复经人工审核通过后，将原因、影响范围和修复方案整理为新 pitfall 条目入库。
 - 环境操作、测试数据、可执行测试流程放 `docs/memory/playbooks/`。
 - 功能验收通过后，按 `docs/memory/RULES.md` 的功能蒸馏清单沉淀核心流程与环境信息（跨 Agent 记忆区）。

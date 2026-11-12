@@ -57,7 +57,7 @@ Claude Code：`/repo-delivery`；Codex：`$repo-delivery`。canonical skill：`d
 
 ## 执行与升级
 
-项目知识先调预算化 `memory_recall` MCP，绑定 Route/stage/subject/session；purpose 普通取证
+需要项目知识时先调预算化 `memory_recall` MCP，绑定 Route/stage/subject/session；purpose 普通取证
 `target_evidence`、评审 `review_required`，业务说明写 query。仅不可见/不兼容/调用前失败才降级
 等价 CLI，再失败才有界 metadata 查找；已开始而结果未知则停止披露。成功只消费 `expanded`，
 不重复；记录 `selected_path/reason_code/capability_snapshot/uncertainty`。
@@ -65,9 +65,9 @@ stage：依赖选型 `design`，实施/复验 `execution`，交付审查 `closeo
 `SECURITY_REFERENCE_CATALOG.for_risks` 读取；依赖采用前置、后补与免检证据遵循
 `reuse-research`/`security-review`，普通任务不全仓扫描或重读全部记忆。
 
-结构检索先用 `codebase-memory` Verify（freshness/coverage），grep 仅补字面量/缺口，展开命中依据。
-可观察行为按 `tdd` RED→GREEN→REFACTOR；配置/文档/生成物可等价验证并解释。
-失败走 `systematic-debugging`，不放宽断言。正式设计走 `design-pipeline`。
+结构检索先用 `codebase-memory` Verify 绑定当前工作树与图谱，grep 仅补字面量或已知缺口。
+普通修复在当前流程定位根因、运行适用的定向回归。用户或宪章要求测试先行，或需要建立关键行为回归时，按 `tdd` 验证。
+根因未明或反复失败时用 `systematic-debugging`，不放宽断言。正式设计走 `design-pipeline`。
 人工门禁由人判断、Agent 落凭证继续；沉默/模糊或历史意见不算本轮签核，高风险未决先裁决。
 文档评审由 `design-pipeline` 内部显式使用 v2/summary；必要目标、背景与安全正文实际交付，
 缓存命中不作批准或已读证明。无进展/未知位置停止时保留问题、证据与原轮次上限后恢复。

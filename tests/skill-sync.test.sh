@@ -41,7 +41,7 @@ for tool in $KIT_SKILLS; do
 done
 
 # 截图理解提示词按需加载，但两个客户端都必须取得同一份实际资源。
-for reference in screenshot-observation screenshot-observation-workflow ui-source-baseline prototype-confirmation-workflow; do
+for reference in screenshot-observation screenshot-observation-workflow ui-source-baseline prototype-confirmation-workflow business-flow-diagrams reviewer-issues; do
     for root in .claude .agents; do
         prompt_src="$SRC/skills/design-pipeline/references/$reference.md"
         prompt_dst="$P/$root/skills/design-pipeline/references/$reference.md"
@@ -322,15 +322,24 @@ fi
 # design-pipeline 必须从仓库根/同级 skill 定位 archify；不能在
 # docs/03-SDD/<需求>/diagrams 下使用 ../.claude 这个错误相对路径。
 DP="$P/.agents/skills/design-pipeline/SKILL.md"
-grep -q 'ARCHIFY_ROOT=.*\.agents/skills/archify' "$DP" \
+DP_DIAGRAMS="$P/.agents/skills/design-pipeline/references/business-flow-diagrams.md"
+grep -q 'references/business-flow-diagrams.md' "$DP" \
+    && ! grep -q 'ARCHIFY_ROOT=' "$DP" \
+    && grep -q 'ARCHIFY_ROOT=.*\.agents/skills/archify' "$DP_DIAGRAMS" \
     && ok "design-pipeline 从仓库根定位 archify" \
     || bad "design-pipeline 缺少稳定 archify 定位"
-! grep -q 'node \.\./\.claude/skills/archify' "$DP" \
+! grep -q 'node \.\./\.claude/skills/archify' "$DP_DIAGRAMS" \
     && ok "design-pipeline 不再使用错误 ../.claude 路径" \
     || bad "design-pipeline 仍使用错误 ../.claude 路径"
-grep -q '\.delivery\.json' "$DP" \
+grep -q '\.delivery\.json' "$DP_DIAGRAMS" \
     && ok "design-pipeline 持久化 archify delivery receipt" \
     || bad "design-pipeline 未持久化 delivery receipt"
+for root in .agents .claude; do
+    cmp -s "$SRC/skills/delivery-gate/references/performance-review.md" \
+        "$P/$root/skills/delivery-gate/references/performance-review.md" \
+        && ok "$root/delivery-gate 按需性能审查参考一致" \
+        || bad "$root/delivery-gate 按需性能审查参考缺失或漂移"
+done
 grep -q 'doc-gate review-input' "$DP" \
     && grep -q 'review-receipt.json' "$DP" \
     && grep -q 'request.mode=full|incremental' "$DP" \

@@ -6,7 +6,9 @@ import argparse
 from dataclasses import asdict
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 
 _script_dir = Path(__file__).resolve().parent
@@ -16,7 +18,7 @@ sys.path.insert(0, str(_package_root))
 
 from aek.adapters.codebase_state import CodebaseStateStore
 from aek.core.codebase_context import (
-    CapabilityState, CodebaseBarrierPlan, CodebaseObservation, DirtyState,
+    CapabilityState, CodebaseBarrierPlan, CodebaseObservation, DirtyState, QueryKind,
     classify_query, mark_dirty, plan_barrier, verify_observation,
 )
 
@@ -45,9 +47,135 @@ def _plan_from(value: dict[str, object]) -> CodebaseBarrierPlan:
         value["dirty_epoch"], value["confidence"], value["primary_tool"])
 
 
+def _git(scope: Path, *args: str) -> str | None:
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"}}
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(scope), "rev-parse", *args], capture_output=True,
+            encoding="utf-8", env=env, timeout=5, check=False)
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("Git codebase identity lookup timed out") from exc
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _resolve_project(scope: Path, projects: object, status: object = None) -> dict[str, object]:
+    """Select an index inside the actual checkout, including a nested scope."""
+    if not scope.is_dir() or not isinstance(projects, list):
+        raise ValueError("codebase resolution needs a directory and a project list")
+    root = _git(scope, "--show-toplevel")
+    worktree = Path(root).resolve() if root else scope
+    head = _git(worktree, "--verify", "HEAD") if root else None
+    branch = _git(worktree, "--abbrev-ref", "HEAD") if head else None
+    candidates = []
+    for project in projects:
+        if not isinstance(project, dict):
+            raise ValueError("codebase project must be an object")
+        name, path = project.get("name"), project.get("root_path")
+        if not isinstance(name, str) or not name or not isinstance(path, str) or not Path(path).is_absolute():
+            raise ValueError("codebase project name or root is invalid")
+        index_root = Path(path).resolve()
+        if index_root.is_relative_to(worktree):
+            candidates.append((name, index_root))
+    parents = [(name, path) for name, path in candidates if scope.is_relative_to(path)]
+    index_root = max((path for _, path in parents), key=lambda path: len(path.parts), default=None)
+    names = sorted({name for name, path in parents if path == index_root})
+    nested = sorted({str(path) for _, path in candidates if path != scope and path.is_relative_to(scope)})
+    reason = ("PROJECT_MATCH" if len(names) == 1 else "PROJECT_AMBIGUOUS" if names
+              else "PROJECT_SCOPE_REQUIRED" if nested else "PROJECT_NOT_INDEXED")
+    status_matches = False
+    if len(names) == 1 and status is not None:
+        if not isinstance(status, dict):
+            raise ValueError("codebase index status must be an object")
+        git = status.get("git")
+        status_matches = (status.get("project") == names[0] and status.get("status") == "ready"
+                          and isinstance(status.get("root_path"), str)
+                          and Path(status["root_path"]).resolve() == index_root
+                          and (not root or isinstance(git, dict) and bool(head)
+                               and git.get("head_sha") == head and isinstance(git.get("worktree_root"), str)
+                               and Path(git["worktree_root"]).resolve() == worktree))
+        if not status_matches:
+            reason = "PROJECT_STATUS_MISMATCH"
+    return {
+        "reason_code": reason,
+        "worktree_root": str(worktree),
+        "scope_root": str(scope),
+        "branch": branch if branch != "HEAD" else None,
+        "head": head,
+        "project": names[0] if len(names) == 1 else None,
+        "index_root": str(index_root) if len(names) == 1 else None,
+        "nested_scopes": nested if not names else [],
+        "status_matches": status_matches,
+    }
+
+
+def _run(action: str, store: CodebaseStateStore, value: dict[str, object]) -> object:
+    state = store.load_state()
+    if action == "mark-dirty":
+        if state is None:
+            state = DirtyState.clean(value["previous_identity_digest"])
+        state = mark_dirty(
+            state, batch_id=value["batch_id"], identity_digest=value["identity_digest"],
+            paths=tuple(value["paths"]), reason=value["reason"])
+        store.write_state(state)
+        return asdict(state)
+    if action == "plan":
+        identity = value["identity_digest"]
+        previous = state
+        if state is None:
+            state = DirtyState.clean(identity)
+        elif state.code_identity_digest != identity:
+            state = mark_dirty(state, batch_id=identity, identity_digest=identity,
+                               paths=state.changed_paths, reason="identity_changed")
+        capabilities = value["capabilities"]
+        kind = classify_query(value["query"])
+        result = plan_barrier(kind, CapabilityState(
+            capabilities["configured"], capabilities["visible"],
+            capabilities["indexed"], capabilities["fresh"]), state,
+            candidate_paths=tuple(value.get("candidate_paths", [])))
+        if result.required_action == "REFRESH_ONCE":
+            state = state.with_refresh_started()
+        if state != previous and (kind == QueryKind.STRUCTURAL or previous is not None):
+            store.write_state(state)
+        return asdict(result)
+    if action == "observe":
+        if state is None:
+            raise ValueError("no dirty state exists for this scope")
+        observation = value["observation"]
+        result = verify_observation(
+            _plan_from(value["plan"]), state,
+            CodebaseObservation(
+                observation["canonical_root"], observation["expected_root"],
+                observation["generation"], observation["identity_digest"],
+                tuple(observation["covered_paths"]), tuple(observation["metadata_match_paths"]),
+                tuple(observation.get("source_only_paths", []))))
+        if result.required_action == "REFRESH_ONCE":
+            store.write_state(state.with_refresh_started())
+        output = asdict(result)
+        observation_digest = hashlib.sha256(json.dumps(
+            observation, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":")).encode("utf-8")).hexdigest()
+        store.write_receipt({"schema_version": 1, "result": output,
+                             "code_identity_digest": state.code_identity_digest,
+                             "dirty_epoch": state.dirty_epoch,
+                             "generation": observation["generation"],
+                             "canonical_root": observation["canonical_root"],
+                             "required_paths": output["required_paths"],
+                             "observation_digest": observation_digest})
+        return output
+    receipt = store.load_receipt()
+    if (receipt is not None and (state is None
+            or receipt.get("code_identity_digest") != state.code_identity_digest
+            or receipt.get("dirty_epoch") != state.dirty_epoch)):
+        receipt = None
+    return {"state": None if state is None else asdict(state), "receipt": receipt}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="codebase-context")
-    parser.add_argument("action", choices=("mark-dirty", "plan", "observe", "status"))
+    parser.add_argument("action", choices=("resolve", "mark-dirty", "plan", "observe", "status"))
     parser.add_argument("repo", nargs="?", default=".")
     parser.add_argument("--context-json", required=True,
                         help="JSON object, @file, or - for stdin")
@@ -55,55 +183,12 @@ def main() -> int:
     try:
         repo = Path(args.repo).resolve()
         value = _context(args.context_json)
-        store = _scope(repo, value)
-        state = store.load_state()
-        if args.action == "mark-dirty":
-            if state is None:
-                state = DirtyState.clean(value["previous_identity_digest"])
-            state = mark_dirty(
-                state, batch_id=value["batch_id"],
-                identity_digest=value["identity_digest"],
-                paths=tuple(value["paths"]), reason=value["reason"])
-            store.write_state(state)
-            output: object = asdict(state)
-        elif args.action == "plan":
-            if state is None:
-                state = DirtyState.clean(value["identity_digest"])
-            capabilities = value["capabilities"]
-            output = asdict(plan_barrier(
-                classify_query(value["query"]),
-                CapabilityState(
-                    capabilities["configured"], capabilities["visible"],
-                    capabilities["indexed"], capabilities["fresh"]),
-                state, candidate_paths=tuple(value.get("candidate_paths", []))))
-        elif args.action == "observe":
-            if state is None:
-                raise ValueError("no dirty state exists for this scope")
-            observation = value["observation"]
-            result = verify_observation(
-                _plan_from(value["plan"]), state,
-                CodebaseObservation(
-                    observation["canonical_root"], observation["expected_root"],
-                    observation["generation"], observation["identity_digest"],
-                    tuple(observation["covered_paths"]),
-                    tuple(observation["metadata_match_paths"])))
-            if result.required_action == "REFRESH_ONCE":
-                state = state.with_refresh_started()
-                store.write_state(state)
-            output = asdict(result)
-            observation_digest = hashlib.sha256(json.dumps(
-                observation, ensure_ascii=False, sort_keys=True,
-                separators=(",", ":")).encode("utf-8")).hexdigest()
-            store.write_receipt({"schema_version": 1, "result": output,
-                                 "code_identity_digest": state.code_identity_digest,
-                                 "dirty_epoch": state.dirty_epoch,
-                                 "generation": observation["generation"],
-                                 "canonical_root": observation["canonical_root"],
-                                 "required_paths": output["required_paths"],
-                                 "observation_digest": observation_digest})
+        if args.action == "resolve":
+            output = _resolve_project(repo, value["projects"], value.get("index_status"))
         else:
-            output = {"state": None if state is None else asdict(state),
-                      "receipt": store.load_receipt()}
+            store = _scope(repo, value)
+            with store.locked():
+                output = _run(args.action, store, value)
         print(json.dumps(output, ensure_ascii=False, sort_keys=True, indent=2))
         return 0
     except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:

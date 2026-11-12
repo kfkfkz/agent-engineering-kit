@@ -166,6 +166,7 @@ for phrase in ("执行前计划基线", "执行记录与勾选状态", "完整�
         errors.append(f"任务清单模板缺少执行期冻结协议: {phrase}")
 
 delivery_gate = (ROOT / "skills/delivery-gate/SKILL.md").read_text(encoding="utf-8")
+performance_ref = (ROOT / "skills/delivery-gate/references/performance-review.md").read_text(encoding="utf-8")
 for phrase in ("统一收口", "doc-gate closeout", "计划.closeout.json"):
     if phrase not in delivery_gate:
         errors.append(f"delivery-gate 缺少计划收口步骤: {phrase}")
@@ -184,8 +185,10 @@ for phrase in (
     "静态审查不能证明运行时性能",
     "NEEDS HUMAN REVIEW",
 ):
-    if phrase not in delivery_gate:
+    if phrase not in delivery_gate + performance_ref:
         errors.append(f"delivery-gate 缺少性能审查契约: {phrase}")
+if "references/performance-review.md" not in delivery_gate or "N+1" in delivery_gate:
+    errors.append("delivery-gate 应按命中风险读取性能审查参考")
 if "未命中时不增加性能专项步骤" not in delivery_gate:
     errors.append("delivery-gate 没有保持性能审查的风险触发式预算")
 for phrase in ("执行前计划基线", "doc-gate closeout"):

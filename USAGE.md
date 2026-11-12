@@ -46,6 +46,8 @@ AEK 的记忆 MCP 与 codebase-memory MCP 处理不同的信息：
 
 代码编辑、生成器写入、Git/SVN 更新、切分支或合并后，Agent 在下一次结构查询或交付前重新核对索引。后台已追平时复用；否则同一变更批次最多显式刷新一次，再检查覆盖情况。配置文件存在只证明 configured，不能证明工具 visible、仓库 indexed 或图谱 fresh。
 
+使用 Git worktree 时，从实际改动所在目录匹配索引，并核对工作树根目录和 HEAD。若索引建在子项目，按任务涉及的子项目分别查图。索引覆盖有缺口时，继续用图谱查已覆盖路径，对缺口读取对应源码。
+
 AEK 注册的 MCP 工具为 `memory_recall`、`memory_build`、`domain_check`、`kit_status`，均绑定安装目标仓库。codebase-memory 的工具由其独立运行时提供。
 
 语义检索的可选依赖是 `zvec`。将它安装到 MCP 使用的 Python 环境后，在项目目录重建索引：

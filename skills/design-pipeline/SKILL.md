@@ -188,51 +188,10 @@ Reviewer 在这份受控输入上做**分层取证**：已验证事实直接采�
 
 评审输出 `reviews/<阶段>.issues.json`，并把 review-input 返回的 `receipt` 写入
 `reviews/<阶段>.review-receipt.json`；无定位澄清时原样保存，需要定位时仅实际 Reviewer 添加
-下述合法 `issue_locations`，原输入绑定字段保持不变。receipt 只证明实际送审输入，不代表 PASS；不得手工改
+参考中的 `issue_locations`，原输入绑定字段保持不变。receipt 只证明实际送审输入，不代表 PASS；不得手工改
 request/receipt digest。issues 无总分、无 PASS/FAIL、不改文档正文：
 
-```json
-{
-  "reviewer": "independent-subagent",
-  "stage": "详细设计",
-  "doc_hashes": {"详细设计.md": "<sha256——评审时计算；门禁核对，文档改过即评审作废>"},
-  "issues": [
-    {"id": "REV-001", "severity": "blocker|major|minor",
-     "category": "grounding|requirement_gap|consistency|verifiability|risk|upstream",
-     "location": "§数据与存储/D2", "problem": "…", "evidence": "…",
-     "required_change": "…", "affected_ids": ["D2", "A5"],
-     "upstream": false}
-  ]
-}
-```
-
-**字段硬约束**（doc-gate 拒绝不合规文件）：`stage` 必须匹配当前阶段；
-`doc_hashes` 必须覆盖该阶段全部文档（sha256sum 计算）——评审后文档再改动，
-评审即过期，必须重评；每条新 issue 必含 id/severity/location/problem/evidence/
-required_change/affected_ids，severity 只允许 blocker/major/minor。`affected_ids`
-填受影响的 A/F/D/T/TC ID；无法定位时写 `UNSCOPED`，不得猜 ID。
-
-incremental 发现未知位置/范围缺口时先保留 OPEN occurrence，再按机器结论扩大或 full，
-未覆盖的问题不能 VERIFIED/CLOSED。当前 full 已完整覆盖材料仍有未知位置时，停止相同
-全文重送，等待定位证据；full 之外的范围在已有权限/计划内显式扩大，否则交维护者裁决。
-需要澄清旧问题位置时，仅实际 Reviewer 在本轮 full receipt 的 `issue_locations` 返回
-`{fingerprint, document, heading, section_digest}`；必须绑定原 fingerprint、当前实际章节字节，
-并覆盖该问题全部已知 owner/位置。Author 提示只是待验证背景，不改旧 occurrence；Gate
-核验合法定位后仍须有效 FIXED 声明、当前范围复核与原状态链，不能靠定位摘要直接关闭。
-
-rubric 五维：
-1. **事实接地**（首要，分层增量）——现状声明分三档处理：
-   - **已验证事实直接采信**：业务域地图登记的模块口径、`memory-recall` 命中的
-     已确认条目（pitfall/decision/playbook）、上游阶段已核实的声明——引用来源
-     即可（evidence 写域地图条目或记忆路径），**不重新推导**；
-   - **新增/未覆盖声明查代码**：用 `codebase-memory` 定位实际符号与调用链；
-   - **矛盾即过时**：文档/记忆与代码不一致 → 以代码为准 → issue（category=
-     grounding），evidence 给代码位置，并标记受影响记忆条目（回 memory-check
-     巡检）；不给"我理解"式判断；
-2. **一致性**——不推翻上游冻结结论、与业务域地图口径一致；
-3. **可验证性**——验收可测、测试接缝完整、失败/边界/回退已覆盖；
-4. **缺失维度**——该阶段应成型而未成型的兼容/安全/迁移内容；
-5. **风险盲区**——对公共契约/数据模型/兼容/安全做一次"证明它错"。
+实际送审时读取 [评审问题与定位格式](references/reviewer-issues.md)，按原受控输入写问题、定位和必要证据。当前全文仍无法定位时保持未决，避免重复送审。
 
 Reviewer 的 `issues.json` 是不可变 sensor，不在后续轮次删除或反写旧问题。门禁首次接收后会建立
 `reviews/<阶段>.issue-lifecycle.json`，其中稳定 fingerprint 忽略临时 REV-ID，并保留每轮
@@ -276,51 +235,9 @@ lifecycle snapshot 的确定性 PASS gate 才能派生 `CLOSED`；Agent 不手�
 复杂交互按需补最小图：多角色/异步/先后约束用时序图，复杂状态转换或分支补偿用状态/活动图；
 不是每个功能点必画。使用业务角色与动作名称，文字规则仍完整；仅采用已安装绘图工具支持的图型，
 archify 中时序用 `sequence`、状态用 `lifecycle`、活动/分支用 `workflow`；分别读取对应 schema/示例并校验，
-不把下文 workflow 命令或回执硬套给别的图型。
+各图型使用自己的 schema 和回执。
 
-**业务流程图用 archify 产出**（已随 kit 安装到 `.agents` 与
-`.claude` 两棵技能树，需 Node.js ≥18）。先从**仓库根**定位 CLI，
-不得用相对 SDD 目录的 `../.claude`：
-
-```bash
-REPO_ROOT="<仓库根绝对路径>"
-SDD_DIR="<SDD目录绝对路径>"
-ARCHIFY_ROOT="$REPO_ROOT/.agents/skills/archify"
-[ -f "$ARCHIFY_ROOT/bin/archify.mjs" ] || \
-  ARCHIFY_ROOT="$REPO_ROOT/.claude/skills/archify"
-ARCHIFY_CLI="$ARCHIFY_ROOT/bin/archify.mjs"
-[ -f "$ARCHIFY_CLI" ] || { echo "archify skill 未安装" >&2; exit 1; }
-
-node "$ARCHIFY_CLI" doctor
-mkdir -p "$SDD_DIR/diagrams"
-cd "$SDD_DIR/diagrams"
-# 1. 写 typed JSON IR（对照 "$ARCHIFY_ROOT/schemas/" 对应类型 schema
-#    + examples/ 同型示例——用示例的字段形状，不用它的事实）
-# 2. 校验（receipt 全过才继续；成功后原子发布回执）
-node "$ARCHIFY_CLI" validate workflow <名称>.workflow.json \
-  --quality showcase --json > <名称>.validate.json.tmp && \
-  mv <名称>.validate.json.tmp <名称>.validate.json
-# 3. 交付（编译为自包含 HTML，持久化可核验 receipt）
-node "$ARCHIFY_CLI" deliver workflow <名称>.workflow.json <名称>.html \
-  --quality showcase --json > <名称>.delivery.json.tmp && \
-  mv <名称>.delivery.json.tmp <名称>.delivery.json
-# 4. 视觉校验——同时自动产出证据截图（浅/深双主题 × 1440/2048 双尺寸）
-node "$ARCHIFY_CLI" visual-check <名称>.html --json
-```
-
-产物：`diagrams/<名称>.workflow.json`（权威可编辑源）+ `.html`
-（可交互交付物）+ `.validate.json` + `.delivery.json`（内容哈希与
-9/9 校验回执）+ visual-check 证据截图
-（`<名称>.visual-check.1440x900.light.png` 等——文档嵌入用 light 版）。
-**读者可在 HTML 页面上直接导出 PNG/SVG/WebM**。
-本机无 Chrome 时 visual-check 报 skipped——文档只嵌 HTML 引用不嵌图，如实披露。
-
-**降级不得猜测**：只有 `node` 不存在/主版本 <18，且 doctor 明确报
-`DEGRADED` 时才允许 Mermaid；文档必须写明“图表模式：Mermaid 降级”与
-具体原因。`EPERM`、`MODULE_NOT_FOUND`、validate/deliver 非零都是交付
-错误；在 Codex 受限沙箱遇到子进程 `EPERM` 时申请权限后重试，
-不得偷换为 Mermaid。**校验边界**：archify validate
-只证明图能正确渲染/结构合法，不证明架构事实正确——事实仍由代码取证与门禁负责。
+需要图表时读取 [业务流程图交付](references/business-flow-diagrams.md)。核验 archify 产物、内容摘要和回执后再送审。
 
 生成并完成内部结构检查后，**停下交维护者/业务方人工评审**（评审意见逐条处理并回写
 修订记录；这是本阶段的门禁——无 AI 评审）。面向用户只发送固定话术：

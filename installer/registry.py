@@ -250,6 +250,9 @@ def _skill_reference_specs() -> list[ResourceSpec]:
                 resource_type="owned_file", locator=None,
                 merge_policy="replace", expected_mode=0o644))
     for skill, name in (("delivery-gate", "review-evidence"),
+                        ("delivery-gate", "performance-review"),
+                        ("design-pipeline", "business-flow-diagrams"),
+                        ("design-pipeline", "reviewer-issues"),
                         ("design-pipeline", "screenshot-observation"),
                         ("design-pipeline", "screenshot-observation-workflow"),
                         ("design-pipeline", "ui-source-baseline"),
