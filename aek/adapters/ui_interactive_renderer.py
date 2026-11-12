@@ -17,7 +17,7 @@ from aek.core.security.authority import runtime_binding
 
 
 PROFILE_ID = 'aek-interactive-render-linux-v1'
-POLICY_VERSION = 'isolated-preview-v1'
+POLICY_VERSION = 'isolated-preview-v2'
 _SHA = re.compile(r'[0-9a-f]{64}')
 _NAME = re.compile(r'[A-Za-z][A-Za-z0-9_-]{0,63}')
 _STATES = {'default', 'loading', 'empty', 'error', 'dialog', 'drawer', 'permission'}
@@ -130,6 +130,8 @@ class _TargetGuard:
         elif method in {'Target.detachedFromTarget', 'Inspector.targetCrashed', 'Page.windowOpen',
                         'Page.fileChooserOpened', 'Browser.downloadWillBegin', 'Network.webSocketCreated'}:
             raise CdpError('INTERACTION_POLICY_VIOLATION')
+        elif method == 'Audits.issueAdded' and params.get('issue', {}).get('code') == 'ContentSecurityPolicyIssue':
+            raise CdpError('INTERACTION_POLICY_VIOLATION')
         elif method == 'Network.requestWillBeSent':
             url = params.get('request', {}).get('url', '')
             if url not in {'about:blank', 'about:srcdoc'} and not url.startswith('data:image/'):
@@ -197,6 +199,7 @@ class _InteractivePage:
             channel.rpc('Browser.setPermission', {'permission': {'name': permission}, 'setting': 'denied'})
         self.rpc('Page.enable')
         self.rpc('Page.setInterceptFileChooserDialog', {'enabled': True})
+        self.rpc('Audits.enable')
         self.rpc('Network.enable')
         self.rpc('Network.setBlockedURLs', {'urls': _RESOURCES})
         self.rpc('Emulation.setDeviceMetricsOverride', {'width': checked['width'], 'height': checked['height'],

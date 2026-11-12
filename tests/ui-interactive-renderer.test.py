@@ -12,7 +12,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from aek.adapters.ui_interactive_renderer import LinuxInteractiveRenderProvider, interaction_plan, render_interaction
+from aek.adapters.ui_cdp import CdpError
+from aek.adapters.ui_interactive_renderer import (
+    LinuxInteractiveRenderProvider, _TargetGuard, interaction_plan, render_interaction,
+)
 from aek.adapters.ui_linux_renderer import LinuxRuntime, render_plan
 from aek.adapters.ui_renderer import ProviderUnavailable
 from aek.core.artifact.ui_preview import RenderConditions
@@ -55,7 +58,8 @@ class InteractiveRendererTests(unittest.TestCase):
                              ('target', ('PAGE-2', 'AREA-1', 'default', 'CTX-1'))):
             with self.subTest(field=field):
                 self.assertNotEqual(binding['plan_digest'], replace(self.plan, **{field: value}).binding()['plan_digest'])
-        for field, value in (('policy_version', 'unknown'), ('timeout_seconds', 36), ('max_output_bytes', 8192)):
+        for field, value in (('policy_version', 'unknown'), ('policy_version', 'isolated-preview-v1'),
+                             ('timeout_seconds', 36), ('max_output_bytes', 8192)):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 replace(self.plan, **{field: value}).binding()
 
@@ -76,6 +80,15 @@ class InteractiveRendererTests(unittest.TestCase):
                 render_interaction(provider, HTML, SPEC, self.conditions,
                     replace(self.plan, target=('PAGE-1', 'AREA-1', 'dialog', 'CTX-1')))
             native.assert_not_called()
+
+    def test_browser_csp_issue_aborts_interaction_without_exposing_details(self):
+        guard = _TargetGuard('page-1')
+        guard({'method': 'Audits.issueAdded', 'params': {'issue': {'code': 'DeprecationIssue'}}})
+        with self.assertRaisesRegex(CdpError, '^INTERACTION_POLICY_VIOLATION$'):
+            guard({'method': 'Audits.issueAdded', 'params': {'issue': {
+                'code': 'ContentSecurityPolicyIssue',
+                'details': {'contentSecurityPolicyIssueDetails': {'violatedDirective': 'worker-src'}},
+            }}})
 
 
 if __name__ == '__main__':

@@ -178,7 +178,7 @@ class CdpPipe:
 class InteractiveCdpPipe(CdpPipe):
     """Separate command surface for one guarded interactive browser session."""
     _methods = METHODS | frozenset({
-        'Target.setAutoAttach', 'Browser.setDownloadBehavior', 'Browser.setPermission',
+        'Target.setAutoAttach', 'Browser.setDownloadBehavior', 'Browser.setPermission', 'Audits.enable',
         'Page.setInterceptFileChooserDialog',
         'Page.createIsolatedWorld', 'DOM.querySelectorAll', 'DOM.resolveNode',
         'Runtime.callFunctionOn', 'Input.dispatchKeyEvent',
