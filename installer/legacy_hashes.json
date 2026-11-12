@@ -954,6 +954,13 @@
       "agents-md-block": "canonical_sha256:16b569bbcdc853bd0c9db8b1e8a62c98ac1f7eee2d581eb9391f33fbcd7d4479",
       "claude-md-block": "canonical_sha256:c7ca005cb673381556586703f961a3b159e39ca3c9b58cbcf56231bb11d86608"
     },
+    "dbede67": {
+      "lib-aek-adapters-atomic_file-py": "canonical_sha256:78b60bcb51d8050307e66580497afb8cd4832f0e0e52bbc4f2bd8c1a11631d5e",
+      "lib-aek-adapters-plan_transaction-py": "canonical_sha256:25dad67b0e58440375695a6da58c857144ec4bdb5ea0005b6b875c38951c86d0",
+      "lib-aek-adapters-ui_filesystem-py": "canonical_sha256:cf7c6788f20e7f48a729965edd5921e372720c261a65e34df8de224d4a5a6b44",
+      "skill-agents-repo-delivery": "canonical_sha256:00529e732f74066d458dabe132fa916dc6d6da842d609b6fb74c0e4e67afbb5b",
+      "skill-claude-repo-delivery": "canonical_sha256:00529e732f74066d458dabe132fa916dc6d6da842d609b6fb74c0e4e67afbb5b"
+    },
     "dc629b4": {
       "bin-agent-engineering-mcp": "canonical_sha256:ef435d927bba34e381e93ee5f9782dd0f000e06f693d2dcecdd8f3300ae25528",
       "bin-memory-build": "canonical_sha256:2261aa4d71a1d6c6e737bc6b31a9f5bab5435521d0237d5235abdedb1ec1c3ad",
