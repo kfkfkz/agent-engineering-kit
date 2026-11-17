@@ -964,6 +964,23 @@
       "skill-claude-memory-capture": "canonical_sha256:223a00486e21681973c60278a9bc0822ab200dd91fff806c53cb7e01fe653011",
       "skill-claude-memory-check": "canonical_sha256:1df28d49c9b0d805374c2ee862b10b2f50104f49665653e4b45cee29e04ff885"
     },
+    "cbda5f4": {
+      "bin-agent-engineering-mcp": "canonical_sha256:e6e8f46cdf0a0dab1265afcc6b13cbf4434fa9316cc1e7f9b98873f78770515d",
+      "bin-doc-gate": "canonical_sha256:5738f090fa113e008592dd5b546934c29febaa793a0175a64b3cac57329b9ed8",
+      "bin-memory-recall": "canonical_sha256:9c8df63882d1afd0b9249881931cff37d9ad69fe7422cecba3702fa723eeeb1d",
+      "lib-aek-application-context_telemetry-py": "canonical_sha256:fed38b57fd451ee507f25f51cf62183cc7731e06d5b17a1b55d5d97c51375d6b",
+      "lib-aek-application-document_gate-py": "canonical_sha256:6befade237c1d2436174bcfe9486bf004fc65a07cbda3276d7a5fef1c097a02e",
+      "lib-aek-application-document_material-py": "canonical_sha256:f842fc826c874c133f6edd99aca8ef166f661b860ab3f0858bc9e739a37df294",
+      "lib-aek-application-memory_recall-py": "canonical_sha256:8cd801ced54fc1a171794c4957a52515c29c3b4e48c34d85ba4f0cd3e2a8eac1",
+      "skill-agents-delivery-gate": "canonical_sha256:3f83d3e919050f6dfd7a7b9d5b511525636722256c864c1504ed21997043f5dd",
+      "skill-agents-delivery-gate-reference-review-evidence": "canonical_sha256:3301f348544c52d87357448341473d14fb398c185f22b3b9c407c4e0b3180165",
+      "skill-agents-design-pipeline": "canonical_sha256:0c89d21c9c65e8d73acf0787dafdc24373f163d77581f7b8f7e5134872aefb02",
+      "skill-agents-repo-delivery": "canonical_sha256:efb3d4a81af9a7216f33bfc37776b251ea5c81e05a017cb1511c229deb7606de",
+      "skill-claude-delivery-gate": "canonical_sha256:3f83d3e919050f6dfd7a7b9d5b511525636722256c864c1504ed21997043f5dd",
+      "skill-claude-delivery-gate-reference-review-evidence": "canonical_sha256:3301f348544c52d87357448341473d14fb398c185f22b3b9c407c4e0b3180165",
+      "skill-claude-design-pipeline": "canonical_sha256:0c89d21c9c65e8d73acf0787dafdc24373f163d77581f7b8f7e5134872aefb02",
+      "skill-claude-repo-delivery": "canonical_sha256:efb3d4a81af9a7216f33bfc37776b251ea5c81e05a017cb1511c229deb7606de"
+    },
     "d3b3fc8": {
       "bin-domain-check": "canonical_sha256:aef3751beba4015518881b17970bfd507939ee735e3a7074d322aefbeed2048c",
       "bin-spec-migrate": "canonical_sha256:859858439104aeeb4d7b766f757bce54eaaa41d688ab43b712bec02891a0ac93"
