@@ -9,7 +9,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from aek.adapters.plan_transaction import PlanStore
+from aek.adapters.plan_transaction import PlanInvalid, PlanStore
+from aek.application.document_gate import run_stage_transaction
+from aek.application.planning import DynamicPlanState
 
 
 KIT = Path(__file__).resolve().parent.parent
@@ -20,6 +22,52 @@ RELEASE_TIMEOUT = 15
 
 
 class DocumentGateLockTests(unittest.TestCase):
+    def test_application_recovers_then_binds_in_same_live_view(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            req = Path(temp)
+            reviews = req / "reviews"
+            reviews.mkdir()
+            store = PlanStore(reviews)
+            events = []
+            state = DynamicPlanState("FROZEN", "")
+
+            def recover(view, loaded):
+                self.assertIs(loaded, state)
+                view.recover_closeout(lambda _: {})
+                events.append(("recover", view))
+
+            def operate(view, loaded, snapshot):
+                self.assertIs(loaded, state)
+                self.assertEqual(snapshot, view.snapshot())
+                events.append(("operate", view))
+                return 0, True
+
+            def bind(view, loaded, material_mode):
+                self.assertIs(loaded, state)
+                self.assertTrue(material_mode)
+                self.assertTrue(view.source_identity)
+                events.append(("bind", view))
+                return 3
+
+            code = run_stage_transaction(store.locked_view(req), lambda _: state,
+                                         operate, bind, recover=recover)
+            self.assertEqual(code, 3, "binding failure must propagate")
+            self.assertEqual([name for name, _ in events], ["recover", "operate", "bind"])
+            self.assertTrue(all(view is events[0][1] for _, view in events))
+            with self.assertRaises(PlanInvalid):
+                events[0][1].snapshot()
+
+    def test_nonpassing_operation_does_not_bind(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            req = Path(temp)
+            reviews = req / "reviews"
+            reviews.mkdir()
+            store = PlanStore(reviews)
+            state = DynamicPlanState("FROZEN", "")
+            self.assertEqual(run_stage_transaction(
+                store.locked_view(req), lambda _: state, lambda *_: (2, True),
+                lambda *_: self.fail("blocked stage must not bind")), 2)
+
     def test_status_and_check_wait_for_consistent_plan_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             req = Path(temp) / "docs" / "03-SDD" / "001-read"

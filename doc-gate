@@ -104,7 +104,7 @@ from aek.application.document_gate import (
     Checks, HARD_CHECK_REPORT_REF, HardCheckReport, effective_stage_states, participating_documents,
     participating_prerequisites, prepare_approved_binding, prepare_execution_closeout,
     prepare_gate_verdict, prepare_human_approval, publish_review_gate,
-    require_binding_prerequisites,
+    require_binding_prerequisites, run_stage_transaction, uses_material_bindings,
 )
 from aek.application.context_telemetry import (
     record_context_delivery, report_for_budget,
@@ -3258,22 +3258,22 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool, schema_v
     try:
         reviews = req_dir / "reviews"
         reviews.mkdir(parents=True, exist_ok=True)
-        store = PlanStore(reviews)
-        dynamic_state = None
-        with store.locked_view(req_dir) as view:
-            snapshot = view.snapshot()
-            dynamic_state = _dynamic_state_from_snapshot(snapshot, req_dir=req_dir)
-            material_mode = schema_version == 2 or (reviews / 'package.json').exists() or any(
-                isinstance(load_binding_bytes(raw), MaterialStageBinding)
-                for name, raw in snapshot.items() if name.endswith(".plan-binding.json"))
+
+        def operate(view, dynamic_state, snapshot):
+            material_mode = (schema_version == 2 or (reviews / 'package.json').exists()
+                             or uses_material_bindings(snapshot))
             if stage in STAGES and _mapped_stage_roles(dynamic_state, stage):
                 material_mode = True
             result = _cmd_gate_locked(
                 req_dir, stage, no_review, as_json, dynamic_state,
                 material_view=view if material_mode else None)
-            if result == 0 and dynamic_state is not None:
-                return _bind_dynamic_gate(req_dir, dynamic_state, stage, view, material_mode=material_mode)
-        return result
+            return result, material_mode
+
+        return run_stage_transaction(
+            PlanStore(reviews).locked_view(req_dir),
+            lambda snapshot: _dynamic_state_from_snapshot(snapshot, req_dir=req_dir),
+            operate, lambda view, state, mode: _bind_dynamic_gate(
+                req_dir, state, stage, view, material_mode=mode))
     except (OSError, PlanInvalid, TypeError, ValueError) as exc:
         print(f"✗ 文档门禁锁不可用: {exc}")
         return 3
@@ -3566,22 +3566,21 @@ def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool, schem
     try:
         reviews = req_dir / "reviews"
         reviews.mkdir(parents=True, exist_ok=True)
-        store = PlanStore(reviews)
-        dynamic_state = None
-        with store.locked_view(req_dir) as view:
-            snapshot = view.snapshot()
-            dynamic_state = _dynamic_state_from_snapshot(snapshot, req_dir=req_dir)
+
+        def operate(view, dynamic_state, snapshot):
             mapped = _capture_mapped_stage(req_dir, stage, dynamic_state) if stage in HUMAN_SIGNOFF else None
-            material_mode = schema_version == 2 or (reviews / 'package.json').exists() or any(
-                isinstance(load_binding_bytes(raw), MaterialStageBinding)
-                for name, raw in snapshot.items() if name.endswith(".plan-binding.json"))
-            material_mode = material_mode or mapped is not None
+            material_mode = (schema_version == 2 or (reviews / 'package.json').exists()
+                             or uses_material_bindings(snapshot) or mapped is not None)
             result = _cmd_freeze_locked(
                 req_dir, stage, approved_by, as_json, dynamic_state,
                 material_view=view if material_mode else None, mapped=mapped, approved_input=approved_input)
-            if result == 0 and dynamic_state is not None:
-                return _bind_dynamic_gate(req_dir, dynamic_state, stage, view, material_mode=material_mode)
-        return result
+            return result, material_mode
+
+        return run_stage_transaction(
+            PlanStore(reviews).locked_view(req_dir),
+            lambda snapshot: _dynamic_state_from_snapshot(snapshot, req_dir=req_dir),
+            operate, lambda view, state, mode: _bind_dynamic_gate(
+                req_dir, state, stage, view, material_mode=mode))
     except (OSError, PlanInvalid, TypeError, ValueError) as exc:
         print(f"✗ 文档门禁锁不可用: {exc}")
         return 3
@@ -3682,25 +3681,25 @@ def cmd_closeout(req_dir: Path, as_json: bool) -> int:
     try:
         reviews = req_dir / "reviews"
         reviews.mkdir(parents=True, exist_ok=True)
-        store = PlanStore(reviews)
-        dynamic_state = None
-        with store.locked_view(req_dir) as view:
-            snapshot = view.snapshot(for_material_recovery=True)
-            dynamic_state = _dynamic_state_from_snapshot(snapshot, req_dir=req_dir)
+
+        def recover(view, dynamic_state):
             if _mapped_stage_roles(dynamic_state, '计划'):
                 raise ValueError('当前计划收口需要原生任务及测试方案')
             recovery = _document_materials(req_dir, view, dynamic_state, policy_operation="execution-closeout-v1")
             view.recover_closeout(lambda stage: recovery.capture_context(stage, _effective_stage_spec(stage, dynamic_state)["docs"]))
-            snapshot = view.snapshot()
-            dynamic_state = _dynamic_state_from_snapshot(snapshot, req_dir=req_dir)
-            material_mode = any(isinstance(load_binding_bytes(raw), MaterialStageBinding)
-                for name, raw in snapshot.items() if name.endswith(".plan-binding.json"))
+
+        def operate(view, dynamic_state, snapshot):
+            material_mode = uses_material_bindings(snapshot)
             result = _cmd_closeout_locked(req_dir, as_json, dynamic_state,
                                          material_view=view if material_mode else None, publication_view=view)
-            if result == 0 and dynamic_state is not None:
-                return _bind_dynamic_gate(req_dir, dynamic_state, '计划', view,
-                                          material_mode=material_mode, closeout=True)
-        return result
+            return result, material_mode
+
+        return run_stage_transaction(
+            PlanStore(reviews).locked_view(req_dir),
+            lambda snapshot: _dynamic_state_from_snapshot(snapshot, req_dir=req_dir),
+            operate, lambda view, state, mode: _bind_dynamic_gate(
+                req_dir, state, "计划", view, material_mode=mode, closeout=True),
+            recover=recover)
     except (OSError, PlanInvalid, TypeError, ValueError) as exc:
         print(f"✗ 文档门禁锁不可用: {exc}")
         return 3

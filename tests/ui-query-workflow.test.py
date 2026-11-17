@@ -9,6 +9,7 @@ import subprocess
 import sys
 import unittest
 from contextlib import contextmanager
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,20 @@ class QueryWorkflowTests(unittest.TestCase):
         self.assertTrue(result.stdout, result.stderr.decode('utf-8', errors='replace'))
         return result.returncode, json.loads(result.stdout)
 
+    def loaded_sqlite_fixture(self):
+        from aek.adapters import ui_sqlite_runtime
+
+        # These tests exercise final material fencing with real loaded-object
+        # reads. The runtime suite separately verifies deadline rejection.
+        clock = patch.object(ui_sqlite_runtime, 'time', SimpleNamespace(monotonic=lambda: 0.0))
+        clock.start()
+        self.addCleanup(clock.stop)
+        spec = importlib.util.spec_from_file_location('query_runtime_protocol_fixture',
+            ROOT / 'tests/ui-sqlite-runtime.test.py')
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        return runtime
+
     def test_cli_reads_current_chinese_observation_as_explicit_file_fallback_without_writes(self):
         recorded = self.ready_observation()
         before = {path.relative_to(self.fixture.material): path.read_bytes()
@@ -83,10 +98,7 @@ class QueryWorkflowTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == 'linux', 'qualified loaded SQLite control profile')
     def test_final_material_io_cannot_publish_sqlite_text_after_control_scope_changes(self):
-        runtime_spec = importlib.util.spec_from_file_location('query_runtime_protocol_fixture',
-            ROOT / 'tests/ui-sqlite-runtime.test.py')
-        runtime = importlib.util.module_from_spec(runtime_spec)
-        runtime_spec.loader.exec_module(runtime)
+        runtime = self.loaded_sqlite_fixture()
         factory, _host, authority, _port = runtime.protocol_factory()
         self.ready_observation()
         class ControllerFactory:
@@ -119,10 +131,7 @@ class QueryWorkflowTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'linux', 'qualified loaded SQLite control profile')
     def test_final_material_io_rechecks_author_identity_and_loaded_descriptor(self):
         from dataclasses import replace
-        runtime_spec = importlib.util.spec_from_file_location('query_runtime_mutation_fixture',
-            ROOT / 'tests/ui-sqlite-runtime.test.py')
-        runtime = importlib.util.module_from_spec(runtime_spec)
-        runtime_spec.loader.exec_module(runtime)
+        runtime = self.loaded_sqlite_fixture()
         self.ready_observation()
         for change in ('author', 'identity', 'descriptor'):
             factory, _host, authority, _port = runtime.protocol_factory()

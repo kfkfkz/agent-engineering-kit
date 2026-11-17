@@ -4,9 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from typing import Callable, Mapping, Sequence
+from typing import Callable, ContextManager, Mapping, Protocol, Sequence, TypeVar
 
-from aek.core.artifact.plan import ArtifactPlan, bind_stage, resolved_stage_prerequisites
+from aek.core.artifact.plan import (
+    ArtifactPlan, MaterialStageBinding, bind_stage, load_binding_bytes,
+    resolved_stage_prerequisites,
+)
 from aek.core.artifact.registry import ARTIFACT_REGISTRY, ArtifactRegistry
 from aek.application.planning import DynamicPlanState
 from aek.core.review.judge import JudgeInput, judge_gate
@@ -14,6 +17,38 @@ from aek.core.review.lifecycle import IssueState, LifecycleSnapshot
 
 
 HARD_CHECK_REPORT_REF = "reviews/hard-checks.json"
+
+
+class StageTransactionView(Protocol):
+    def snapshot(self, *, for_material_recovery: bool = False) -> dict[str, bytes]: ...
+
+
+_View = TypeVar("_View", bound=StageTransactionView)
+
+
+def uses_material_bindings(snapshot: Mapping[str, bytes]) -> bool:
+    return any(isinstance(load_binding_bytes(raw), MaterialStageBinding)
+               for name, raw in snapshot.items() if name.endswith(".plan-binding.json"))
+
+
+def run_stage_transaction(
+    open_view: ContextManager[_View],
+    load_plan: Callable[[dict[str, bytes]], DynamicPlanState | None],
+    operate: Callable[[_View, DynamicPlanState | None, dict[str, bytes]], tuple[int, bool]],
+    bind: Callable[[_View, DynamicPlanState, bool], int],
+    *,
+    recover: Callable[[_View, DynamicPlanState | None], None] | None = None,
+) -> int:
+    """Run recovery, stage publication and binding in one live lock scope."""
+    with open_view as view:
+        if recover is not None:
+            recover(view, load_plan(view.snapshot(for_material_recovery=True)))
+        snapshot = view.snapshot()
+        state = load_plan(snapshot)
+        exit_code, material_mode = operate(view, state, snapshot)
+        if exit_code == 0 and state is not None:
+            return bind(view, state, material_mode)
+        return exit_code
 
 
 class Checks:
