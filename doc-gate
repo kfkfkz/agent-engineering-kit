@@ -57,7 +57,7 @@ if not (_package_root / "aek/core/artifact/registry.py").is_file():
     raise SystemExit(3)
 sys.path.insert(0, str(_package_root))
 from aek.core.artifact.plan import (
-    ComposedArtifactPlan, MaterialStageBinding, artifact_sources, bind_stage,
+    ComposedArtifactPlan, MaterialStageBinding, artifact_sources,
     load_binding_bytes, load_credential_bytes, load_plan_bytes,
 )
 from aek.core.artifact.document_layout import MAX_LAYOUT_BYTES
@@ -101,8 +101,10 @@ from aek.adapters.review_lifecycle_store import (
     LifecycleConflict, LifecycleGateStore,
 )
 from aek.application.document_gate import (
-    effective_stage_states, participating_documents,
-    participating_prerequisites,
+    Checks, HARD_CHECK_REPORT_REF, HardCheckReport, effective_stage_states, participating_documents,
+    participating_prerequisites, prepare_approved_binding, prepare_execution_closeout,
+    prepare_gate_verdict, prepare_human_approval, publish_review_gate,
+    require_binding_prerequisites,
 )
 from aek.application.context_telemetry import (
     record_context_delivery, report_for_budget,
@@ -121,7 +123,6 @@ from aek.application.review import (
 )
 from aek.application.review_lifecycle import prepare_lifecycle, pending_fix_claims
 from aek.core.review.lifecycle import IssueState, project_pass_gate
-from aek.core.review.judge import JudgeInput, judge_gate
 from aek.core.review.result import validate_review_payload
 
 
@@ -1071,25 +1072,6 @@ def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, st
 
 
 # ══════════════════════════ 硬校验引擎 ══════════════════════════
-
-class Checks:
-    def __init__(self, stage: str):
-        self.stage = stage
-        self.items: list[dict] = []
-
-    def add(self, group: str, name: str, ok: bool, detail: str = "") -> None:
-        self.items.append({"group": group, "name": name,
-                           "status": "PASS" if ok else "FAIL", "detail": detail})
-
-    @property
-    def fails(self) -> list[dict]:
-        return [c for c in self.items if c["status"] == "FAIL"]
-
-    def to_dict(self) -> dict:
-        return {"stage": self.stage, "checks": self.items,
-                "summary": {"pass": len(self.items) - len(self.fails),
-                            "fail": len(self.fails)}}
-
 
 def _check_structure(c: Checks, doc: str, text: str, required: list[str]) -> None:
     headers = re.findall(r"^##\s+(.+)$", text, re.M)
@@ -3089,9 +3071,9 @@ def _review_security_context(req_dir: Path, stage: str) -> str | None:
                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _record_review_delivery(reviews: Path, stage: str, request,
+def _record_review_delivery(reviews: Path, stage: str, request, payload: str,
                             dynamic_state=None) -> None:
-    """Account for the exact JSON payload emitted to the reviewer caller.
+    """Account for the UTF-8 JSON shown by this CLI, including the wrapper.
 
     This is intentionally a partial report: doc-gate can observe its own
     review payload, not host-native code/search/tool reads performed later by
@@ -3110,7 +3092,6 @@ def _record_review_delivery(reviews: Path, stage: str, request,
     budget = resolve_context_budget(
         route, "design", "thorough" if route in {"standard", "initiative"}
         else "quick")
-    payload = review_request_bytes(request).decode("utf-8")
     record_context_delivery(
         ledger, budget, payload, source="review", source_kind="document",
         channel="review_loader", event_purpose="review_required",
@@ -3131,7 +3112,8 @@ def _record_review_delivery(reviews: Path, stage: str, request,
 
 
 def cmd_review_input(req_dir: Path, stage: str, as_json: bool,
-                     schema_version: int = 1) -> int:
+                     schema_version: int = 1, *, precheck_summary: bool = False,
+                     compact_json: bool = False, request_ref: bool = False) -> int:
     try:
         reviews = req_dir / "reviews"
         reviews.mkdir(parents=True, exist_ok=True)
@@ -3151,11 +3133,14 @@ def cmd_review_input(req_dir: Path, stage: str, as_json: bool,
             upstream_materials = _capture_upstream_materials(req_dir, stage, dynamic_state)
             checks = run_checks(req_dir, stage, dynamic_state, source_materials=sources,
                                 mapped_stage=mapped, upstream_materials=upstream_materials)
-            _atomic_review_write(reviews / "hard-checks.json",
-                json.dumps(checks.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"))
-            if checks.fails:
-                print(f"✗ {stage} 硬校验未过，不能生成评审输入")
-                return 1
+            report = HardCheckReport.prepare(checks)
+            _atomic_review_write(req_dir / HARD_CHECK_REPORT_REF, report.raw)
+            if report.failures:
+                if precheck_summary:
+                    print(json.dumps(report.summary_payload(), ensure_ascii=False))
+                else:
+                    print(f"✗ {stage} 硬校验未过，不能生成评审输入")
+                return report.exit_code
             material_parser = ReviewMaterialParser()
             if mapped is None:
                 request, material = _build_review_request(
@@ -3180,23 +3165,25 @@ def cmd_review_input(req_dir: Path, stage: str, as_json: bool,
             current = _capture_mapped_stage(req_dir, stage, dynamic_state)
             if current != mapped or _read_stage_materials(req_dir, stage, dynamic_state, current) != sources:
                 raise ValueError('SOURCE_CHANGED: stage material changed before review delivery')
-            _atomic_review_write(
-                reviews / f"{stage}.review-request.json",
-                review_request_bytes(request))
+            request_name = f"{stage}.review-request.json"
+            request_bytes = review_request_bytes(request)
+            _atomic_review_write(reviews / request_name, request_bytes)
             _atomic_review_write(
                 reviews / f"{stage}.review-current.json",
                 review_snapshot_bytes(material.snapshot))
             if as_json:
-                _record_review_delivery(
-                    reviews, stage, request, dynamic_state)
-            output = {
-                "request": json.loads(review_request_bytes(request)),
-                "receipt": json.loads(reviewer_receipt(request)),
-                "receipt_path": f"reviews/{stage}.review-receipt.json",
-                "issues_path": f"reviews/{stage}.issues.json",
-            }
-            if as_json:
-                print(json.dumps(output, ensure_ascii=False, indent=2))
+                if request_ref and len(request_bytes) >= 16 * 1024:
+                    output = {"request_ref": {"path": f"reviews/{request_name}",
+                        "sha256": hashlib.sha256(request_bytes).hexdigest(), "mode": request.mode}}
+                else:
+                    output = {"request": json.loads(request_bytes)}
+                output.update(receipt=json.loads(reviewer_receipt(request)),
+                              receipt_path=f"reviews/{stage}.review-receipt.json",
+                              issues_path=f"reviews/{stage}.issues.json")
+                style = {"separators": (",", ":")} if compact_json else {"indent": 2}
+                payload = json.dumps(output, ensure_ascii=False, **style)
+                _record_review_delivery(reviews, stage, request, payload, dynamic_state)
+                print(payload)
             else:
                 print(f"✓ {stage} 评审输入已生成（mode={request.mode}）")
             return 0
@@ -3469,65 +3456,17 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
             print(f"✗ Issue 生命周期不可用: {exc}")
             return 3
 
-    upstream_issues = [i for i in issues if i.get("upstream")]
-    upstream_ids = {str(item.get("id")) for item in upstream_issues}
-    if lifecycle is None:
-        counted = [i for i in issues if not i.get("upstream")]
-    else:
-        unresolved_states = {
-            IssueState.OPEN, IssueState.FIXED,
-            IssueState.REOPENED, IssueState.BLOCKED,
-        }
-        counted = [{
-            "id": item.occurrences[-1].issue_id,
-            "severity": item.occurrences[-1].severity,
-            "fingerprint": item.fingerprint,
-            "state": item.state.value,
-        } for item in lifecycle.issues
-                   if item.state in unresolved_states
-                   and item.occurrences[-1].issue_id not in upstream_ids]
-    n_blocker = sum(1 for i in counted if i["severity"] == "blocker")
-    n_major = sum(1 for i in counted if i["severity"] == "major")
-    n_minor = sum(1 for i in counted if i["severity"] == "minor")
-    lifecycle_pending = len(counted) if lifecycle is not None else 0
-
-    hard_fail = checks.fails
-    decision = judge_gate(JudgeInput(
-        len(hard_fail), n_blocker, n_major, n_minor, len(upstream_issues),
-        consecutive, was_blocked, policy["max_blocker"], policy["max_major"],
-        policy["max_minor"], policy["max_iterations"]))
-    status = decision.status
-    over = decision.over_threshold
-    current_attempt = decision.current_attempt
-
-    fix_targets = ([i.get("id", "?") for i in counted][:10]
-                   if status != "PASS" else [])
+    verdict = prepare_gate_verdict(
+        checks, issues, lifecycle, policy, consecutive=consecutive, was_blocked=was_blocked)
+    status = verdict["status"]
     gate = {
         "stage": stage, "status": status, "time": datetime.now().isoformat(timespec="seconds"),
-        "hard": {"pass": len(checks.items) - len(hard_fail), "fail": len(hard_fail),
-                 "failed": [f"{c['group']}/{c['name']}" for c in hard_fail]},
-        "review": {"blocker": n_blocker, "major": n_major, "minor": n_minor,
-                   "upstream_pending": len(upstream_issues),
-                   "lifecycle_pending": lifecycle_pending,
-                   "fix_targets": fix_targets},
-        "policy": policy, "iteration": consecutive + 1, "doc_hashes": doc_hashes,
+        "hard": verdict["hard"], "review": verdict["review"],
+        "policy": policy, "iteration": verdict["iteration"], "doc_hashes": doc_hashes,
         "upstream_fingerprints": {
             up: _stage_fingerprint(req_dir, up, dynamic_state)
             for up in spec["upstream"]},
-        "failed_because": (
-            ["hard checks FAIL: " + "；".join(c["name"] for c in hard_fail[:5])] if hard_fail else [])
-            + ([f"severity 超阈值: blocker={n_blocker}/{policy['max_blocker']}, "
-                f"major={n_major}/{policy['max_major']}, minor={n_minor}/{policy['max_minor']}"]
-               if over else [])
-            + ([f"上游打回未决 {len(upstream_issues)} 项（待维护者裁决）"]
-               if upstream_issues else []),
-        "next": ("进入下一阶段（文档已冻结）" if status == "PASS"
-                 else "维护者裁决上游问题后对本阶段重新评审"
-                 if upstream_issues and not hard_fail and not over
-                 else "定向修改上述问题后重新提交"
-                 if status == "NEEDS_REVISION"
-                 else f"已连续 {policy['max_iterations']} 轮不达标——升级人工介入"
-                 if not was_blocked else "BLOCKED 未解除：人工介入后需重新评审且判定 PASS"),
+        "failed_because": verdict["failed_because"], "next": verdict["next"],
     }
     if lifecycle is not None and lifecycle_progress_digest is not None:
         gate["review_progress_digest"] = lifecycle_progress_digest
@@ -3577,28 +3516,14 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
         if material_view is not None and dynamic_state is None:
             _document_materials(req_dir, material_view).baseline(stage)
 
-    if lifecycle_store is not None and lifecycle is not None:
-        expected_lifecycle = (None if lifecycle_before is None
-                              else lifecycle_before.snapshot_digest)
-        try:
-            if status == "PASS":
-                _closed, gate = lifecycle_store.publish_pass_gate(
-                    lifecycle, gate,
-                    expected_snapshot_digest=expected_lifecycle,
-                    gate_publisher=publish_gate)
-            else:
-                gate = lifecycle_store.publish_non_pass_gate(
-                    lifecycle, gate,
-                    expected_snapshot_digest=expected_lifecycle)
-        except (LifecycleConflict, OSError, TypeError, ValueError) as exc:
-            print(f"✗ Issue 生命周期发布失败: {exc}")
-            return 3
-    else:
-        gate_bytes = json.dumps(gate, ensure_ascii=False, indent=2).encode("utf-8")
-        if status == "PASS":
-            publish_gate(gate_bytes)
-        else:
-            _atomic_review_write(gate_file, gate_bytes)
+    try:
+        gate = publish_review_gate(gate, lifecycle_store, lifecycle, lifecycle_before,
+                                   publish_gate, lambda raw: _atomic_review_write(gate_file, raw))
+    except (LifecycleConflict, OSError, TypeError, ValueError) as exc:
+        if lifecycle_store is None or lifecycle is None:
+            raise
+        print(f"✗ Issue 生命周期发布失败: {exc}")
+        return 3
     with log_file.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"time": gate["time"], "stage": stage, "status": status,
                             "iteration": gate["iteration"]}, ensure_ascii=False) + "\n")
@@ -3616,10 +3541,10 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
         print(json.dumps(gate, ensure_ascii=False, indent=2))
     else:
         print(f"阶段 {stage} 门禁判定: {status}（连续不达标 {consecutive} 轮）")
-        for chk in hard_fail:
+        for chk in checks.fails:
             print(f"  ✗ HARD {chk['name']}: {chk['detail']}")
-        if upstream_issues:
-            print(f"  ⚠ 打回上游 {len(upstream_issues)} 项（待维护者裁决，不冻结）")
+        if verdict["review"]["upstream_pending"]:
+            print(f"  ⚠ 打回上游 {verdict['review']['upstream_pending']} 项（待维护者裁决，不冻结）")
         if status != "PASS":
             print(f"  下一步: {gate['next']}")
     return {"PASS": 0, "NEEDS_REVISION": 1, "BLOCKED": 2}[status]
@@ -3719,16 +3644,10 @@ def _cmd_freeze_locked(req_dir: Path, stage: str, approved_by: str, as_json: boo
     reviews_dir.mkdir(parents=True, exist_ok=True)
     _atomic_review_write(reviews_dir / "hard-checks.json",
         json.dumps(checks.to_dict(), ensure_ascii=False, indent=2).encode("utf-8"))
-    gate = {
-        "stage": stage, "status": "PASS",
-        "time": datetime.now().isoformat(timespec="seconds"),
-        "approved_by": approved_by or "维护者",
-        "doc_hashes": {name: hashlib.sha256(raw).hexdigest() for name, raw in sources.items()},
-        "upstream_fingerprints": {
-            up: _stage_fingerprint(req_dir, up, dynamic_state)
-            for up in _effective_stage_spec(stage, dynamic_state)["upstream"]},
-        "frozen_by": "doc-gate freeze（人工签核 + 哈希凭证）",
-    }
+    gate = prepare_human_approval(
+        stage, approved_by, datetime.now().isoformat(timespec="seconds"), sources,
+        {up: _stage_fingerprint(req_dir, up, dynamic_state)
+         for up in _effective_stage_spec(stage, dynamic_state)["upstream"]})
     if operation_package is not None:
         gate['package_identity'] = operation_package
     capture_current = None
@@ -3771,7 +3690,7 @@ def cmd_closeout(req_dir: Path, as_json: bool) -> int:
             if _mapped_stage_roles(dynamic_state, '计划'):
                 raise ValueError('当前计划收口需要原生任务及测试方案')
             recovery = _document_materials(req_dir, view, dynamic_state, policy_operation="execution-closeout-v1")
-            view.recover_closeout(lambda stage: recovery._context(stage, _effective_stage_spec(stage, dynamic_state)["docs"]))
+            view.recover_closeout(lambda stage: recovery.capture_context(stage, _effective_stage_spec(stage, dynamic_state)["docs"]))
             snapshot = view.snapshot()
             dynamic_state = _dynamic_state_from_snapshot(snapshot, req_dir=req_dir)
             material_mode = any(isinstance(load_binding_bytes(raw), MaterialStageBinding)
@@ -3828,7 +3747,7 @@ def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, ma
     hashes = {doc: hashlib.sha256(raw).hexdigest() for doc, raw in sources.items()}
     service = _document_materials(req_dir, publication_view, dynamic_state, policy_operation="execution-closeout-v1")
     service.gate_validator(gate)
-    epoch = {"stage": "计划", "context": service._context("计划", sources),
+    epoch = {"stage": "计划", "context": service.capture_context("计划", sources),
              "source_hashes": hashes, "dependency_hashes": service.capture_dependencies("计划")}
     upstream = {up: _stage_fingerprint(req_dir, up, dynamic_state) for up in spec["upstream"]}
     previous_raw = publication_view.read_closeout()
@@ -3870,20 +3789,13 @@ def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, ma
                 print(f"  ✗ {failure}")
         return 1
 
-    closeout = {
-        "stage": "计划",
-        "status": "PASS",
-        "kind": "execution_closeout",
-        "time": datetime.now().isoformat(timespec="seconds"),
-        "plan_gate_sha256": hashlib.sha256(gate_raw).hexdigest(),
-        "baseline_mode": "projected" if expected_baseline else "legacy_unavailable",
-        "doc_hashes": hashes,
-        "upstream_fingerprints": upstream,
-    }
+    closeout = prepare_execution_closeout(
+        datetime.now().isoformat(timespec="seconds"), gate_raw,
+        projected=bool(expected_baseline), hashes=hashes, upstream=upstream)
     _require_approved_upstream(req_dir, dynamic_state, upstream_materials)
     publication_view.commit_closeout(json.dumps(closeout, ensure_ascii=False, indent=2).encode("utf-8"),
         expected_consumers=consumers, epoch=epoch,
-        context_loader=lambda stage: service._context(stage, sources))
+        context_loader=lambda stage: service.capture_context(stage, sources))
     if material_view is not None and dynamic_state is None:
         _document_materials(req_dir, material_view).baseline("计划")
     with (reviews_dir / "计划.gate.log").open("a", encoding="utf-8") as log:
@@ -4430,28 +4342,21 @@ def _cmd_check_locked(req_dir: Path, stage: str, as_json: bool,
     checks = run_checks(req_dir, stage, dynamic_state, source_materials=sources, mapped_stage=mapped)
     reviews_dir = req_dir / "reviews"
     reviews_dir.mkdir(parents=True, exist_ok=True)
-    result = checks.to_dict()
     signoff = {}
     if mapped is not None and stage in HUMAN_SIGNOFF and not checks.fails:
         signoff = {'approved_input_sha256': _mapped_signoff_input(req_dir, dynamic_state, stage, mapped[1]),
                    'mapped_doc_hashes': mapped[1].source_hashes()}
-        result.update(signoff)
-    raw = json.dumps(result, ensure_ascii=False, indent=2).encode("utf-8")
-    _atomic_review_write(reviews_dir / "hard-checks.json", raw)
+    report = HardCheckReport.prepare(checks, signoff=signoff)
+    _atomic_review_write(req_dir / HARD_CHECK_REPORT_REF, report.raw)
     if summary:
-        print(json.dumps({"schema_version": 1, "stage": stage,
-            "status": "FAIL" if checks.fails else "PASS",
-            "summary": result["summary"], "failures": checks.fails,
-            "full_result_ref": "reviews/hard-checks.json",
-            "result_digest": hashlib.sha256(raw).hexdigest(), **signoff}, ensure_ascii=False))
+        print(json.dumps(report.summary_payload(), ensure_ascii=False))
     elif as_json:
-        print(raw.decode("utf-8"))
+        print(report.raw.decode("utf-8"))
     else:
-        print(f"硬校验 {stage}: {checks.to_dict()['summary']['pass']} 通过 / "
-              f"{len(checks.fails)} 失败")
-        for chk in checks.fails:
+        print(f"硬校验 {stage}: {report.counts['pass']} 通过 / {report.counts['fail']} 失败")
+        for chk in report.failures:
             print(f"  ✗ [{chk['group']}] {chk['name']}: {chk['detail']}")
-    return 1 if checks.fails else 0
+    return report.exit_code
 
 
 def _stage_material_status(req_dir: Path, stage: str, dynamic_state=None) -> dict:
@@ -4571,7 +4476,7 @@ def cmd_material_refresh(req_dir, stage, expected_revision, source_hashes, as_js
                 raise ValueError("BASELINE_MISSING: dynamic plan is not frozen")
             service = _document_materials(req_dir, view, state)
             dependencies = service.capture_dependencies(stage)
-            view.recover_material(lambda target: service._context(target,
+            view.recover_material(lambda target: service.capture_context(target,
                 _stage_documents(target, state)))
             state = _dynamic_state_from_snapshot(view.snapshot(), req_dir=req_dir)
             service = _document_materials(req_dir, view, state)
@@ -4681,18 +4586,10 @@ def _bind_dynamic_gate(req_dir: Path, prior_state, stage: str, view, *, material
                 or current.credential != prior_state.credential):
             raise ValueError('ArtifactPlan changed before approved material baseline')
         states = evaluate_stage_states(current, _dynamic_snapshots(req_dir, current))
-        group = ARTIFACT_REGISTRY.get_group(stage)
-        ancestors = {parent for artifact in group.artifact_ids
-                     for parent in current.plan.by_id(artifact).resolved_prerequisites}
-        if any(states[parent] != 'BOUND' for parent in ancestors):
-            raise ValueError('SOURCE_CHANGED: a required prerequisite is not bound')
+        require_binding_prerequisites(current, stage, states)
         digest, documents, fingerprints = _current_plan_gate_inputs(req_dir, current, stage, verify_material=False)
         raw_approval = view.read_closeout() if closeout else view.read_gate(stage)
-        approved = json.loads(raw_approval) if raw_approval is not None else None
-        if not isinstance(approved, dict) or approved.get('upstream_fingerprints') != fingerprints:
-            raise ValueError('SOURCE_CHANGED: current prerequisites differ from the published approval')
-        candidate = bind_stage(current.plan, current.credential, stage, gate_digest=digest,
-            doc_hashes=documents, prerequisite_fingerprints=fingerprints)
+        candidate = prepare_approved_binding(current, stage, raw_approval, digest, documents, fingerprints)
         if material_mode:
             for previous in current.bindings:
                 if previous.stage == stage:
@@ -5636,6 +5533,12 @@ def _main(argv) -> int:
         if name == "check":
             p.add_argument("--summary", action="store_true",
                            help="简洁 JSON 预检结果，保留完整报告及摘要绑定")
+        if name == "review-input":
+            p.add_argument("--precheck-summary", action="store_true",
+                           help="硬校验失败时返回 JSON 摘要，成功时按原契约返回评审输入")
+            p.add_argument("--compact-json", action="store_true", help="紧凑输出送审 JSON")
+            p.add_argument("--request-ref", action="store_true",
+                           help="大于等于 16 KiB 的请求返回可核验原文引用")
         if name in ("review-input", "gate"):
             p.add_argument("--schema-version", type=int, choices=(1, 2), default=1,
                            help="评审输入契约版本（默认 1，版本 2 显式启用）")
@@ -5712,6 +5615,8 @@ def _main(argv) -> int:
     ucp.add_argument('--prepared-sha256')
     ucp.add_argument('--interaction-ref', action='append', default=[])
     args = ap.parse_args(argv)
+    if args.cmd == "review-input" and (args.compact_json or args.request_ref) and not args.json:
+        ap.error("--compact-json and --request-ref require --json")
 
     if args.cmd == 'prototype-prepare':
         singles = (args.page, args.area, args.state, args.context)
@@ -5748,7 +5653,9 @@ def _main(argv) -> int:
     if args.cmd == "check":
         return cmd_check(req_dir, args.stage, args.json, args.summary)
     if args.cmd == "review-input":
-        return cmd_review_input(req_dir, args.stage, args.json, args.schema_version)
+        return cmd_review_input(req_dir, args.stage, args.json, args.schema_version,
+                                precheck_summary=args.precheck_summary,
+                                compact_json=args.compact_json, request_ref=args.request_ref)
     if args.cmd == "gate":
         if args.refresh_equivalent:
             if args.no_review or args.expected_revision is None or not args.source_hash:

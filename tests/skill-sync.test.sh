@@ -281,6 +281,7 @@ for tree in ("agents", "claude"):
     skill = (target / f".{tree}/skills/design-pipeline/SKILL.md").read_text(encoding="utf-8")
     check_flags = internal_flags(skill, "check")
     review_flags = internal_flags(skill, "review-input")
+    assert "--precheck-summary" in review_flags
     repo = tmp / f"skill-cli-{tree}"
     (repo / ".git").mkdir(parents=True)
     sdd = repo / "docs/03-SDD/001-review"
@@ -309,6 +310,12 @@ for tree in ("agents", "claude"):
         assert summary["result_digest"] == hashlib.sha256(raw).hexdigest()
         complete = json.loads(raw)
         assert summary["failures"] == [row for row in complete["checks"] if row["status"] == "FAIL"]
+        if expected_code:
+            refused = payload(invoke(sdd, "review-input", "--stage", "概要设计", *review_flags), 1)
+            assert refused["failures"] == summary["failures"]
+            assert "request" not in refused and "receipt" not in refused
+            assert refused["result_digest"] == hashlib.sha256(
+                (sdd / refused["full_result_ref"]).read_bytes()).hexdigest()
         assert summary["status"] == ("PASS" if expected_code == 0 else "FAIL")
         assert bool(summary["failures"]) == bool(expected_code)
         assert summary["summary"] == complete["summary"]

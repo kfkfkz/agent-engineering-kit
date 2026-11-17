@@ -44,6 +44,7 @@ if not os.path.isfile(os.path.join(_package_root, "aek", "core", "dispatch.py"))
     raise SystemExit(3)
 sys.path.insert(0, _package_root)
 from aek.application.dispatch import DispatchService, MemoryReceiptStore
+from aek.application.memory_recall import validate_known_digests
 from aek.core.context.budget import CONTEXT_PURPOSES
 from aek.core.context.telemetry import (
     CONTEXT_SESSION_PATTERN,
@@ -96,6 +97,10 @@ TOOLS = [
                         "subject_digest": {"type": "string", "pattern": CONTEXT_SUBJECT_PATTERN},
                         "session_id": {"type": "string", "pattern": CONTEXT_SESSION_PATTERN},
                         "risk_required": {"type": "boolean"},
+                        "compact": {"type": "boolean", "description": "成功时返回结构化结果，不在 output 重复嵌套全文"},
+                        "known_digests": {"type": "array", "maxItems": 16,
+                                          "items": {"type": "string", "pattern": CONTEXT_SUBJECT_PATTERN},
+                                          "description": "当前同一会话仍持有的展开正文摘要"},
                     },
                     "required": ["schema_version", "route", "subject_digest", "session_id"],
                     "additionalProperties": False,
@@ -189,6 +194,10 @@ def tool_memory_recall(args):
         ])
         if context.get("risk_required", False):
             cmd_args.append("--risk-required")
+        if context.get("compact", False):
+            cmd_args.append("--compact-json")
+        for digest in context.get("known_digests", ()):
+            cmd_args.extend(["--known-digest", digest])
     rc, out, err = run_cli("memory-recall", cmd_args, target)
     response = {"returncode": rc, "output": out.strip(),
                 "error": err.strip() if rc != 0 else ""}
@@ -211,6 +220,8 @@ def tool_memory_recall(args):
             response["error"] = "memory-recall context result must be an object"
             return response
         response.update(structured)
+        if context.get("compact", False):
+            response["output"] = ""
     response["context_mode"] = "explicit"
     return response
 
@@ -219,7 +230,7 @@ def _validate_memory_context(context):
     if not isinstance(context, dict):
         return "context must be an object"
     allowed = {"schema_version", "route", "stage", "purpose",
-               "subject_digest", "session_id", "risk_required"}
+               "subject_digest", "session_id", "risk_required", "compact", "known_digests"}
     unknown = sorted(set(context) - allowed)
     if unknown:
         return "context contains unknown fields: " + ", ".join(unknown)
@@ -236,6 +247,13 @@ def _validate_memory_context(context):
         return "context " + str(exc)
     if "risk_required" in context and type(context["risk_required"]) is not bool:
         return "context risk_required must be boolean"
+    if "compact" in context and type(context["compact"]) is not bool:
+        return "context compact must be boolean"
+    if "known_digests" in context:
+        try:
+            validate_known_digests(context["known_digests"])
+        except ValueError as exc:
+            return "context " + str(exc)
     if "purpose" in context and (not isinstance(context["purpose"], str)
                                   or context["purpose"] not in CONTEXT_PURPOSES):
         return "context purpose must be one of: " + ", ".join(sorted(CONTEXT_PURPOSES)) + "; put business details in query"
@@ -479,7 +497,12 @@ def handle_request(req):
             return {
                 "jsonrpc": "2.0", "id": req_id,
                 "result": {
-                    "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False, indent=2)}],
+                    "content": [{"type": "text", "text": json.dumps(
+                        result, ensure_ascii=False,
+                        **({"separators": (",", ":")}
+                           if tool_name == "memory_recall"
+                           and isinstance(arguments.get("context"), dict)
+                           and arguments["context"].get("compact") is True else {"indent": 2}))}],
                     "isError": is_error,
                 },
             }

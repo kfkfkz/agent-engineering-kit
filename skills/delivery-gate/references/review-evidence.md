@@ -4,7 +4,7 @@
 AEK 只约束顺序与回执。
 
 1. 先以 `stage=closeout`、`purpose=review_required`、当前 Route、WorkUnit/session、最终 diff 路径和
-   验收目标调用一次预算化 `memory_recall`，只展开相关决定、坑点和旧回执。MCP 成功后不得再跑 CLI
+   验收目标按 `repo-delivery` 的紧凑取证约定调用一次预算化 `memory_recall`，只展开相关决定、坑点和旧回执。MCP 成功后不得再跑 CLI
    或 grep 扫记忆；无命中表示未知，不表示没有约束。只有调用开始前不可用、不兼容或失败，才按
    MCP → CLI → 有界 metadata 文本的唯一链降级；调用已开始而结果未知时停止评审并披露。
 2. 把最终 diff 的全部代码路径与候选证据路径并入 codebase freshness barrier。屏障未证明当前

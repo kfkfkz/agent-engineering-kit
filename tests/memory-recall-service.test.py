@@ -2,6 +2,7 @@
 """Route budgets control real Memory candidate/open deliveries."""
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,8 +53,8 @@ class MemoryRecallServiceTests(unittest.TestCase):
             (memory / f"item-{index}.md").write_text(
                 f"# database item {index}\n\nbody {index}\n", encoding="utf-8")
 
-    def recall(self, route: str):
-        budget = resolve_context_budget(route, "routing", "quick")
+    def recall(self, route: str, *, known_digests=(), stage="routing"):
+        budget = resolve_context_budget(route, stage, "quick")
         ledger = ContextLedger(self.repo / f"{route}.jsonl")
         return recall_context(
             self.repo, "database", budget, ledger,
@@ -65,7 +66,8 @@ class MemoryRecallServiceTests(unittest.TestCase):
             capsule_store=CapsuleStore(
                 self.repo / ".repo-memory-kit/context/capsules"),
             lookup_plan=plan_knowledge_lookup(CapabilitySnapshot(
-                True, True, True, True, True, ("test:tools/list",))))
+                True, True, True, True, True, ("test:tools/list",))),
+            known_digests=known_digests)
 
     def test_direct_delivers_no_memory_body(self) -> None:
         result = self.recall("direct")
@@ -93,6 +95,29 @@ class MemoryRecallServiceTests(unittest.TestCase):
         self.assertTrue(second.capsule_reused)
         self.assertIn("capsule_loader", second.report.observed_channels)
         self.assertEqual(second.tool_calls["capsule"], 1)
+
+    def test_known_current_bodies_are_not_resent_and_changed_sources_are_delivered(self):
+        first = self.recall("standard")
+        known = tuple(item.content_digest for item in first.expanded)
+        second = self.recall("standard", known_digests=known)
+        self.assertEqual(second.expanded, ())
+        self.assertEqual([(item.path, item.content_digest) for item in second.reused],
+                         [(item.path, item.content_digest) for item in first.expanded])
+        self.assertEqual(second.tool_calls["memory_open"], first.tool_calls["memory_open"])
+        self.assertLess(second.delivered_bytes - first.delivered_bytes, first.delivered_bytes)
+        (self.repo / first.expanded[0].path).write_text(
+            "# database item 0\n\nnew body\n", encoding="utf-8")
+        changed = self.recall("standard", known_digests=known)
+        self.assertEqual([item.path for item in changed.expanded], [first.expanded[0].path])
+        self.assertEqual(len(changed.reused), len(known) - 1)
+        self.assertFalse(self.recall("standard", stage="design", known_digests=known).reused)
+
+    def test_known_digest_without_scoped_delivery_cannot_suppress_body(self):
+        path = self.repo / "docs/memory/pitfalls/item-0.md"
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        result = self.recall("standard", known_digests=(digest,))
+        self.assertTrue(result.expanded)
+        self.assertFalse(result.reused)
 
     def test_no_match_is_explicitly_unknown_not_negative(self) -> None:
         budget = resolve_context_budget("bounded", "routing", "quick")

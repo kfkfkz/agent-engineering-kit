@@ -446,6 +446,29 @@ class ReviewV2Tests(unittest.TestCase):
             persisted = (sdd / "reviews" / "需求分析.review-request.json").read_bytes()
             self.assertEqual(review.load_versioned_review_request(persisted).schema_version, 2)
             self.assertEqual(output["receipt"]["schema_version"], 2)
+            combined = subprocess.run(command + ["--schema-version", "2", "--precheck-summary"],
+                                      capture_output=True, text=True,
+                                      encoding="utf-8", env=env, check=False)
+            self.assertEqual(combined.returncode, 0, combined.stdout + combined.stderr)
+            self.assertEqual(combined.stdout, explicit.stdout)
+            self.assertEqual((sdd / "reviews" / "需求分析.review-request.json").read_bytes(), persisted)
+            compact = subprocess.run(command + ["--schema-version", "2", "--compact-json", "--request-ref"],
+                                     capture_output=True, text=True, encoding="utf-8", env=env, check=False)
+            self.assertEqual(compact.returncode, 0, compact.stdout + compact.stderr)
+            self.assertEqual(json.loads(compact.stdout), output)
+            self.assertLess(len(compact.stdout.encode("utf-8")), len(combined.stdout.encode("utf-8")))
+            (sdd / "需求分析.md").write_text(REQUIREMENTS.replace(
+                "已有查询需要明确错误返回。", "已有查询需要明确错误返回。\n" + "具体约束。" * 2000),
+                encoding="utf-8")
+            referenced = subprocess.run(command + ["--schema-version", "2", "--compact-json", "--request-ref"],
+                                        capture_output=True, text=True, encoding="utf-8", env=env, check=False)
+            self.assertEqual(referenced.returncode, 0, referenced.stdout + referenced.stderr)
+            handoff = json.loads(referenced.stdout)
+            self.assertNotIn("request", handoff)
+            raw_request = (sdd / handoff["request_ref"]["path"]).read_bytes()
+            self.assertEqual(hashlib.sha256(raw_request).hexdigest(), handoff["request_ref"]["sha256"])
+            self.assertEqual(json.loads(raw_request)["request_digest"], handoff["receipt"]["request_digest"])
+            self.assertLess(len(referenced.stdout.encode("utf-8")), len(raw_request))
 
     def test_full_v2_sensor_with_issue_keeps_material_baseline_without_approval(self):
         self._material_baseline_case("概要设计.md / F1", "incremental")

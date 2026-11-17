@@ -59,8 +59,10 @@ Claude Code：`/repo-delivery`；Codex：`$repo-delivery`。canonical skill：`d
 
 需要项目知识时先调预算化 `memory_recall` MCP，绑定 Route/stage/subject/session；purpose 普通取证
 `target_evidence`、评审 `review_required`，业务说明写 query。仅不可见/不兼容/调用前失败才降级
-等价 CLI，再失败才有界 metadata 查找；已开始而结果未知则停止披露。成功只消费 `expanded`，
-不重复；记录 `selected_path/reason_code/capability_snapshot/uncertainty`。
+等价 CLI，再失败才有界 metadata 查找；已开始而结果未知则停止披露。MCP schema 支持时用
+`context.compact: true`，只消费结构化正文。必要的重复查询可用 `known_digests` 声明当前同会话仍持有
+的正文摘要，`reused` 只引用这批已持有内容。会话、范围或可见材料变化时重新核实。
+记录 `selected_path/reason_code/capability_snapshot/uncertainty`。
 stage：依赖选型 `design`，实施/复验 `execution`，交付审查 `closeout`。安全知识按
 `SECURITY_REFERENCE_CATALOG.for_risks` 读取；依赖采用前置、后补与免检证据遵循
 `reuse-research`/`security-review`，普通任务不全仓扫描或重读全部记忆。

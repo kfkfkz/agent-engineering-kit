@@ -86,7 +86,7 @@ Agent 的工具调用中；仅当用户明确要求诊断底层命令时才展�
    默认 `auto` 先检查当前项目布局，随后使用同目录版本包。后续阶段用实际返回的
    `package.design_root`、`package.source_root` 和 `index_registration`。项目或维护者明确沿用旧双目录时，
    使用其实际 `NNN-名称` 及 `--layout legacy`。已有包按现有身份打开，目录或索引冲突时说明具体位置。
-3. 生成前先取证：先调用 `memory_recall` MCP，并以 context 绑定当前 Route、stage、`purpose=target_evidence`、subject
+3. 生成前先取证：先调用 `memory_recall` MCP，按 `repo-delivery` 的紧凑取证约定绑定当前 Route、stage、`purpose=target_evidence`、subject
    digest 和稳定 session ID；仅在 MCP 不可见/不兼容/调用开始前失败时内部降级到等价
    `memory-recall --context-json`，再失败才做有界 metadata 文本查找。只读取返回的 expanded 正文，
    不在 MCP 成功后重复 CLI/grep；读业务域地图确认模块口径；
@@ -145,6 +145,9 @@ context 的 stage 为 `design`，purpose=`target_evidence` 或审查的 `review_
 
 ### 3. 硬校验循环
 
+需要 AI 评审且本轮已准备送审时直接走 §4，由送审入口在当前快照上执行完整硬校验。
+人工签核前、仅做预检或按治理规则免 AI 评审时，单独执行：
+
 ```bash
 .repo-memory-kit/bin/doc-gate check <SDD目录> --stage <阶段> --summary --json
 ```
@@ -165,8 +168,13 @@ context 的 stage 为 `design`，purpose=`target_evidence` 或审查的 `review_
 上下文复用不豁免本轮必读材料、摘要与 receipt 校验。原会话不可用、已参与编写或无法保持当前模型时
 才重建并说明原因；保留原问题和轮次，不借换会话重置评审上限。
 
-硬校验通过后，Agent 内部运行
-`.repo-memory-kit/bin/doc-gate review-input <SDD目录> --stage <阶段> --schema-version 2 --json`。
+进入本轮 AI 评审时，Agent 内部运行
+`.repo-memory-kit/bin/doc-gate review-input <SDD目录> --stage <阶段> --schema-version 2 --json --precheck-summary --compact-json`。
+Reviewer 能直接读取同一仓库时可加 `--request-ref`。短请求仍内联；长请求优先让实际 Reviewer
+按返回的 `request_ref.path` 和 `sha256` 读取并核验原文，再消费必读材料。一旦摘要不符，
+重新准备本轮输入。Reviewer 无法直接读取时内联送审，避免主会话反复读同一份正文。
+返回 `failures/full_result_ref/result_digest` 时按 §3 定向修复，修完重跑此入口；
+有有效 `request` 或可读的 `request_ref`，且返回 `receipt` 后才启动 Reviewer。其他诊断按工具结论处置。
 旧 CLI 未指定版本时仍是 v1；本技能显式使用 v2，不把旧 receipt 改写成新版证明。
 由 ReviewService 决定 `request.mode=full|incremental`：只把 `request.full_documents`
 或 `request.section_documents`（二者恰有一个非空），加 `request.reference_sections` 的本阶段

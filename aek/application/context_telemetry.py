@@ -63,7 +63,7 @@ def record_context_delivery(
 
 def report_for_budget(
     ledger: LedgerReader, budget: ContextBudget, *, coverage: str,
-    expected_channels: tuple[str, ...], observed_channels: tuple[str, ...],
+    expected_channels: tuple[str, ...], observed_channels: tuple[str, ...] | None,
     bypass_detected: bool,
 ) -> ContextReport:
     """Account for prior lower-route events after a monotonic reroute.
@@ -81,6 +81,8 @@ def report_for_budget(
         if rank < previous_rank or rank > current_rank:
             raise ValueError("ledger stage or route transition conflicts with budget")
         previous_rank = rank
+    if observed_channels is None:
+        observed_channels = tuple(sorted({row.channel for row in events if row.stage == budget.stage}))
     return build_context_report(
         events, coverage=coverage, expected_channels=expected_channels,
         observed_channels=observed_channels, bypass_detected=bypass_detected,

@@ -29,6 +29,8 @@ class DocumentGateLockTests(unittest.TestCase):
             for args, expected_rc in (
                 (("status", str(req)), 0),
                 (("check", str(req), "--stage", "需求分析"), 1),
+                (("review-input", str(req), "--stage", "需求分析",
+                  "--precheck-summary"), 1),
             ):
                 with self.subTest(command=args[0]):
                     with store.legacy_gate_lock():

@@ -62,7 +62,7 @@ from dataclasses import asdict
 from aek.adapters.capsule import CapsuleStore
 from aek.adapters.memory import read_candidate, search_candidates
 from aek.adapters.telemetry import ContextLedger
-from aek.application.memory_recall import recall_context
+from aek.application.memory_recall import recall_context, validate_known_digests
 from aek.core.context.budget import CONTEXT_PURPOSES, resolve_context_budget
 from aek.core.context.lookup import (
     CapabilitySnapshot,
@@ -674,9 +674,19 @@ def main():
     ap.add_argument("--subject", type=controlled_identity(validate_context_subject_digest), help="当前任务 subject SHA-256")
     ap.add_argument("--session", type=controlled_identity(validate_context_session_id), help="当前任务稳定 session ID")
     ap.add_argument("--risk-required", action="store_true")
+    ap.add_argument("--known-digest", action="append", default=[],
+                    help="结构化检索中当前会话已持有的正文 SHA-256，可重复")
+    ap.add_argument("--compact-json", action="store_true",
+                    help="结构化检索输出紧凑 JSON")
     ap.add_argument("--lookup-channel", choices=("cli", "mcp"), default="cli",
                     help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if (args.known_digest or args.compact_json) and not args.context_json:
+        ap.error("--known-digest 和 --compact-json 需要 --context-json")
+    try:
+        known_digests = validate_known_digests(args.known_digest)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     # --rebuild/--check/--list 模式下，单个位置参数视为目标仓库而非查询文本。
     if args.rebuild or args.check or args.list:
@@ -728,8 +738,12 @@ def main():
                 mcp_compatible=args.lookup_channel == "mcp",
                 cli_available=True, bounded_text_available=True,
                 evidence=(f"adapter:{args.lookup_channel}",))),
-            purpose=args.purpose)
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+            purpose=args.purpose, known_digests=known_digests)
+        output = asdict(result)
+        if not known_digests:
+            output.pop("reused")
+        style = {"separators": (",", ":")} if args.compact_json else {"indent": 2}
+        print(json.dumps(output, ensure_ascii=False, **style))
         return 0
     types = [t.strip() for t in args.type.split(",")] if args.type else None
     cmd_query(repo, args.query, args.top, types, args.status, args.module)

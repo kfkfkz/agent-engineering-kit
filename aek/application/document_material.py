@@ -88,7 +88,8 @@ class DocumentMaterials:
         raw = self.view.snapshot().get(stage + ".plan-binding.json")
         return raw, load_binding_bytes(raw) if raw is not None else None
 
-    def _context(self, stage, documents):
+    def capture_context(self, stage, documents):
+        """Capture the current material identity from the original locked view."""
         result = dict(self.context_loader(stage))
         result["source_root"] = self.view.source_identity
         result["source_set"] = sorted(documents)
@@ -103,7 +104,7 @@ class DocumentMaterials:
             raise ValueError("BASELINE_MISSING: no material revision")
         gate_raw, gate = self._gate(stage)
         revision = binding.material_revision
-        context = self._context(stage, gate["doc_hashes"])
+        context = self.capture_context(stage, gate["doc_hashes"])
         if binding.gate_digest != sha(gate_raw) or revision["context"] != context:
             raise ValueError("SOURCE_CHANGED: approval root, policy or Gate changed")
         if set(dict(binding.doc_hashes)) != set(gate["doc_hashes"]):
@@ -154,7 +155,7 @@ class DocumentMaterials:
                     stage, current, dependency, dependency_sources) != dependency:
                 raise ValueError("SOURCE_CHANGED: consumed approved slices changed")
         if (self._load(stage)[0] != raw or self._gate(stage)[0] != gate_raw
-                or self._context(stage, originals) != context
+                or self.capture_context(stage, originals) != context
                 or self.capture_dependencies(stage) != dependencies or self.view.consumer_digest != consumers
                 or (use_live_sources and self._sources(originals) != current)):
             raise ValueError("SOURCE_CHANGED: material changed during verification")
@@ -169,7 +170,7 @@ class DocumentMaterials:
         if hashes != gate["doc_hashes"]:
             raise ValueError("BASELINE_MISSING: first baseline requires EXACT current bytes")
         prior_raw, prior = self._load(stage)
-        context = self._context(stage, hashes)
+        context = self.capture_context(stage, hashes)
         if (isinstance(prior, MaterialStageBinding) and prior.gate_digest == sha(gate_raw)
                 and prior.material_revision["context"] == context
                 and prior.material_revision["raw_after"] == hashes):
@@ -196,7 +197,7 @@ class DocumentMaterials:
             raise ValueError("SOURCE_CHANGED: shared document has different source and dependency bytes")
         raw_binding = canonical(asdict(binding))
         self._put(raw_binding)
-        if (self._sources(sources) != sources or self._context(stage, sources) != context
+        if (self._sources(sources) != sources or self.capture_context(stage, sources) != context
                 or self._gate(stage)[0] != gate_raw):
             raise ValueError("SOURCE_CHANGED: material changed before publication")
         self.view.commit_material_refresh({stage + ".plan-binding.json": raw_binding},
@@ -204,7 +205,7 @@ class DocumentMaterials:
             epoch={"stage": stage, "context": context,
                    "source_hashes": hashes,
                    "dependency_hashes": {name: digest for name, digest in dependencies.items() if name not in shared}},
-            context_loader=lambda target: self._context(target, sources))
+            context_loader=lambda target: self.capture_context(target, sources))
 
     def refresh(self, stage, *, expected_revision, source_hashes, dependencies=None):
         dependency_sources, captured_dependencies = self._dependency_inputs(stage)
@@ -236,7 +237,7 @@ class DocumentMaterials:
         if revision["previous_revision"] is not None:
             parent_revision = load_binding_bytes(self.archive.get(revision["previous_revision"])).binding_digest
         if hashes == revision["raw_after"] and expected_revision in {prior.binding_digest, parent_revision}:
-            if (self._sources(current) != current or self._context(stage, current) != revision["context"]
+            if (self._sources(current) != current or self.capture_context(stage, current) != revision["context"]
                     or self._gate(stage)[0] != gate_raw or self._load(stage)[0] != prior_raw
                     or self.view.consumer_digest != consumers or self.capture_dependencies(stage) != dependencies):
                 raise ValueError("SOURCE_CHANGED: material changed before UNCHANGED result")
@@ -250,7 +251,7 @@ class DocumentMaterials:
         proofs = {name: self._compare(stage, name, previous_sources[name], current[name]) for name in current}
         if any(item.classification not in {"EXACT", "EQUIVALENT"} for item in proofs.values()):
             raise ValueError("NOT_EQUIVALENT: current sources require review")
-        context = self._context(stage, hashes)
+        context = self.capture_context(stage, hashes)
         origin = revision["origin_binding"]
         original_binding = load_binding_bytes(canonical(origin)) if origin is not None else None
         binding = material_stage_binding(stage, gate_digest=prior.gate_digest,

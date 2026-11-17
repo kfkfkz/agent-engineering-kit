@@ -131,7 +131,17 @@ assert data['selected_path']=='mcp'
 assert data['reason_code']=='MCP_AVAILABLE'
 assert data['tool_calls']['candidate_search']==1
 assert data['uncertainty']=='no_match_unknown'
+assert json.loads(data['output'])['expanded']==data['expanded']
 " && ok "memory_recall context：MCP 路径与预算化结构返回" || bad "memory_recall context 异常: $RESP"
+
+RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"RULES","context":{"schema_version":1,"route":"direct","stage":"closeout","purpose":"review_required","subject_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","session_id":"compact-memory-test","compact":true}}}}')
+printf '%s\n' "$RESP" | python3 -c "
+import json,sys; r=json.load(sys.stdin)
+data=json.loads(r['result']['content'][0]['text'])
+assert data['returncode']==0 and not r['result']['isError'], data
+assert data['output']=='' and data['expanded']==[]
+assert data['report']['coverage']=='partial'
+" && ok "memory_recall 紧凑响应不重复嵌套 payload" || bad "memory_recall 紧凑响应异常: $RESP"
 if python3 - "$P/.repo-memory-kit/context/mcp-context-test-aaaaaaaaaaaa.jsonl" <<'PY'
 import json
 import pathlib

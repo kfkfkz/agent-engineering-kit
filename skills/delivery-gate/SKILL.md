@@ -46,8 +46,9 @@ lightweight 不降低风险判断和测试标准。
 6. 专项检查含 `sql-performance-screen` 时只执行数据库无关初查；Route Card 含
    `performance_capacity` 或治理要求 `performance-review` 时才执行深度验证。
    未命中时不增加性能专项步骤。
-7. 每个发现给出准确文件/符号、可观察后果、触发条件、证据和最小修复方向；按
-   `CRITICAL/HIGH/MEDIUM/LOW` 标级。纯偏好不作为阻塞项。
+7. 普通发现按严重性、准确位置、触发与影响、最小修复方向回传。合并同根因并保留全部位置。
+   按 `CRITICAL/HIGH/MEDIUM/LOW` 标级。高风险或阻断项保留因果和验证证据，复杂修复可附短伪代码。
+   无发现时交代已核范围和未知项。纯偏好不作为阻塞项。
 
 ### 性能与容量风险覆盖
 

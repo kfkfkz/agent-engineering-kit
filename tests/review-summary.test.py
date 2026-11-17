@@ -38,6 +38,53 @@ REQUIREMENTS = """# 需求分析：查询
 
 
 class ReviewSummaryTests(unittest.TestCase):
+    def test_review_precheck_runs_once_and_keeps_previous_evidence_on_failure(self):
+        entry = runpy.run_path(str(ROOT / "doc-gate"))["cmd_review_input"]
+        evaluate = entry.__globals__["run_checks"]
+        with tempfile.TemporaryDirectory() as directory:
+            sdd = Path(directory)
+            reviews = sdd / "reviews"
+            reviews.mkdir()
+            (sdd / "需求分析.md").write_text("# 需求分析\n", encoding="utf-8")
+            request = reviews / "需求分析.review-request.json"
+            receipt = reviews / "需求分析.review-receipt.json"
+            previous = b'{"prior":true}'
+            request.write_bytes(previous)
+            receipt.write_bytes(previous)
+            output = io.StringIO()
+            with mock.patch.dict(entry.__globals__, {"run_checks": mock.Mock(wraps=evaluate)}) as scope:
+                with redirect_stdout(output):
+                    code = entry(sdd, "需求分析", True, precheck_summary=True)
+                scope["run_checks"].assert_called_once()
+            self.assertEqual(code, 1, output.getvalue())
+            summary = json.loads(output.getvalue())
+            self.assertNotIn("request", summary)
+            self.assertNotIn("receipt", summary)
+            self.assertEqual(request.read_bytes(), previous)
+            self.assertEqual(receipt.read_bytes(), previous)
+
+    def test_review_precheck_returns_failures_without_preparing_reviewer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            sdd = Path(directory)
+            (sdd / "需求分析.md").write_text("# 需求分析\n## 背景\n输入不完整。\n", encoding="utf-8")
+            command = [sys.executable, "-X", "utf8", str(ROOT / "doc-gate"),
+                       "review-input", str(sdd), "--stage", "需求分析", "--json"]
+            legacy = subprocess.run(command, capture_output=True, encoding="utf-8")
+            self.assertEqual(legacy.returncode, 1, legacy.stdout + legacy.stderr)
+            self.assertIn("硬校验未过", legacy.stdout)
+            result = subprocess.run(command + ["--precheck-summary"],
+                                    capture_output=True, encoding="utf-8")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            summary = json.loads(result.stdout)
+            report = (sdd / summary["full_result_ref"]).read_bytes()
+            checks = json.loads(report)
+            self.assertEqual(summary["status"], "FAIL")
+            self.assertEqual(summary["failures"],
+                             [row for row in checks["checks"] if row["status"] == "FAIL"])
+            self.assertTrue(summary["failures"])
+            self.assertEqual(summary["result_digest"], hashlib.sha256(report).hexdigest())
+            self.assertFalse((sdd / "reviews/需求分析.review-request.json").exists())
+
     def test_summary_digest_binds_report_bytes_with_windows_text_mode_writes(self):
         namespace = runpy.run_path(str(ROOT / "doc-gate"))
         filesystem = namespace["_ui_fs"]

@@ -39,6 +39,18 @@ class ExpandedMemory:
 
 
 @dataclass(frozen=True)
+class ReusedMemory:
+    path: str
+    content_digest: str
+
+
+def validate_known_digests(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)) or len(value) > 16:
+        raise ValueError("known_digests must contain at most 16 SHA-256 values")
+    return tuple(dict.fromkeys(validate_context_subject_digest(item) for item in value))
+
+
+@dataclass(frozen=True)
 class MemoryRecallResult:
     candidates: CandidateSet
     expanded: tuple[ExpandedMemory, ...]
@@ -53,6 +65,7 @@ class MemoryRecallResult:
     uncertainty: str
     delivered_bytes: int
     tool_calls: dict[str, int]
+    reused: tuple[ReusedMemory, ...] = ()
 
 
 def recall_context(
@@ -63,6 +76,7 @@ def recall_context(
     capsule_store=None, profile_version: int = 1,
     lookup_plan: KnowledgeLookupPlan | None = None,
     purpose: str = "target_evidence",
+    known_digests: tuple[str, ...] = (),
 ) -> MemoryRecallResult:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("memory query is required")
@@ -70,6 +84,14 @@ def recall_context(
         raise ValueError("memory recall purpose must be one of: " + ", ".join(sorted(CONTEXT_PURPOSES)))
     validate_context_session_id(session_id)
     validate_context_subject_digest(subject_digest)
+    known = set(validate_known_digests(known_digests))
+    previously_delivered = {
+        (event.logical_path, event.source_digest) for event in ledger.read()
+        if event.channel == "memory_open" and event.delivered_bytes > 0
+        and event.session_id == session_id and event.subject_digest == subject_digest
+        and event.stage == budget.stage and event.route == budget.route
+        and event.purpose == purpose and event.source_digest in known
+    } if known else set()
     if lookup_plan is None:
         lookup_plan = plan_knowledge_lookup(CapabilitySnapshot(
             mcp_configured=False, mcp_visible=False, mcp_compatible=False,
@@ -123,22 +145,26 @@ def recall_context(
             logical_path=f"generated/context-capsules/{capsule.capsule_id}.json",
             cache_hit=capsule_reused)
     expanded = []
+    reused = []
     for ref in selection.selected:
+        # Always revalidate live source bytes and the generation before eliding a body.
         content = candidate_read(repo, ref, batch.generation)
+        if (ref.path, ref.content_digest) in previously_delivered:
+            reused.append(ReusedMemory(ref.path, ref.content_digest))
+            continue
         record_context_delivery(
             ledger, budget, content, source="memory", source_kind="memory",
             channel="memory_open", event_purpose=purpose,
             expansion_purpose=purpose, session_id=session_id,
             subject_digest=subject_digest, logical_path=ref.path)
         expanded.append(ExpandedMemory(ref.path, ref.content_digest, content))
-    observed = (("capsule_loader",) if capsule is not None else ()) + \
-        ("memory_candidate",) + (("memory_open",) if expanded else ())
+    # The report covers the complete stage ledger, including earlier lookups.
     expected = ("host_native", "memory_candidate", "memory_open") + (
         ("capsule_loader",) if capsule is not None else ())
     report = report_for_budget(
         ledger, budget, coverage="partial",
         expected_channels=expected,
-        observed_channels=observed, bypass_detected=False)
+        observed_channels=None, bypass_detected=False)
     if not batch.candidates:
         uncertainty = "no_match_unknown"
     elif selection.needs_more_candidates or batch.has_more:
@@ -153,5 +179,5 @@ def recall_context(
         lookup_plan.selected_path, lookup_plan.reason_code,
         lookup_plan.capability_snapshot.as_dict(), uncertainty,
         report.delivered_bytes,
-        {"candidate_search": 1, "memory_open": len(expanded),
-         "capsule": 1 if capsule is not None else 0})
+        {"candidate_search": 1, "memory_open": len(selection.selected),
+         "capsule": 1 if capsule is not None else 0}, tuple(reused))
