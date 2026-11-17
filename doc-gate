@@ -3111,6 +3111,30 @@ def _record_review_delivery(reviews: Path, stage: str, request, payload: str,
                    separators=(",", ":")).encode("utf-8"))
 
 
+REVIEW_REQUEST_READ_LIMIT = 2_000_000
+
+
+def cmd_read_review_request(req_dir: Path, stage: str, expected_sha256: str) -> int:
+    if stage not in STAGES:
+        print(f"✗ 未知阶段: {stage}", file=sys.stderr)
+        return 3
+    try:
+        reviews = _open_dir_nofollow(req_dir / "reviews")
+        try:
+            raw = _ui_fs.read_at(reviews, f"{stage}.review-request.json", REVIEW_REQUEST_READ_LIMIT)
+        finally:
+            _ui_fs.close_dir(reviews)
+        if hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise ValueError("SOURCE_CHANGED: 送审材料摘要已变化")
+        if load_versioned_review_request(raw).stage != stage:
+            raise ValueError("SOURCE_CHANGED: 送审材料不属于当前阶段")
+    except (OSError, TypeError, ValueError) as exc:
+        print(f"✗ 送审材料不可用: {exc}", file=sys.stderr)
+        return 3
+    sys.stdout.buffer.write(raw)
+    return 0
+
+
 def cmd_review_input(req_dir: Path, stage: str, as_json: bool,
                      schema_version: int = 1, *, precheck_summary: bool = False,
                      compact_json: bool = False, request_ref: bool = False) -> int:
@@ -3172,7 +3196,7 @@ def cmd_review_input(req_dir: Path, stage: str, as_json: bool,
                 reviews / f"{stage}.review-current.json",
                 review_snapshot_bytes(material.snapshot))
             if as_json:
-                if request_ref and len(request_bytes) >= 16 * 1024:
+                if request_ref and 16 * 1024 <= len(request_bytes) <= REVIEW_REQUEST_READ_LIMIT:
                     output = {"request_ref": {"path": f"reviews/{request_name}",
                         "sha256": hashlib.sha256(request_bytes).hexdigest(), "mode": request.mode}}
                 else:
@@ -5538,6 +5562,8 @@ def _main(argv) -> int:
             p.add_argument("--compact-json", action="store_true", help="紧凑输出送审 JSON")
             p.add_argument("--request-ref", action="store_true",
                            help="大于等于 16 KiB 的请求返回可核验原文引用")
+            p.add_argument("--read-request", metavar="SHA256",
+                           help="只读核验并返回指定摘要的已准备送审材料原字节")
         if name in ("review-input", "gate"):
             p.add_argument("--schema-version", type=int, choices=(1, 2), default=1,
                            help="评审输入契约版本（默认 1，版本 2 显式启用）")
@@ -5616,6 +5642,11 @@ def _main(argv) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "review-input" and (args.compact_json or args.request_ref) and not args.json:
         ap.error("--compact-json and --request-ref require --json")
+    if args.cmd == "review-input" and args.read_request is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", args.read_request):
+            ap.error("--read-request requires a lowercase SHA-256")
+        if args.request_ref or args.compact_json or args.precheck_summary:
+            ap.error("--read-request cannot be combined with request preparation options")
 
     if args.cmd == 'prototype-prepare':
         singles = (args.page, args.area, args.state, args.context)
@@ -5652,6 +5683,8 @@ def _main(argv) -> int:
     if args.cmd == "check":
         return cmd_check(req_dir, args.stage, args.json, args.summary)
     if args.cmd == "review-input":
+        if args.read_request is not None:
+            return cmd_read_review_request(req_dir, args.stage, args.read_request)
         return cmd_review_input(req_dir, args.stage, args.json, args.schema_version,
                                 precheck_summary=args.precheck_summary,
                                 compact_json=args.compact_json, request_ref=args.request_ref)

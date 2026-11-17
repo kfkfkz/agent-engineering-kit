@@ -469,6 +469,34 @@ class ReviewV2Tests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(raw_request).hexdigest(), handoff["request_ref"]["sha256"])
             self.assertEqual(json.loads(raw_request)["request_digest"], handoff["receipt"]["request_digest"])
             self.assertLess(len(referenced.stdout.encode("utf-8")), len(raw_request))
+            read = command + ["--read-request", handoff["request_ref"]["sha256"]]
+            reviews = sdd / "reviews"
+
+            def evidence():
+                return {p.name: p.read_bytes() for p in reviews.iterdir() if p.is_file()}
+
+            snapshot = evidence()
+            verified = subprocess.run(read, capture_output=True, env=env, check=False)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertEqual(verified.stdout, raw_request)
+            self.assertEqual(evidence(), snapshot)
+            target = sdd / handoff["request_ref"]["path"]
+            target.write_bytes(raw_request.replace(b'"mode":"full"', b'"mode":"fake"', 1))
+            self.assertNotEqual(target.read_bytes(), raw_request)
+            stale = subprocess.run(read, capture_output=True, env=env, check=False)
+            self.assertEqual((stale.returncode, stale.stdout), (3, b""))
+            self.assertIn(b"SOURCE_CHANGED", stale.stderr)
+            target.unlink()
+            missing = subprocess.run(read, capture_output=True, env=env, check=False)
+            self.assertEqual((missing.returncode, missing.stdout), (3, b""))
+            self.assertFalse(target.exists())
+            if os.name != "nt":
+                outside = repo / "outside-request.json"
+                outside.write_bytes(raw_request)
+                target.symlink_to(outside)
+                linked = subprocess.run(read, capture_output=True, env=env, check=False)
+                self.assertEqual((linked.returncode, linked.stdout), (3, b""))
+                self.assertTrue(target.is_symlink())
 
     def test_full_v2_sensor_with_issue_keeps_material_baseline_without_approval(self):
         self._material_baseline_case("概要设计.md / F1", "incremental")
