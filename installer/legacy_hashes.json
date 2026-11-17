@@ -660,6 +660,11 @@
       "skill-agents-spec-migrate": "canonical_sha256:496dd7a761c9cc8f865b82fe0839510206139e6cdb24ded4411aa6f17cc67cb0",
       "skill-claude-spec-migrate": "canonical_sha256:496dd7a761c9cc8f865b82fe0839510206139e6cdb24ded4411aa6f17cc67cb0"
     },
+    "88c8b1d": {
+      "bin-doc-gate": "canonical_sha256:81d39a1bccd1ff40e83228dcd7a485f608eade2378488aeb5bc75b65f0d7f24f",
+      "skill-agents-design-pipeline": "canonical_sha256:4bf5b87603d79cfdf5d369dd8706f9e5c8c6cf25a18a6b732e72313422d8b1db",
+      "skill-claude-design-pipeline": "canonical_sha256:4bf5b87603d79cfdf5d369dd8706f9e5c8c6cf25a18a6b732e72313422d8b1db"
+    },
     "89195a1": {
       "req-tpl-db": "canonical_sha256:c5a97f554410576fd2a75ff39d1b82bbfb119c761851fb9eedcd69182f1fb8bc",
       "req-tpl-detail": "canonical_sha256:b438138fa975bcd9d26e6c273a6f92fedef306fd0b24967ca6b65aa1f9a4dd19",
