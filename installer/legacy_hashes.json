@@ -899,6 +899,16 @@
       "bin-doc-gate": "canonical_sha256:8f6111749680fb91722bb5950b41b30474674c57826aa3ba4d1b2e07f7bf71a9",
       "bin-governance-eval": "canonical_sha256:884ec900f10f5a03e2ce0dd28100900ff408d74246ffb947c1b7d92361cd6f07"
     },
+    "b5ae171": {
+      "bin-codebase-context": "canonical_sha256:c44c27efc2423c89921ee3faf382f527bbd07436c1ebbbd9711175a026adc8ff",
+      "bin-doc-gate": "canonical_sha256:d41afc17f33b757bdbc4b962013348bb6b2d69edc0f47072eb1064aebae64147",
+      "lib-aek-adapters-codebase_state-py": "canonical_sha256:d0b0894ea64fe6a082693b1e90763e2ec61f7b9854357f101327b2725a0586ba",
+      "lib-aek-application-document_gate-py": "canonical_sha256:9e5a12b4ea1bfe90507e18ee55ed6b8bfe287454c15260411ce256af7dcb27da",
+      "skill-agents-codebase-memory": "canonical_sha256:7e11b178999fec0b8e4ce2c692fa7f751b5466e055463733c23399a60ccd44a9",
+      "skill-agents-design-pipeline": "canonical_sha256:f1f199886144bde1ac6d97cc9fe973e7b32a4b42afee8f00d0f32633042a8e7a",
+      "skill-claude-codebase-memory": "canonical_sha256:7e11b178999fec0b8e4ce2c692fa7f751b5466e055463733c23399a60ccd44a9",
+      "skill-claude-design-pipeline": "canonical_sha256:f1f199886144bde1ac6d97cc9fe973e7b32a4b42afee8f00d0f32633042a8e7a"
+    },
     "b649c2c": {
       "bin-doc-gate": "canonical_sha256:42302038c8ee6b860c496aeb95349c693351fac38580b9604ea5e23f2703a5f7",
       "lib-aek-adapters-ui_filesystem-py": "canonical_sha256:f5c6152d07bcd36f23b5ab7975d81b83ac1a30655e2331b61c77e4f37a2fbfbc",
