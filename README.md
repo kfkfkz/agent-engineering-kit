@@ -16,7 +16,7 @@ AEK 将 Skills、项目记忆、代码图谱接入和可重复执行的门禁安
 
 当前代码版本为 **1.1.0**。稳定发布以 [GitHub Releases](https://github.com/kfkfkz/agent-engineering-kit/releases) 为准，完整变化见 [Changelog](CHANGELOG.md)。
 
-1.1.0 将送审和门禁操作收敛到同一流程，长材料可按摘要回查。代码图谱核对实际工作树和 HEAD，Memory MCP 可复用同会话已持有的正文。图表、评审和性能资料按需读取。详见[使用指南](USAGE.md)。
+**1.1.0 优先降低日常开发和评审的默认 Token 消耗。** 专项资料按需加载，送审合并预检并支持紧凑输出，长材料可按摘要回查。Memory MCP 可复用同会话已持有的正文。详见[使用指南](USAGE.md)。
 
 安全机械入口 `security-check` 提供只读 evaluate/report/doctor/plan。可选扫描器不自动安装或下载；固定工具执行需可信宿主明确配置、采用与授权，普通 CLI/MCP 不授予扫描、审批或关闭权限。用户仍通过 `security-review` 获得定向审查与补验建议，详见[使用指南](USAGE.md#安全审查与依赖治理)。
 
