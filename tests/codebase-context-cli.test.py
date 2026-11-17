@@ -16,13 +16,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class CodebaseContextCliTests(unittest.TestCase):
-    def call(self, action: str, repo: Path, value: dict):
+    def call(self, action: str, repo: Path, value: dict, *, expected=0):
         result = subprocess.run(
             [sys.executable, str(ROOT / "codebase-context"), action, str(repo),
              "--context-json", json.dumps(value)], text=True,
             capture_output=True, check=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return json.loads(result.stdout)
+        self.assertEqual(result.returncode, expected, result.stderr)
+        return json.loads(result.stdout) if expected == 0 else result.stderr
 
     def test_mark_plan_observe_and_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -45,9 +45,13 @@ class CodebaseContextCliTests(unittest.TestCase):
                                                 "observation": observation})
             second = self.call("observe", repo, {**scope, "plan": plan,
                                                  "observation": observation})
-            status = self.call("status", repo, scope)
             self.assertEqual(first["required_action"], "REFRESH_ONCE")
             self.assertEqual(second["required_action"], "BOUNDED_SOURCE")
+            self.assertTrue(second["refresh_pending"])
+            self.assertEqual(self.call("status", repo, scope)["state"]["refresh_started_epoch"], -1)
+            self.call("refresh-result", repo, {**scope, "outcome": "executed",
+                                               "refresh_token": first["refresh_token"]})
+            status = self.call("status", repo, scope)
             self.assertEqual(status["state"]["refresh_started_epoch"],
                              state["dirty_epoch"])
 
@@ -66,6 +70,56 @@ class CodebaseContextCliTests(unittest.TestCase):
                 )
             request["identity_digest"] = "second"
             self.assertEqual(self.call("plan", repo, request)["required_action"], "REFRESH_ONCE")
+            self.assertEqual(self.call("plan", repo, request)["required_action"], "BOUNDED_SOURCE")
+
+    def test_expired_or_canceled_reservation_can_retry_without_repeating_executed_refresh(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            scope = {"worktree_id": "wt", "work_unit_id": "wu"}
+            request = {**scope, "query": "who calls the handler", "identity_digest": "head",
+                       "capabilities": {"configured": True, "visible": True,
+                                        "indexed": False, "fresh": False}}
+            initial = self.call("plan", repo, request)
+            self.assertEqual(initial["required_action"], "REFRESH_ONCE")
+            self.assertTrue(self.call("plan", repo, request)["refresh_pending"])
+            state_path = repo / ".repo-memory-kit/codebase-freshness/wt/wu/refresh.json"
+            persisted = json.loads(state_path.read_bytes())
+            persisted["expires_at"] = 0
+            state_path.write_text(json.dumps(persisted), encoding="utf-8")
+            replacement = self.call("plan", repo, request)
+            self.assertEqual(replacement["required_action"], "REFRESH_ONCE")
+            self.assertNotEqual(replacement["refresh_token"], initial["refresh_token"])
+            self.assertIn("no longer matches", self.call("refresh-result", repo, {
+                **scope, "refresh_token": initial["refresh_token"], "outcome": "executed"}, expected=3))
+            self.call("refresh-result", repo, {
+                **scope, "refresh_token": replacement["refresh_token"], "outcome": "not_started"})
+            third = self.call("plan", repo, request)
+            self.assertEqual(third["required_action"], "REFRESH_ONCE")
+            confirmation = {**scope, "refresh_token": third["refresh_token"], "outcome": "executed"}
+            self.assertEqual(self.call("refresh-result", repo, confirmation)["refresh_started_epoch"], 0)
+            self.assertEqual(self.call("refresh-result", repo, confirmation)["refresh_started_epoch"], 0)
+            completed = self.call("plan", repo, request)
+            self.assertEqual(completed["required_action"], "BOUNDED_SOURCE")
+            self.assertNotIn("refresh_pending", completed)
+
+    def test_pre_upgrade_reservation_can_be_recovered_when_index_is_still_unproven(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            state = repo / ".repo-memory-kit/codebase-freshness/wt/wu/state.json"
+            state.parent.mkdir(parents=True)
+            state.write_text(json.dumps({
+                "code_identity_digest": "head", "dirty_epoch": 0, "active_batch_id": "",
+                "changed_paths": [], "reasons": [], "refresh_started_epoch": 0,
+            }), encoding="utf-8")
+            scope = {"worktree_id": "wt", "work_unit_id": "wu"}
+            request = {**scope, "query": "who calls the handler", "identity_digest": "head",
+                       "capabilities": {"configured": True, "visible": True,
+                                        "indexed": False, "fresh": False}}
+            plan = self.call("plan", repo, request)
+            self.assertEqual(plan["required_action"], "REFRESH_ONCE")
+            self.call("refresh-result", repo, {
+                **scope, "refresh_token": plan["refresh_token"], "outcome": "executed"})
+            self.assertEqual(json.loads(state.read_bytes())["schema_version"], 2)
             self.assertEqual(self.call("plan", repo, request)["required_action"], "BOUNDED_SOURCE")
 
     @unittest.skipUnless(shutil.which("git"), "Git worktree fixture")
@@ -99,6 +153,19 @@ class CodebaseContextCliTests(unittest.TestCase):
                               "canonical_root": str(main)}}
             observed = self.call("resolve", tenant / "backend", {**projects, "index_status": status})
             self.assertTrue(observed["status_matches"])
+            duplicate = {"projects": [*projects["projects"],
+                {"name": "tenant-alias", "root_path": str(tenant / "backend")}]}
+            ambiguous = self.call("resolve", tenant / "backend", duplicate)
+            self.assertEqual(ambiguous["reason_code"], "PROJECT_AMBIGUOUS")
+            self.assertEqual(ambiguous["project_candidates"], ["tenant", "tenant-alias"])
+            selected_alias = self.call("resolve", tenant / "backend",
+                {**duplicate, "index_status": {**status, "project": "tenant-alias"}})
+            self.assertEqual(selected_alias["project"], "tenant-alias")
+            self.assertTrue(selected_alias["status_matches"])
+            wrong_head = self.call("resolve", tenant / "backend", {
+                **duplicate, "index_status": {**status, "git": {**status["git"], "head_sha": "0" * 40}}})
+            self.assertEqual(wrong_head["reason_code"], "PROJECT_STATUS_MISMATCH")
+            self.assertIsNone(wrong_head["project"])
             status["git"]["worktree_root"] = str(main)
             rejected = self.call("resolve", tenant / "backend", {**projects, "index_status": status})
             self.assertEqual(rejected["reason_code"], "PROJECT_STATUS_MISMATCH")

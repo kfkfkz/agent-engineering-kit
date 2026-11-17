@@ -10,8 +10,11 @@ description: "使用 codebase-memory-mcp 知识图谱完成代码结构检索、
 ## 前置检查
 
 1. 确认当前会话存在 `list_projects`、`search_graph`、`trace_path`、`get_code_snippet`、`check_index_coverage` 等 codebase-memory 工具。
-2. Git 仓库先用内部 `.repo-memory-kit/bin/codebase-context resolve <实际代码目录> --context-json -`，输入对象 `{"projects": [...]}`，数组来自 `list_projects`。根目录仅有子索引时按任务涉及的子目录解析。用所选项目的 `index_status(verbose=true)` 核对 `worktree_root`、`index_root` 和 `head`，也可将 MCP 原结果作为输入对象的 `index_status` 字段交给同一命令。无 aek 安装时直接核对这些字段。
+2. Git 仓库先用内部 `.repo-memory-kit/bin/codebase-context resolve <实际代码目录> --context-json -`，输入对象 `{"projects": [...]}`，数组来自 `list_projects`。根目录仅有子索引时按任务涉及的子目录解析。用所选项目的 `index_status(verbose=true)` 核对 `worktree_root`、`index_root` 和 `head`，也可将 MCP 原结果作为输入对象的 `index_status` 字段交给同一命令。返回同根 `project_candidates` 时，将其中可核对的候选原状态传入 `index_status`；若多个候选都匹配，再按实际文件 coverage 选择。无 aek 安装时直接核对这些字段。
 3. `configured`、`visible`、`indexed`、`fresh` 分开记录。索引归属和 HEAD 核对通过后，仍以当前代次及相关文件 coverage 判定新鲜度。写代码、Git/SVN 更新、切分支或合并后重验身份，即使没有源码 diff。当前批次共享一次 status/coverage 与最多一次显式刷新。
+   `plan/observe` 返回 `refresh_token` 时，在有效期内执行索引；沿同一个工作树和工作单元调用内部
+   `codebase-context refresh-result`，JSON 带原 `refresh_token` 与 `outcome=executed`（工具已执行，包括执行失败）
+   或 `not_started`（确认未启动）。遇到 `refresh_pending` 或预约过期先查索引状态。仍在运行时等待，确认未运行才重新规划。
 4. 已证明覆盖的路径用图谱，源码仅补读缺口。`metadata_match` 只证明文件元数据相符，仍须补读解析缺口。用 `codebase-context observe` 时，将明确跳过、排除或未收录的路径放入 `source_only_paths`，沿返回的 `graph_paths` 与 `source_paths` 取证。工具不可见或刷新后仍无可用覆盖时有界回退并披露置信度；`memory-check` 遵循更严格的停止规则。
 
 ## 取证等级

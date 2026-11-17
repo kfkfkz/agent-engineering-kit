@@ -16,6 +16,7 @@ _installed = _script_dir.name == "bin" and _script_dir.parent.name == ".repo-mem
 _package_root = _script_dir.parent / "lib" if _installed else _script_dir
 sys.path.insert(0, str(_package_root))
 
+from aek.adapters.atomic_file import AtomicFileInvalid
 from aek.adapters.codebase_state import CodebaseStateStore
 from aek.core.codebase_context import (
     CapabilityState, CodebaseBarrierPlan, CodebaseObservation, DirtyState, QueryKind,
@@ -85,18 +86,22 @@ def _resolve_project(scope: Path, projects: object, status: object = None) -> di
     nested = sorted({str(path) for _, path in candidates if path != scope and path.is_relative_to(scope)})
     reason = ("PROJECT_MATCH" if len(names) == 1 else "PROJECT_AMBIGUOUS" if names
               else "PROJECT_SCOPE_REQUIRED" if nested else "PROJECT_NOT_INDEXED")
+    selected = names[0] if len(names) == 1 else None
     status_matches = False
-    if len(names) == 1 and status is not None:
+    if names and status is not None:
         if not isinstance(status, dict):
             raise ValueError("codebase index status must be an object")
         git = status.get("git")
-        status_matches = (status.get("project") == names[0] and status.get("status") == "ready"
+        status_matches = (status.get("project") in names and status.get("status") == "ready"
                           and isinstance(status.get("root_path"), str)
                           and Path(status["root_path"]).resolve() == index_root
                           and (not root or isinstance(git, dict) and bool(head)
                                and git.get("head_sha") == head and isinstance(git.get("worktree_root"), str)
                                and Path(git["worktree_root"]).resolve() == worktree))
-        if not status_matches:
+        if status_matches:
+            selected = status["project"]
+            reason = "PROJECT_MATCH"
+        else:
             reason = "PROJECT_STATUS_MISMATCH"
     return {
         "reason_code": reason,
@@ -104,11 +109,24 @@ def _resolve_project(scope: Path, projects: object, status: object = None) -> di
         "scope_root": str(scope),
         "branch": branch if branch != "HEAD" else None,
         "head": head,
-        "project": names[0] if len(names) == 1 else None,
-        "index_root": str(index_root) if len(names) == 1 else None,
+        "project": selected,
+        "project_candidates": names,
+        "index_root": str(index_root) if selected is not None else None,
         "nested_scopes": nested if not names else [],
         "status_matches": status_matches,
     }
+
+
+def _reserve_for_plan(store: CodebaseStateStore, state: DirtyState,
+                      result: CodebaseBarrierPlan, *, pending: bool) -> dict:
+    output = asdict(result)
+    if result.required_action == "REFRESH_ONCE":
+        lease = store.reserve_refresh(state)
+        output["refresh_token"] = lease.token
+        output["refresh_expires_at"] = lease.expires_at
+    elif pending and result.required_action == "BOUNDED_SOURCE":
+        output["refresh_pending"] = True
+    return output
 
 
 def _run(action: str, store: CodebaseStateStore, value: dict[str, object]) -> object:
@@ -121,6 +139,22 @@ def _run(action: str, store: CodebaseStateStore, value: dict[str, object]) -> ob
             paths=tuple(value["paths"]), reason=value["reason"])
         store.write_state(state)
         return asdict(state)
+    if action == "refresh-result":
+        if state is None:
+            raise ValueError("no dirty state exists for this scope")
+        lease = store.load_refresh_reservation(state)
+        if lease is None or value["refresh_token"] != lease.token:
+            raise ValueError("refresh reservation no longer matches")
+        outcome = value["outcome"]
+        if outcome == "executed":
+            if state.refresh_started_epoch != state.dirty_epoch:
+                state = state.with_refresh_started()
+                store.write_state(state)
+        elif outcome == "not_started" and state.refresh_started_epoch != state.dirty_epoch:
+            store.cancel_refresh_reservation()
+        else:
+            raise ValueError("refresh outcome is invalid for the current reservation")
+        return asdict(state)
     if action == "plan":
         identity = value["identity_digest"]
         previous = state
@@ -131,29 +165,33 @@ def _run(action: str, store: CodebaseStateStore, value: dict[str, object]) -> ob
                                paths=state.changed_paths, reason="identity_changed")
         capabilities = value["capabilities"]
         kind = classify_query(value["query"])
+        lease = store.load_refresh_reservation(state) if kind == QueryKind.STRUCTURAL else None
+        pending = (lease is not None and lease.active
+                   and state.refresh_started_epoch != state.dirty_epoch)
+        effective = state.with_refresh_started() if pending else state
         result = plan_barrier(kind, CapabilityState(
             capabilities["configured"], capabilities["visible"],
-            capabilities["indexed"], capabilities["fresh"]), state,
+            capabilities["indexed"], capabilities["fresh"]), effective,
             candidate_paths=tuple(value.get("candidate_paths", [])))
-        if result.required_action == "REFRESH_ONCE":
-            state = state.with_refresh_started()
         if state != previous and (kind == QueryKind.STRUCTURAL or previous is not None):
             store.write_state(state)
-        return asdict(result)
+        return _reserve_for_plan(store, state, result, pending=pending)
     if action == "observe":
         if state is None:
             raise ValueError("no dirty state exists for this scope")
         observation = value["observation"]
+        lease = store.load_refresh_reservation(state)
+        pending = (lease is not None and lease.active
+                   and state.refresh_started_epoch != state.dirty_epoch)
+        effective = state.with_refresh_started() if pending else state
         result = verify_observation(
-            _plan_from(value["plan"]), state,
+            _plan_from(value["plan"]), effective,
             CodebaseObservation(
                 observation["canonical_root"], observation["expected_root"],
                 observation["generation"], observation["identity_digest"],
                 tuple(observation["covered_paths"]), tuple(observation["metadata_match_paths"]),
                 tuple(observation.get("source_only_paths", []))))
-        if result.required_action == "REFRESH_ONCE":
-            store.write_state(state.with_refresh_started())
-        output = asdict(result)
+        output = _reserve_for_plan(store, state, result, pending=pending)
         observation_digest = hashlib.sha256(json.dumps(
             observation, ensure_ascii=False, sort_keys=True,
             separators=(",", ":")).encode("utf-8")).hexdigest()
@@ -175,7 +213,8 @@ def _run(action: str, store: CodebaseStateStore, value: dict[str, object]) -> ob
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="codebase-context")
-    parser.add_argument("action", choices=("resolve", "mark-dirty", "plan", "observe", "status"))
+    parser.add_argument("action", choices=("resolve", "mark-dirty", "plan", "observe",
+                                           "refresh-result", "status"))
     parser.add_argument("repo", nargs="?", default=".")
     parser.add_argument("--context-json", required=True,
                         help="JSON object, @file, or - for stdin")
@@ -191,7 +230,7 @@ def main() -> int:
                 output = _run(args.action, store, value)
         print(json.dumps(output, ensure_ascii=False, sort_keys=True, indent=2))
         return 0
-    except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
+    except (KeyError, TypeError, ValueError, OSError, AtomicFileInvalid) as exc:
         print(f"codebase-context: {exc}", file=sys.stderr)
         return 3
 

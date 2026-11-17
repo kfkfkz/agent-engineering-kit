@@ -171,8 +171,10 @@ context 的 stage 为 `design`，purpose=`target_evidence` 或审查的 `review_
 进入本轮 AI 评审时，Agent 内部运行
 `.repo-memory-kit/bin/doc-gate review-input <SDD目录> --stage <阶段> --schema-version 2 --json --precheck-summary --compact-json`。
 Reviewer 能直接读取同一仓库时可加 `--request-ref`。短请求仍内联；长请求由实际 Reviewer
-调用同一 `review-input` 的只读模式 `--read-request <request_ref.sha256>`，传入相同需求目录和阶段。
-工具核验后返回原文。出现摘要失配或不可读时报错，重新准备本轮输入。Reviewer 无法直接读取时内联送审。
+调用同一 `review-input --read-request <request_ref.sha256> --record-delivery`，传入相同需求目录和阶段。
+接口核验后返回原字节，并登记实际交付的正文摘要与大小。纯核对用 `--read-request`。
+出现摘要失配或不可读时重新准备本轮输入。超限时报告实际大小和上限，不向 Reviewer 投递不兼容的材料。
+Reviewer 无法直接读取时内联送审。
 返回 `failures/full_result_ref/result_digest` 时按 §3 定向修复，修完重跑此入口；
 有有效 `request` 或可读的 `request_ref`，且返回 `receipt` 后才启动 Reviewer。其他诊断按工具结论处置。
 旧 CLI 未指定版本时仍是 v1；本技能显式使用 v2，不把旧 receipt 改写成新版证明。

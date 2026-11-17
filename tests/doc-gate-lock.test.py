@@ -36,10 +36,11 @@ class DocumentGateLockTests(unittest.TestCase):
                 view.recover_closeout(lambda _: {})
                 events.append(("recover", view))
 
-            def operate(view, loaded, snapshot):
+            def operate(view, loaded, snapshot, emit_success):
                 self.assertIs(loaded, state)
                 self.assertEqual(snapshot, view.snapshot())
                 events.append(("operate", view))
+                emit_success("PASS")
                 return 0, True
 
             def bind(view, loaded, material_mode):
@@ -49,9 +50,11 @@ class DocumentGateLockTests(unittest.TestCase):
                 events.append(("bind", view))
                 return 3
 
+            output = []
             code = run_stage_transaction(store.locked_view(req), lambda _: state,
-                                         operate, bind, recover=recover)
+                                         operate, bind, emit_success=output.append, recover=recover)
             self.assertEqual(code, 3, "binding failure must propagate")
+            self.assertEqual(output, [])
             self.assertEqual([name for name, _ in events], ["recover", "operate", "bind"])
             self.assertTrue(all(view is events[0][1] for _, view in events))
             with self.assertRaises(PlanInvalid):
@@ -66,7 +69,8 @@ class DocumentGateLockTests(unittest.TestCase):
             state = DynamicPlanState("FROZEN", "")
             self.assertEqual(run_stage_transaction(
                 store.locked_view(req), lambda _: state, lambda *_: (2, True),
-                lambda *_: self.fail("blocked stage must not bind")), 2)
+                lambda *_: self.fail("blocked stage must not bind"),
+                emit_success=lambda _: self.fail("blocked stage must not emit success")), 2)
 
     def test_status_and_check_wait_for_consistent_plan_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

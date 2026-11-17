@@ -480,12 +480,27 @@ class ReviewV2Tests(unittest.TestCase):
             self.assertEqual(verified.returncode, 0, verified.stderr)
             self.assertEqual(verified.stdout, raw_request)
             self.assertEqual(evidence(), snapshot)
+            report = reviews / "需求分析.context-report.json"
+            prior_bytes = json.loads(report.read_bytes())["delivered_bytes"]
+            counted = subprocess.run(read + ["--record-delivery"], capture_output=True, env=env, check=False)
+            self.assertEqual((counted.returncode, counted.stdout), (0, raw_request))
+            self.assertEqual(counted.stderr, b"")
+            self.assertEqual(json.loads(report.read_bytes())["delivered_bytes"], prior_bytes + len(raw_request))
+            counted_report = report.read_bytes()
+            ledger, = [
+                path for path in reviews.glob("需求分析.context-events-*.jsonl")
+                if any(json.loads(line)["source_digest"] == handoff["request_ref"]["sha256"]
+                       for line in path.read_bytes().splitlines())]
+            event = json.loads(ledger.read_bytes().splitlines()[-1])
+            self.assertEqual(event["source_digest"], handoff["request_ref"]["sha256"])
+            self.assertEqual(event["delivered_bytes"], len(raw_request))
             target = sdd / handoff["request_ref"]["path"]
             target.write_bytes(raw_request.replace(b'"mode":"full"', b'"mode":"fake"', 1))
             self.assertNotEqual(target.read_bytes(), raw_request)
-            stale = subprocess.run(read, capture_output=True, env=env, check=False)
+            stale = subprocess.run(read + ["--record-delivery"], capture_output=True, env=env, check=False)
             self.assertEqual((stale.returncode, stale.stdout), (3, b""))
             self.assertIn(b"SOURCE_CHANGED", stale.stderr)
+            self.assertEqual(report.read_bytes(), counted_report)
             target.unlink()
             missing = subprocess.run(read, capture_output=True, env=env, check=False)
             self.assertEqual((missing.returncode, missing.stdout), (3, b""))
@@ -497,6 +512,32 @@ class ReviewV2Tests(unittest.TestCase):
                 linked = subprocess.run(read, capture_output=True, env=env, check=False)
                 self.assertEqual((linked.returncode, linked.stdout), (3, b""))
                 self.assertTrue(target.is_symlink())
+
+    def test_oversized_review_request_preserves_previous_prepared_material(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / ".git").mkdir()
+            req = repo / "docs" / "03-SDD" / "001-长送审"
+            req.mkdir(parents=True)
+            document = req / "需求分析.md"
+            document.write_text(REQUIREMENTS, encoding="utf-8")
+            command = [sys.executable, "-X", "utf8", str(ROOT / "doc-gate"), "review-input",
+                       str(req), "--stage", "需求分析", "--json", "--schema-version", "2",
+                       "--compact-json", "--request-ref"]
+            subprocess.run(command, capture_output=True, check=True, timeout=30)
+            reviews = req / "reviews"
+            paths = [reviews / f"需求分析.{suffix}.json"
+                     for suffix in ("review-request", "review-current", "context-report")]
+            before = [path.read_bytes() for path in paths]
+            body = REQUIREMENTS + "\n" + "这是补充说明。" * 96_000
+            self.assertLess(len(body.encode("utf-8")), 2 * 1024 * 1024)
+            document.write_text(body, encoding="utf-8")
+            result = subprocess.run(command, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 3, result.stderr)
+            diagnostic = json.loads(result.stdout)
+            self.assertEqual(diagnostic["reason"], "REVIEW_REQUEST_TOO_LARGE")
+            self.assertGreater(diagnostic["bytes"], diagnostic["limit"])
+            self.assertEqual([path.read_bytes() for path in paths], before)
 
     def test_full_v2_sensor_with_issue_keeps_material_baseline_without_approval(self):
         self._material_baseline_case("概要设计.md / F1", "incremental")

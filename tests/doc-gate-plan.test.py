@@ -201,6 +201,9 @@ raise SystemExit(ns['cmd_freeze'](pathlib.Path(sys.argv[2]),'需求分析','fixt
         result = subprocess.run([sys.executable, "-X", "utf8", "-c", program, str(DOC_GATE), str(self.req)],
             cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=30)
         self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output["status"], "ERROR")
+        self.assertEqual(output["reason"], "BINDING_FAILED")
         self.assertEqual(path.read_bytes(), before)
         current = json.loads(self.run_gate("status", str(self.req), "--json").stdout)
         self.assertEqual(current["需求分析"]["state"], "DRAFT")

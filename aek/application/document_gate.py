@@ -34,21 +34,27 @@ def uses_material_bindings(snapshot: Mapping[str, bytes]) -> bool:
 def run_stage_transaction(
     open_view: ContextManager[_View],
     load_plan: Callable[[dict[str, bytes]], DynamicPlanState | None],
-    operate: Callable[[_View, DynamicPlanState | None, dict[str, bytes]], tuple[int, bool]],
+    operate: Callable[[_View, DynamicPlanState | None, dict[str, bytes],
+                       Callable[[str], None]], tuple[int, bool]],
     bind: Callable[[_View, DynamicPlanState, bool], int],
     *,
+    emit_success: Callable[[str], None],
     recover: Callable[[_View, DynamicPlanState | None], None] | None = None,
 ) -> int:
     """Run recovery, stage publication and binding in one live lock scope."""
+    success_messages: list[str] = []
     with open_view as view:
         if recover is not None:
             recover(view, load_plan(view.snapshot(for_material_recovery=True)))
         snapshot = view.snapshot()
         state = load_plan(snapshot)
-        exit_code, material_mode = operate(view, state, snapshot)
+        exit_code, material_mode = operate(view, state, snapshot, success_messages.append)
         if exit_code == 0 and state is not None:
-            return bind(view, state, material_mode)
-        return exit_code
+            exit_code = bind(view, state, material_mode)
+    if exit_code == 0:
+        for message in success_messages:
+            emit_success(message)
+    return exit_code
 
 
 class Checks:

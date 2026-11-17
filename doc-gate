@@ -38,6 +38,7 @@ import secrets
 import stat
 import sys
 import unicodedata
+from contextlib import nullcontext
 from contextvars import ContextVar
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -196,13 +197,16 @@ _REVIEW_INPUT_SUFFIXES = (
 )
 
 
+MAX_REVIEW_EVIDENCE_BYTES = 2_000_000
+
+
 def _capture_review_inputs(req_dir: Path, stage: str) -> dict[str, bytes | None]:
     root = _ui_fs.open_absolute_dir(req_dir / "reviews")
     try:
         captured = {}
         for suffix in _REVIEW_INPUT_SUFFIXES:
             try:
-                captured[suffix] = _ui_fs.read_at(root, f"{stage}.{suffix}", 2_000_000)
+                captured[suffix] = _ui_fs.read_at(root, f"{stage}.{suffix}", MAX_REVIEW_EVIDENCE_BYTES)
             except FileNotFoundError:
                 captured[suffix] = None
         return captured
@@ -2713,7 +2717,7 @@ def _read_review_bytes(path: Path) -> bytes:
     fd = os.open(path, flags)
     try:
         opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or opened.st_size > 2_000_000:
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > MAX_REVIEW_EVIDENCE_BYTES:
             raise ValueError(f"review evidence is not a bounded regular file: {path.name}")
         current = os.stat(path, follow_symlinks=False)
         if (not stat.S_ISREG(current.st_mode)
@@ -3072,8 +3076,8 @@ def _review_security_context(req_dir: Path, stage: str) -> str | None:
 
 
 def _record_review_delivery(reviews: Path, stage: str, request, payload: str,
-                            dynamic_state=None) -> None:
-    """Account for the UTF-8 JSON shown by this CLI, including the wrapper.
+                            dynamic_state=None, *, request_body=False) -> None:
+    """Account for UTF-8 review input delivered by this CLI.
 
     This is intentionally a partial report: doc-gate can observe its own
     review payload, not host-native code/search/tool reads performed later by
@@ -3097,7 +3101,7 @@ def _record_review_delivery(reviews: Path, stage: str, request, payload: str,
         channel="review_loader", event_purpose="review_required",
         expansion_purpose="review_required", session_id=f"review-{suffix}",
         subject_digest=subject,
-        logical_path=f"generated/review-input-{suffix}.json")
+        logical_path=f"generated/review-{'request' if request_body else 'input'}-{suffix}.json")
     expected = (
         "capsule_loader", "host_native", "memory_candidate", "memory_open",
         "reference_loader", "review_loader", "skill_loader",
@@ -3111,27 +3115,41 @@ def _record_review_delivery(reviews: Path, stage: str, request, payload: str,
                    separators=(",", ":")).encode("utf-8"))
 
 
-REVIEW_REQUEST_READ_LIMIT = 2_000_000
-
-
-def cmd_read_review_request(req_dir: Path, stage: str, expected_sha256: str) -> int:
+def cmd_read_review_request(req_dir: Path, stage: str, expected_sha256: str, *,
+                            record_delivery: bool = False) -> int:
     if stage not in STAGES:
         print(f"✗ 未知阶段: {stage}", file=sys.stderr)
         return 3
+    reviews = req_dir / "reviews"
     try:
-        reviews = _open_dir_nofollow(req_dir / "reviews")
-        try:
-            raw = _ui_fs.read_at(reviews, f"{stage}.review-request.json", REVIEW_REQUEST_READ_LIMIT)
-        finally:
-            _ui_fs.close_dir(reviews)
-        if hashlib.sha256(raw).hexdigest() != expected_sha256:
-            raise ValueError("SOURCE_CHANGED: 送审材料摘要已变化")
-        if load_versioned_review_request(raw).stage != stage:
-            raise ValueError("SOURCE_CHANGED: 送审材料不属于当前阶段")
-    except (OSError, TypeError, ValueError) as exc:
+        scope = PlanStore(reviews).gate_snapshot() if record_delivery else nullcontext()
+        with scope as snapshot:
+            directory = _open_dir_nofollow(reviews)
+            try:
+                raw = _ui_fs.read_at(directory, f"{stage}.review-request.json",
+                                     MAX_REVIEW_EVIDENCE_BYTES)
+            finally:
+                _ui_fs.close_dir(directory)
+            if hashlib.sha256(raw).hexdigest() != expected_sha256:
+                raise ValueError("SOURCE_CHANGED: 送审材料摘要已变化")
+            request = load_versioned_review_request(raw)
+            if request.stage != stage:
+                raise ValueError("SOURCE_CHANGED: 送审材料不属于当前阶段")
+            state = _dynamic_state_from_snapshot(snapshot, req_dir=req_dir) if record_delivery else None
+            if state is not None and state.state != "FROZEN":
+                raise ValueError("SOURCE_CHANGED: 动态计划不可用于评审")
+            sys.stdout.buffer.write(raw)
+            sys.stdout.buffer.flush()
+            if record_delivery:
+                try:
+                    _record_review_delivery(reviews, stage, request, raw.decode("utf-8"),
+                                            state, request_body=True)
+                except (OSError, TypeError, ValueError) as exc:
+                    # The body has already been delivered. Do not ask the host to repeat it.
+                    print(f"⚠ 送审正文已返回，上下文计量失败: {exc}", file=sys.stderr)
+    except (OSError, PlanInvalid, TypeError, ValueError) as exc:
         print(f"✗ 送审材料不可用: {exc}", file=sys.stderr)
         return 3
-    sys.stdout.buffer.write(raw)
     return 0
 
 
@@ -3191,12 +3209,20 @@ def cmd_review_input(req_dir: Path, stage: str, as_json: bool,
                 raise ValueError('SOURCE_CHANGED: stage material changed before review delivery')
             request_name = f"{stage}.review-request.json"
             request_bytes = review_request_bytes(request)
+            snapshot_bytes = review_snapshot_bytes(material.snapshot)
+            for name, body in (("request", request_bytes), ("snapshot", snapshot_bytes)):
+                if len(body) > MAX_REVIEW_EVIDENCE_BYTES:
+                    if as_json or precheck_summary:
+                        print(json.dumps({"stage": stage, "status": "ERROR",
+                            "reason": "REVIEW_REQUEST_TOO_LARGE", "material": name,
+                            "bytes": len(body), "limit": MAX_REVIEW_EVIDENCE_BYTES}, ensure_ascii=False))
+                    else:
+                        print(f"✗ REVIEW_REQUEST_TOO_LARGE: {name} 超过 {MAX_REVIEW_EVIDENCE_BYTES} 字节")
+                    return 3
             _atomic_review_write(reviews / request_name, request_bytes)
-            _atomic_review_write(
-                reviews / f"{stage}.review-current.json",
-                review_snapshot_bytes(material.snapshot))
+            _atomic_review_write(reviews / f"{stage}.review-current.json", snapshot_bytes)
             if as_json:
-                if request_ref and 16 * 1024 <= len(request_bytes) <= REVIEW_REQUEST_READ_LIMIT:
+                if request_ref and len(request_bytes) >= 16 * 1024:
                     output = {"request_ref": {"path": f"reviews/{request_name}",
                         "sha256": hashlib.sha256(request_bytes).hexdigest(), "mode": request.mode}}
                 else:
@@ -3283,28 +3309,29 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool, schema_v
         reviews = req_dir / "reviews"
         reviews.mkdir(parents=True, exist_ok=True)
 
-        def operate(view, dynamic_state, snapshot):
+        def operate(view, dynamic_state, snapshot, emit_success):
             material_mode = (schema_version == 2 or (reviews / 'package.json').exists()
                              or uses_material_bindings(snapshot))
             if stage in STAGES and _mapped_stage_roles(dynamic_state, stage):
                 material_mode = True
             result = _cmd_gate_locked(
                 req_dir, stage, no_review, as_json, dynamic_state,
-                material_view=view if material_mode else None)
+                material_view=view if material_mode else None, emit_success=emit_success)
             return result, material_mode
 
         return run_stage_transaction(
             PlanStore(reviews).locked_view(req_dir),
             lambda snapshot: _dynamic_state_from_snapshot(snapshot, req_dir=req_dir),
             operate, lambda view, state, mode: _bind_dynamic_gate(
-                req_dir, state, stage, view, material_mode=mode))
+                req_dir, state, stage, view, material_mode=mode, as_json=as_json),
+            emit_success=print)
     except (OSError, PlanInvalid, TypeError, ValueError) as exc:
         print(f"✗ 文档门禁锁不可用: {exc}")
         return 3
 
 
 def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
-                     dynamic_state=None, *, material_view=None) -> int:
+                     dynamic_state=None, *, material_view=None, emit_success=print) -> int:
     operation_package = _registered_package_identity(req_dir)
     if dynamic_state is not None:
         if dynamic_state.state != "FROZEN" or dynamic_state.plan is None:
@@ -3318,7 +3345,7 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
                 else:
                     print(f"✗ {stage} 当前跳过依据未通过校验，不能跳过门禁")
                 return 3
-            print(f"✓ {stage} 已由 ArtifactPlan 跳过，无需门禁")
+            emit_success(f"✓ {stage} 已由 ArtifactPlan 跳过，无需门禁")
             return 0
     elif _dynamic_sidecar_present(req_dir):
         print("✗ 动态计划 sidecar 无法验证，拒绝门禁")
@@ -3561,10 +3588,11 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
             print(f"✗ v2 材料基线不可用: {exc}")
             return 3
 
+    emit = emit_success if status == "PASS" else print
     if as_json:
-        print(json.dumps(gate, ensure_ascii=False, indent=2))
+        emit(json.dumps(gate, ensure_ascii=False, indent=2))
     else:
-        print(f"阶段 {stage} 门禁判定: {status}（连续不达标 {consecutive} 轮）")
+        emit(f"阶段 {stage} 门禁判定: {status}（连续不达标 {consecutive} 轮）")
         for chk in checks.fails:
             print(f"  ✗ HARD {chk['name']}: {chk['detail']}")
         if verdict["review"]["upstream_pending"]:
@@ -3591,27 +3619,30 @@ def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool, schem
         reviews = req_dir / "reviews"
         reviews.mkdir(parents=True, exist_ok=True)
 
-        def operate(view, dynamic_state, snapshot):
+        def operate(view, dynamic_state, snapshot, emit_success):
             mapped = _capture_mapped_stage(req_dir, stage, dynamic_state) if stage in HUMAN_SIGNOFF else None
             material_mode = (schema_version == 2 or (reviews / 'package.json').exists()
                              or uses_material_bindings(snapshot) or mapped is not None)
             result = _cmd_freeze_locked(
                 req_dir, stage, approved_by, as_json, dynamic_state,
-                material_view=view if material_mode else None, mapped=mapped, approved_input=approved_input)
+                material_view=view if material_mode else None, mapped=mapped, approved_input=approved_input,
+                emit_success=emit_success)
             return result, material_mode
 
         return run_stage_transaction(
             PlanStore(reviews).locked_view(req_dir),
             lambda snapshot: _dynamic_state_from_snapshot(snapshot, req_dir=req_dir),
             operate, lambda view, state, mode: _bind_dynamic_gate(
-                req_dir, state, stage, view, material_mode=mode))
+                req_dir, state, stage, view, material_mode=mode, as_json=as_json),
+            emit_success=print)
     except (OSError, PlanInvalid, TypeError, ValueError) as exc:
         print(f"✗ 文档门禁锁不可用: {exc}")
         return 3
 
 
 def _cmd_freeze_locked(req_dir: Path, stage: str, approved_by: str, as_json: bool,
-                       dynamic_state=None, *, material_view=None, mapped=None, approved_input=None) -> int:
+                       dynamic_state=None, *, material_view=None, mapped=None,
+                       approved_input=None, emit_success=print) -> int:
     """人工签核阶段的冻结凭证（需求分析/业务流程设计）：hard checks 全过 +
     人工签核已写（评审权在人，本工具只落哈希凭证），写 reviews/<阶段>.gate.json
     绑定该阶段文档的 sha256。签核后任何改动 = 哈希失配。"""
@@ -3621,7 +3652,7 @@ def _cmd_freeze_locked(req_dir: Path, stage: str, approved_by: str, as_json: boo
             print(f"✗ 动态计划不可用于冻结：{dynamic_state.reason}")
             return 3
         if not participating_documents(dynamic_state.plan, stage):
-            print(f"✓ {stage} 已由 ArtifactPlan 跳过，无需冻结")
+            emit_success(f"✓ {stage} 已由 ArtifactPlan 跳过，无需冻结")
             return 0
     elif _dynamic_sidecar_present(req_dir):
         print("✗ 动态计划 sidecar 无法验证，拒绝冻结")
@@ -3694,9 +3725,9 @@ def _cmd_freeze_locked(req_dir: Path, stage: str, approved_by: str, as_json: boo
                             "status": "PASS", "approved_by": gate["approved_by"]},
                            ensure_ascii=False) + "\n")
     if as_json:
-        print(json.dumps(gate, ensure_ascii=False, indent=2))
+        emit_success(json.dumps(gate, ensure_ascii=False, indent=2))
     else:
-        print(f"✓ {stage} 已签核冻结（凭证绑定 sha256；approved_by={gate['approved_by']}）——"
+        emit_success(f"✓ {stage} 已签核冻结（凭证绑定 sha256；approved_by={gate['approved_by']}）——"
               f"下游阶段可开始")
     return 0
 
@@ -3712,24 +3743,26 @@ def cmd_closeout(req_dir: Path, as_json: bool) -> int:
             recovery = _document_materials(req_dir, view, dynamic_state, policy_operation="execution-closeout-v1")
             view.recover_closeout(lambda stage: recovery.capture_context(stage, _effective_stage_spec(stage, dynamic_state)["docs"]))
 
-        def operate(view, dynamic_state, snapshot):
+        def operate(view, dynamic_state, snapshot, emit_success):
             material_mode = uses_material_bindings(snapshot)
             result = _cmd_closeout_locked(req_dir, as_json, dynamic_state,
-                                         material_view=view if material_mode else None, publication_view=view)
+                                         material_view=view if material_mode else None, publication_view=view,
+                                         emit_success=emit_success)
             return result, material_mode
 
         return run_stage_transaction(
             PlanStore(reviews).locked_view(req_dir),
             lambda snapshot: _dynamic_state_from_snapshot(snapshot, req_dir=req_dir),
             operate, lambda view, state, mode: _bind_dynamic_gate(
-                req_dir, state, "计划", view, material_mode=mode, closeout=True),
-            recover=recover)
+                req_dir, state, "计划", view, material_mode=mode, closeout=True, as_json=as_json),
+            emit_success=print, recover=recover)
     except (OSError, PlanInvalid, TypeError, ValueError) as exc:
         print(f"✗ 文档门禁锁不可用: {exc}")
         return 3
 
 
-def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, material_view=None, publication_view=None) -> int:
+def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, material_view=None,
+                         publication_view=None, emit_success=print) -> int:
     """Validate execution facts and bind the complete final plan documents.
 
     The initial plan gate remains the immutable execution baseline.  This
@@ -3741,7 +3774,7 @@ def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, ma
             print(f"✗ 动态计划不可用于收口：{dynamic_state.reason}")
             return 3
         if not participating_documents(dynamic_state.plan, "计划"):
-            print("✓ 计划阶段已由 ArtifactPlan 跳过，无需执行收口")
+            emit_success("✓ 计划阶段已由 ArtifactPlan 跳过，无需执行收口")
             return 0
     elif _dynamic_sidecar_present(req_dir):
         print("✗ 动态计划 sidecar 无法验证，拒绝收口")
@@ -3826,12 +3859,12 @@ def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, ma
                               "status": "PASS", "event": "execution_closeout"},
                              ensure_ascii=False) + "\n")
     if as_json:
-        print(json.dumps(closeout, ensure_ascii=False, indent=2))
+        emit_success(json.dumps(closeout, ensure_ascii=False, indent=2))
     else:
         if not expected_baseline:
-            print("⚠ 旧版计划凭证无执行前基线；已按当前验证终态迁移，"
+            emit_success("⚠ 旧版计划凭证无执行前基线；已按当前验证终态迁移，"
                   "范围真实性仍以 Route Card/diff 对照为准")
-        print("✓ 计划执行已统一收口（完整终态哈希已冻结）")
+        emit_success("✓ 计划执行已统一收口（完整终态哈希已冻结）")
     return 0
 
 
@@ -4594,12 +4627,20 @@ def _dynamic_state_from_snapshot(snapshot: dict[str, bytes], *, req_dir=None):
     return read_frozen_dynamic_state(CapturedSnapshot(), credential.input_digest, verify_source_map=verifier)
 
 
-def _bind_dynamic_gate(req_dir: Path, prior_state, stage: str, view, *, material_mode=False, closeout=False) -> int:
+def _bind_dynamic_gate(req_dir: Path, prior_state, stage: str, view, *,
+                       material_mode=False, closeout=False, as_json=False) -> int:
     """Bind the published approval while still holding its original plan lock."""
+    def failure(detail: str) -> int:
+        if as_json:
+            print(json.dumps({"stage": stage, "status": "ERROR",
+                              "reason": "BINDING_FAILED", "error": detail}, ensure_ascii=False))
+        else:
+            print(f"✗ gate 已写入，但 ArtifactPlan binding 失败: {detail}")
+        return 3
+
     if (prior_state.state != "FROZEN" or prior_state.plan is None
             or prior_state.credential is None):
-        print("✗ gate 已写入，但 ArtifactPlan 状态不可绑定")
-        return 3
+        return failure("ArtifactPlan 状态不可绑定")
     if not participating_documents(prior_state.plan, stage):
         return 0
     try:
@@ -4630,8 +4671,7 @@ def _bind_dynamic_gate(req_dir: Path, prior_state, stage: str, view, *, material
                 or evaluate_stage_states(updated, _dynamic_snapshots(req_dir, updated)).get(stage) != 'BOUND'):
             raise ValueError('material stage changed before final binding verification')
     except (OSError, PlanInvalid, TypeError, ValueError, RuntimeError) as exc:
-        print(f"✗ gate 已写入，但 ArtifactPlan binding 失败: {exc}")
-        return 3
+        return failure(str(exc))
     return 0
 
 
@@ -5564,6 +5604,8 @@ def _main(argv) -> int:
                            help="大于等于 16 KiB 的请求返回可核验原文引用")
             p.add_argument("--read-request", metavar="SHA256",
                            help="只读核验并返回指定摘要的已准备送审材料原字节")
+            p.add_argument("--record-delivery", action="store_true",
+                           help="由 Reviewer 加载器登记实际返回正文的摘要与字节数")
         if name in ("review-input", "gate"):
             p.add_argument("--schema-version", type=int, choices=(1, 2), default=1,
                            help="评审输入契约版本（默认 1，版本 2 显式启用）")
@@ -5642,6 +5684,8 @@ def _main(argv) -> int:
     args = ap.parse_args(argv)
     if args.cmd == "review-input" and (args.compact_json or args.request_ref) and not args.json:
         ap.error("--compact-json and --request-ref require --json")
+    if args.cmd == "review-input" and args.record_delivery and args.read_request is None:
+        ap.error("--record-delivery requires --read-request")
     if args.cmd == "review-input" and args.read_request is not None:
         if not re.fullmatch(r"[0-9a-f]{64}", args.read_request):
             ap.error("--read-request requires a lowercase SHA-256")
@@ -5684,7 +5728,8 @@ def _main(argv) -> int:
         return cmd_check(req_dir, args.stage, args.json, args.summary)
     if args.cmd == "review-input":
         if args.read_request is not None:
-            return cmd_read_review_request(req_dir, args.stage, args.read_request)
+            return cmd_read_review_request(req_dir, args.stage, args.read_request,
+                                           record_delivery=args.record_delivery)
         return cmd_review_input(req_dir, args.stage, args.json, args.schema_version,
                                 precheck_summary=args.precheck_summary,
                                 compact_json=args.compact_json, request_ref=args.request_ref)
