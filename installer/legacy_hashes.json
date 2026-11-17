@@ -110,6 +110,10 @@
       "skill-claude-delivery-gate": "canonical_sha256:f000f8a3c4cf361b6ff5364ee925334e91045900ffe4bd4fe4166c77e50c5105",
       "skill-claude-repo-delivery": "canonical_sha256:8fcf6c8291c3096b0364341f13e6dc7bef7aba56c720d8161e99d4e187b53b3d"
     },
+    "1d29c0e": {
+      "bin-doc-gate": "canonical_sha256:3977d8a370d1f4dda47215448ef276b9de39639ef8c3ae437a30461475ee37d2",
+      "lib-aek-application-document_gate-py": "canonical_sha256:6a6ee7866f3cf02e236c47ae15969ba78b9e3b17f8dc2e66a985147aeb2cf092"
+    },
     "217487b": {
       "bin-spec-migrate": "canonical_sha256:1435fe5abf905b4c09141ed3bb9a7826df3d3b92c9c2adea7ff4422c86da7250",
       "skill-agents-spec-migrate": "canonical_sha256:0d96a0a25560db1604860c5785369965a771d0e5cc79858246519a9e47a6425c",
