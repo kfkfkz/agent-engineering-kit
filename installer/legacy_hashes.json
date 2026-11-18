@@ -9,6 +9,13 @@
       "skill-agents-memory-capture": "canonical_sha256:fc25d33e6128676a4756ea960b353299f01d3c429d15f70839b7f24eefbdcbdb",
       "skill-claude-memory-capture": "canonical_sha256:fc25d33e6128676a4756ea960b353299f01d3c429d15f70839b7f24eefbdcbdb"
     },
+    "020e954": {
+      "bin-agent-engineering-mcp": "canonical_sha256:db424849ca352c5ed55f73cc5bcaf922e630b70c9b4b4cdedf8735152f612bda",
+      "bin-doc-gate": "canonical_sha256:25c77e52c0b8df131af0d15d3344f432b9b813ab8fb85167cfa99a345353ac4c",
+      "bin-memory-recall": "canonical_sha256:c719f4154aab66517673c3ccece585117ccdc4e05278332ef5ba189705594c09",
+      "lib-aek-adapters-codebase_state-py": "canonical_sha256:df54823ebc9ecc75059ec6e9300788e1270202d9f5c0f87fa9f88bc98112216e",
+      "lib-aek-adapters-memory-py": "canonical_sha256:8d2d729b0ceb4150eb366c4e72a41f416e24177b33e68b26b7c8358c8149cd8d"
+    },
     "08253c9": {
       "agents-md-block": "canonical_sha256:be0f7a3f15bce7b358c8b3363e23e5d625faa87b5dd497a725c177cab0085585",
       "claude-md-block": "canonical_sha256:bca8a2e36ed4f4dd4ac5ad01d9fbbe64fd4c655e6e8d75eda0b0caf305cdddc2"
