@@ -33,8 +33,9 @@ class RefreshReservation:
             raise ValueError("refresh reservation is malformed")
 
     def matches(self, state: DirtyState) -> bool:
-        return (self.identity_digest == state.code_identity_digest
-                and self.dirty_epoch == state.dirty_epoch)
+        # Concurrent edits can change the digest within one batch. Completion
+        # spends its refresh attempt, while freshness still checks the new digest.
+        return self.dirty_epoch == state.dirty_epoch
 
     @property
     def active(self) -> bool:

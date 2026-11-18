@@ -181,6 +181,34 @@ class DynamicPlanCliTests(unittest.TestCase):
             self.assertEqual(commands["_bind_dynamic_gate"](self.req, state, "概要设计", view), 3)
             self.assertNotIn("概要设计.plan-binding.json", view.snapshot())
 
+    def test_static_v2_freeze_with_missing_material_stays_unapproved_until_retry(self):
+        self.write_valid_requirements()
+        outline = runpy.run_path(str(ROOT / "tests/review-v2.test.py"))["OUTLINE"]
+        (self.req / "概要设计.md").write_text(outline, encoding="utf-8")
+        program = """import pathlib,runpy,sys
+from aek.application.document_material import DocumentMaterials
+ns=runpy.run_path(sys.argv[1])
+def fail(*args,**kwargs):
+    raise OSError('controlled material storage failure')
+DocumentMaterials.baseline=fail
+raise SystemExit(ns['cmd_freeze'](pathlib.Path(sys.argv[2]),'需求分析','fixture',True,schema_version=2))
+"""
+        result = subprocess.run([sys.executable, "-X", "utf8", "-c", program,
+            str(DOC_GATE), str(self.req)], cwd=ROOT, capture_output=True,
+            text=True, encoding="utf-8", timeout=30)
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        status = json.loads(self.run_gate("status", str(self.req),
+            "--schema-version", "2", "--json").stdout)["stages"]["需求分析"]
+        self.assertEqual(status["state"], "DRAFT")
+        self.assertEqual(status["material"]["reason_code"], "BASELINE_MISSING")
+        review = ("review-input", str(self.req), "--stage", "概要设计",
+                  "--schema-version", "2", "--precheck-summary", "--json")
+        self.run_gate(*review, expected=1)
+        # A default CLI retry must finish the requested v2 material binding.
+        self.run_gate("freeze", str(self.req), "--by", "fixture", "--json")
+        self.assertTrue((self.req / "reviews/需求分析.plan-binding.json").is_file())
+        self.run_gate(*review)
+
     def test_planned_material_storage_failure_cannot_persist_a_legacy_downgrade(self):
         self.write_valid_requirements()
         self.run_gate("plan-prepare", str(self.req), "--base", self.base, "--route", "standard", "--json")

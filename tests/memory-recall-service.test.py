@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -118,6 +121,30 @@ class MemoryRecallServiceTests(unittest.TestCase):
         result = self.recall("standard", known_digests=(digest,))
         self.assertTrue(result.expanded)
         self.assertFalse(result.reused)
+
+    def test_explicit_cli_applies_top_type_status_and_module_before_expansion(self):
+        playbooks = self.repo / "docs/memory/playbooks"
+        playbooks.mkdir()
+        for name, status, module in (("a-draft", "draft", "storage"),
+                                     ("b-other-module", "confirmed", "web"),
+                                     ("c-match", "confirmed", "storage"),
+                                     ("d-match", "confirmed", "storage")):
+            (playbooks / f"{name}.md").write_text(
+                f"---\nstatus: {status}\nmodule: {module}\n---\n# database {name}\n\nbody\n",
+                encoding="utf-8")
+        cli = Path(__file__).resolve().parents[1] / "memory-recall"
+        command = [sys.executable, "-X", "utf8", str(cli), "database", str(self.repo),
+                   "--context-json", "--route", "standard", "--session", "filter-test",
+                   "--subject", "f" * 64, "--type", "playbook", "--status", "confirmed",
+                   "--module", "stor"]
+        result = json.loads(subprocess.check_output(command + ["--top", "1"], timeout=20))
+        expected = "docs/memory/playbooks/c-match.md"
+        self.assertEqual([item["path"] for item in result["candidates"]["candidates"]], [expected])
+        self.assertEqual([item["path"] for item in result["expanded"]], [expected])
+        self.assertTrue(result["candidates"]["has_more"])
+        empty = json.loads(subprocess.check_output(command + ["--top", "0"], timeout=20))
+        self.assertEqual(empty["candidates"]["candidates"], [])
+        self.assertEqual(empty["expanded"], [])
 
     def test_no_match_is_explicitly_unknown_not_negative(self) -> None:
         budget = resolve_context_budget("bounded", "routing", "quick")

@@ -887,6 +887,20 @@ def _material_hash_current(req_dir, stage, dynamic_state=None):
         return False
 
 
+def _requires_material_binding(approval) -> bool:
+    return isinstance(approval, dict) and approval.get("material_binding_required") is True
+
+
+def _gate_remains_in_material_mode(view, stage: str) -> bool:
+    raw = view.read_gate(stage)
+    if raw is None:
+        return False
+    try:
+        return _requires_material_binding(json.loads(raw))
+    except ValueError:
+        return False
+
+
 def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, str]:
     """返回 (状态, 说明)。状态: FROZEN / DRAFT / BLOCKED / NOT_GATED / MISSING / INVALID。
 
@@ -962,6 +976,8 @@ def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, st
             return "DRAFT", f"{stage}.gate.json 损坏"
         if g.get("status") != "PASS":
             return "DRAFT", f"{stage}最近判定 {g.get('status')}"
+        if _requires_material_binding(g) and not material_current:
+            return "DRAFT", "材料基线尚未绑定，需重新 freeze"
         want = (g.get("doc_hashes") or {}).get(doc)
         cur = _sha256(req_dir / doc)
         if want != cur and material_current is not True:
@@ -988,6 +1004,8 @@ def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, st
         return "BLOCKED", "最近判定 BLOCKED（人工介入）"
     if gate.get("status") != "PASS":
         return "DRAFT", f"最近判定 {gate.get('status')}"
+    if _requires_material_binding(gate) and not material_current:
+        return "DRAFT", "材料基线尚未绑定，需重新门禁"
     lifecycle_path = req_dir / "reviews" / f"{stage}.issue-lifecycle.json"
     if lifecycle_path.exists() or lifecycle_path.is_symlink():
         try:
@@ -1011,6 +1029,8 @@ def stage_frozen(req_dir: Path, stage: str, dynamic_state=None) -> tuple[str, st
                 closeout = json.loads(closeout_text)
             except json.JSONDecodeError:
                 return "DRAFT", "计划.closeout.json 损坏"
+            if _requires_material_binding(closeout) and not material_current:
+                return "DRAFT", "计划收口的材料基线尚未绑定，需重新收口"
             if closeout.get("status") != "PASS":
                 return "DRAFT", "计划收口凭证不是 PASS"
             if closeout.get("plan_gate_sha256") != _sha256(gate_file):
@@ -3122,8 +3142,8 @@ def cmd_read_review_request(req_dir: Path, stage: str, expected_sha256: str, *,
         return 3
     reviews = req_dir / "reviews"
     try:
-        scope = PlanStore(reviews).gate_snapshot() if record_delivery else nullcontext()
-        with scope as snapshot:
+        store = PlanStore(reviews) if record_delivery else None
+        with (store.gate_snapshot() if store is not None else nullcontext()) as snapshot:
             directory = _open_dir_nofollow(reviews)
             try:
                 raw = _ui_fs.read_at(directory, f"{stage}.review-request.json",
@@ -3138,18 +3158,19 @@ def cmd_read_review_request(req_dir: Path, stage: str, expected_sha256: str, *,
             state = _dynamic_state_from_snapshot(snapshot, req_dir=req_dir) if record_delivery else None
             if state is not None and state.state != "FROZEN":
                 raise ValueError("SOURCE_CHANGED: 动态计划不可用于评审")
-            sys.stdout.buffer.write(raw)
-            sys.stdout.buffer.flush()
-            if record_delivery:
-                try:
-                    _record_review_delivery(reviews, stage, request, raw.decode("utf-8"),
-                                            state, request_body=True)
-                except (OSError, TypeError, ValueError) as exc:
-                    # The body has already been delivered. Do not ask the host to repeat it.
-                    print(f"⚠ 送审正文已返回，上下文计量失败: {exc}", file=sys.stderr)
+        sys.stdout.buffer.write(raw)
+        sys.stdout.buffer.flush()
     except (OSError, PlanInvalid, TypeError, ValueError) as exc:
         print(f"✗ 送审材料不可用: {exc}", file=sys.stderr)
         return 3
+    if store is not None:
+        try:
+            # Serialize publishing the report, using the state captured for the delivered bytes.
+            with store.gate_snapshot():
+                _record_review_delivery(reviews, stage, request, raw.decode("utf-8"),
+                                        state, request_body=True)
+        except (OSError, PlanInvalid, TypeError, ValueError) as exc:
+            print(f"⚠ 送审正文已返回，上下文计量失败: {exc}", file=sys.stderr)
     return 0
 
 
@@ -3312,7 +3333,8 @@ def cmd_gate(req_dir: Path, stage: str, no_review: bool, as_json: bool, schema_v
         def operate(view, dynamic_state, snapshot, emit_success):
             material_mode = (schema_version == 2 or (reviews / 'package.json').exists()
                              or uses_material_bindings(snapshot))
-            if stage in STAGES and _mapped_stage_roles(dynamic_state, stage):
+            if stage in STAGES and (_mapped_stage_roles(dynamic_state, stage)
+                                    or _gate_remains_in_material_mode(view, stage)):
                 material_mode = True
             result = _cmd_gate_locked(
                 req_dir, stage, no_review, as_json, dynamic_state,
@@ -3519,6 +3541,8 @@ def _cmd_gate_locked(req_dir: Path, stage: str, no_review: bool, as_json: bool,
             for up in spec["upstream"]},
         "failed_because": verdict["failed_because"], "next": verdict["next"],
     }
+    if material_view is not None and dynamic_state is None:
+        gate["material_binding_required"] = True
     if lifecycle is not None and lifecycle_progress_digest is not None:
         gate["review_progress_digest"] = lifecycle_progress_digest
     if operation_package is not None:
@@ -3622,7 +3646,8 @@ def cmd_freeze(req_dir: Path, stage: str, approved_by: str, as_json: bool, schem
         def operate(view, dynamic_state, snapshot, emit_success):
             mapped = _capture_mapped_stage(req_dir, stage, dynamic_state) if stage in HUMAN_SIGNOFF else None
             material_mode = (schema_version == 2 or (reviews / 'package.json').exists()
-                             or uses_material_bindings(snapshot) or mapped is not None)
+                             or uses_material_bindings(snapshot) or mapped is not None
+                             or (stage in HUMAN_SIGNOFF and _gate_remains_in_material_mode(view, stage)))
             result = _cmd_freeze_locked(
                 req_dir, stage, approved_by, as_json, dynamic_state,
                 material_view=view if material_mode else None, mapped=mapped, approved_input=approved_input,
@@ -3702,6 +3727,8 @@ def _cmd_freeze_locked(req_dir: Path, stage: str, approved_by: str, as_json: boo
         stage, approved_by, datetime.now().isoformat(timespec="seconds"), sources,
         {up: _stage_fingerprint(req_dir, up, dynamic_state)
          for up in _effective_stage_spec(stage, dynamic_state)["upstream"]})
+    if material_view is not None and dynamic_state is None:
+        gate["material_binding_required"] = True
     if operation_package is not None:
         gate['package_identity'] = operation_package
     capture_current = None
@@ -3808,6 +3835,10 @@ def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, ma
     upstream = {up: _stage_fingerprint(req_dir, up, dynamic_state) for up in spec["upstream"]}
     previous_raw = publication_view.read_closeout()
     previous = json.loads(previous_raw.decode("utf-8")) if previous_raw is not None else None
+    same_gate = isinstance(previous, dict) and previous.get("plan_gate_sha256") == hashlib.sha256(gate_raw).hexdigest()
+    if _requires_material_binding(gate) and not same_gate and not _material_hash_current(req_dir, "计划", dynamic_state):
+        print("✗ 计划的材料基线尚未绑定，不能执行收口")
+        return 3
     current_closeout = (type(previous) is dict and previous.get("status") == "PASS"
         and previous.get("kind") == "execution_closeout" and previous.get("doc_hashes") == hashes
         and previous.get("plan_gate_sha256") == hashlib.sha256(gate_raw).hexdigest()
@@ -3848,6 +3879,8 @@ def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, ma
     closeout = prepare_execution_closeout(
         datetime.now().isoformat(timespec="seconds"), gate_raw,
         projected=bool(expected_baseline), hashes=hashes, upstream=upstream)
+    if material_view is not None and dynamic_state is None:
+        closeout["material_binding_required"] = True
     _require_approved_upstream(req_dir, dynamic_state, upstream_materials)
     publication_view.commit_closeout(json.dumps(closeout, ensure_ascii=False, indent=2).encode("utf-8"),
         expected_consumers=consumers, epoch=epoch,
@@ -4447,8 +4480,16 @@ def _stage_material_status(req_dir: Path, stage: str, dynamic_state=None) -> dic
             result["reason_code"] = "NO_CURRENT_APPROVAL"
             return result
         closed = stage == "计划" and (req_dir / "reviews/计划.closeout.json").exists()
+        if binding is None and _requires_material_binding(gate):
+            result["reason_code"] = "BASELINE_MISSING"
+            return result
         if closed:
             with PlanStore(req_dir / "reviews").read_view(req_dir) as view:
+                closeout_raw = view.read_closeout()
+                if (binding is None and closeout_raw is not None
+                        and _requires_material_binding(json.loads(closeout_raw))):
+                    result["reason_code"] = "BASELINE_MISSING"
+                    return result
                 gate_raw, gate = _document_materials(req_dir, view, dynamic_state)._gate(stage)
         hashes = gate.get("doc_hashes")
         if type(hashes) is not dict or set(hashes) != set(documents):

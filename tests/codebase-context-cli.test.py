@@ -72,6 +72,35 @@ class CodebaseContextCliTests(unittest.TestCase):
             self.assertEqual(self.call("plan", repo, request)["required_action"], "REFRESH_ONCE")
             self.assertEqual(self.call("plan", repo, request)["required_action"], "BOUNDED_SOURCE")
 
+    def test_pending_refresh_stays_unique_when_digest_changes_within_batch(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = Path(temp)
+            scope = {"worktree_id": "wt", "work_unit_id": "wu"}
+            change = {**scope, "previous_identity_digest": "base", "batch_id": "same-batch",
+                      "paths": ["x.py"], "reason": "edit"}
+            request = {**scope, "query": "who calls the handler",
+                       "capabilities": {"configured": True, "visible": True,
+                                        "indexed": False, "fresh": False}}
+            first_state = self.call("mark-dirty", repo, {**change, "identity_digest": "first"})
+            first = self.call("plan", repo, {**request, "identity_digest": "first"})
+            self.assertEqual(first["required_action"], "REFRESH_ONCE")
+            second_state = self.call("mark-dirty", repo, {**change, "identity_digest": "second"})
+            self.assertEqual(first_state["dirty_epoch"], second_state["dirty_epoch"])
+            second = self.call("plan", repo, {**request, "identity_digest": "second"})
+            self.assertTrue(second["refresh_pending"])
+            self.assertNotIn("refresh_token", second)
+            refreshed = self.call("refresh-result", repo, {**scope, "outcome": "executed",
+                                                           "refresh_token": first["refresh_token"]})
+            self.assertEqual(refreshed["refresh_started_epoch"], second_state["dirty_epoch"])
+            request["capabilities"]["indexed"] = True
+            plan = self.call("plan", repo, {**request, "identity_digest": "second"})
+            self.assertEqual(plan["required_action"], "CHECK_STATUS")
+            observed = self.call("observe", repo, {**scope, "plan": plan, "observation": {
+                "canonical_root": str(repo), "expected_root": str(repo), "generation": "g1",
+                "identity_digest": "first", "covered_paths": ["x.py"], "metadata_match_paths": ["x.py"],
+            }})
+            self.assertEqual(observed["required_action"], "BOUNDED_SOURCE")
+
     def test_expired_or_canceled_reservation_can_retry_without_repeating_executed_refresh(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = Path(temp)

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import select
 import subprocess
 import sys
 import tempfile
@@ -512,6 +513,36 @@ class ReviewV2Tests(unittest.TestCase):
                 linked = subprocess.run(read, capture_output=True, env=env, check=False)
                 self.assertEqual((linked.returncode, linked.stdout), (3, b""))
                 self.assertTrue(target.is_symlink())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires a sized POSIX pipe")
+    def test_counted_review_output_does_not_hold_the_gate_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            (repo / ".git").mkdir()
+            req = repo / "docs/03-SDD/001-review"
+            req.mkdir(parents=True)
+            document = REQUIREMENTS.replace("已有查询需要明确错误返回。",
+                                            "已有查询需要明确错误返回。\n" + "补充业务约束。" * 3000)
+            (req / "需求分析.md").write_text(document, encoding="utf-8")
+            base = [sys.executable, "-X", "utf8", str(ROOT / "doc-gate")]
+            command = base + ["review-input", str(req), "--stage", "需求分析"]
+            prepared = json.loads(subprocess.check_output(command + [
+                "--schema-version", "2", "--request-ref", "--json"], timeout=30))
+            digest = prepared["request_ref"]["sha256"]
+            with subprocess.Popen(command + ["--read-request", digest, "--record-delivery"],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  pipesize=4096) as reader:
+                try:
+                    self.assertTrue(select.select([reader.stdout], [], [], 10)[0])
+                    self.assertIsNone(reader.poll(), "reader should be waiting for its output to be drained")
+                    subprocess.run(base + ["status", str(req), "--json"], timeout=5,
+                                   capture_output=True, check=True)
+                    output, errors = reader.communicate(timeout=10)
+                    self.assertEqual(reader.returncode, 0, errors)
+                    self.assertEqual(hashlib.sha256(output).hexdigest(), digest)
+                finally:
+                    if reader.poll() is None:
+                        reader.kill()
 
     def test_oversized_review_request_preserves_previous_prepared_material(self):
         with tempfile.TemporaryDirectory() as directory:

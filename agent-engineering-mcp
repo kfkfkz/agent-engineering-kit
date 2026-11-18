@@ -171,7 +171,7 @@ def tool_memory_recall(args):
         cmd_args.extend(["--type", args["type"]])
     if args.get("status"):
         cmd_args.extend(["--status", args["status"]])
-    if args.get("top"):
+    if args.get("top") is not None:
         cmd_args.extend(["--top", str(args["top"])])
     context = args.get("context")
     if context is not None:
