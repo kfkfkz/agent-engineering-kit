@@ -434,6 +434,28 @@ for section in "$SRC/templates/agents-md-section.md" "$SRC/templates/claude-md-s
         || bad "$(basename "$section") 缺少轻量路由纪律"
 done
 
+# 两端自然语言与技能入口均保留实施前的用户确认。
+for guide in "$P/AGENTS.md" "$P/CLAUDE.md"; do
+    grep -q '默认等用户确认方案再改代码' "$guide" \
+        && ok "$(basename "$guide") 保留缺陷修复确认" \
+        || bad "$(basename "$guide") 缺少缺陷修复确认"
+done
+for root in .claude .agents; do
+    for tool in repo-delivery systematic-debugging; do
+        skill="$P/$root/skills/$tool/SKILL.md"
+        grep -q '默认等待用户确认方案后再修改代码或配置' "$skill" \
+            && ok "$root/$tool 保留缺陷修复确认" \
+            || bad "$root/$tool 缺少缺陷修复确认"
+    done
+done
+
+memory_rules="$P/docs/memory/RULES.md"
+grep -Eq '优先使用 .memory_recall. MCP' "$memory_rules" \
+    && grep -q '现有取证未覆盖时，定向读取' "$memory_rules" \
+    && ! grep -Eq '会话开始.*(优先读|必须先读)|改代码前执行增量巡检' "$memory_rules" \
+    && ok "记忆规则按需取证与巡检" \
+    || bad "记忆规则仍绕过预算或预读画像"
+
 echo
 echo "通过 $pass / 失败 $fail"
 [ "$fail" = 0 ]

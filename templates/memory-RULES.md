@@ -5,7 +5,7 @@
 
 ## 使用规则（对 Agent 同样生效）
 
-1. 动手修改代码前，先用 `memory-recall` 语义检索（`.repo-memory-kit/bin/memory-recall "<任务描述>"`），或查本地索引（`.repo-memory-kit/memory-index.md`，`memory-build` 生成），命中相关条目必须先读全文。
+1. 任务需要项目历史知识时，按 `repo-delivery` 的当前路线与阶段预算优先使用 `memory_recall` MCP。仅在其约定的降级条件下使用等价 CLI 或本地索引。读取与当前判断有关的证据，复用当前会话仍持有且已核对的正文。
 2. 状态为「待验证」（unverified）的条目仅供了解，不得作为修改依据。
 3. Bug 修复经人工审核通过后，将原因、影响范围、修复方案整理为新条目入库（素材即审核通过的 bug 分析，零额外成本）。
 4. 条目过时改为 `deprecated`；被新条目替代改为 `superseded`（并在新条目 frontmatter 的 `supersedes` 指回旧条目）。原则上不删除，保留可追溯。**唯一例外见「敏感信息误入库应急」**。
@@ -51,16 +51,16 @@
 记忆区是三层结构 + 一个外部证据层，上层只存结论与指针，细节必须可下钻：
 
 ```text
-L3  PROFILE.md（项目经验画像）   宏观引导：风险域地图/稳定约定/反模式，会话开始优先读
+L3  PROFILE.md（项目经验画像）   按需下钻：风险域地图/稳定约定/反模式
 L2  playbook 条目              场景流程：某功能/环境怎么跑通
 L1  pitfall / decision 条目     原子经验：坑（缺陷/陷阱）与决定（背景/取舍/后果）
     （条目统一按模块分目录存放，类型在 frontmatter 的 type 字段）
 L0  权威文档与代码（记忆区外）   证据：源码（第一事实源）、业务域地图、spec/SDD、接口文档
 ```
 
-**语义检索层（memory-recall）**：`docs/` 下全部 Markdown（记忆条目、业务域地图、SDD、交付回执；模板与生成索引除外）经 zvec jieba 全文 + 双字段 RRF 建成可检索索引，Agent 取上下文时先 `.repo-memory-kit/bin/memory-recall "<任务描述>"`，再读命中条目全文——功能点多了以后，靠人工记得去查索引表必然漏召回。索引是派生数据（`.repo-memory-kit/zvec/generations/` + `current.json` 指针，每机本地、随卸载移除），条目增删改后由 `memory-build` 随动重建（单独 `--rebuild` 仍可用）；可选依赖 `pip install zvec`，未安装时明确报错降级，不影响记忆体系其余功能。
+**语义检索层（memory-recall）**：记忆条目、业务域地图、SDD 和交付回执可进入 zvec 全文索引，模板与生成索引排除。索引是本地派生数据（`.repo-memory-kit/zvec/generations/` 与 `current.json`），条目变化后由 `memory-build` 刷新，也可用 `memory-recall --rebuild` 重建。zvec 不可用时按使用规则降级。
 
-**L3 消费规则（写入 Agent 指引）**：`PROFILE.md` 存在时，Agent 会话开始必须先读它，再跑 `memory-recall` 语义检索——没有消费规则的生产规则是死代码。
+**L3 消费规则**：有任务相关的风险或约定仍需核实、且现有取证未覆盖时，定向读取 `PROFILE.md` 的对应段落及支撑条目。
 
 规则：
 
@@ -84,7 +84,7 @@ L0  权威文档与代码（记忆区外）   证据：源码（第一事实源�
 
 - 日期在 frontmatter：`created` 为定位/创建日期，`verified` 为最近验证日期（playbook 必填，即"最后有效"）。
 - **用后即校**：任何 Agent 或人引用条目时发现与现状不符，必须当场矫正内容并更新 `verified`；无法确认的标记 `deprecated`。
-- **定期巡检**：每个迭代周期或大功能开工前执行一次全量巡检；改代码前执行增量巡检（CLI：`memory-build --changed`；skill：Claude Code 用 `/memory-check <符号>`，Codex 用 `$memory-check <符号>`）。
+- **巡检触发**：用户或项目治理要求全量巡检时执行。变更波及有锚点的记忆、已有证据失配或任务要求核查时，定向使用 Claude Code 的 `/memory-check <符号>` 或 Codex 的 `$memory-check <符号>`。内部可用 `memory-build --changed` 定位受影响条目。
 
 ### 前置依赖（默认强制）
 

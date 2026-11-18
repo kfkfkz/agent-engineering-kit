@@ -83,6 +83,8 @@ python -m pip install zvec
 
 Direct/Bounded 不默认生成完整 SDD。Standard/Initiative 根据 ArtifactPlan 的 required/optional/skipped 决定产物；无 UI 或数据库变化时，可以通过可信事实跳过对应设计。
 
+排查缺陷时，Agent 先给出根因证据、最小修复方案、影响范围和回归方式，默认等你确认方案后再修改。简单缺陷直接在对话或已有 issue 中确认即可。如果你只要求排查，Agent 提供诊断和建议。如果你明确授权直接修复，Agent 定位后直接实施并验证。
+
 需要完整设计时，目录按需求与产物归属组织：
 
 ```text

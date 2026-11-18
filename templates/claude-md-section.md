@@ -7,7 +7,7 @@
 - 非平凡的功能实现、缺陷修复、重构或迁移，使用 `repo-delivery` 技能先做低成本 Route Card 分流，再按 Direct / Bounded / Standard / Initiative 最轻安全路线提取适用门禁；只有正向证据才升径，并遵循 `execution_profile` 限制上下文、设计与验证深度；复用项目既有 spec/SDD，不另建平行文档体系
 - 显式启动：Claude Code 使用 `/repo-delivery [任务描述]`；Codex 使用 `$repo-delivery [任务描述]`。自然语言请求仍可自动触发
 - 第一次结构检索必须先用 `codebase-memory` 绑定当前工作树和图谱。字面量、配置、非代码及 coverage 缺口用有界源码检索；切分支、更新或写入后重验。
-- 普通缺陷在当前任务定位根因并定向回归；根因不明或反复失败用 `systematic-debugging`，项目要求测试先行或关键行为需要回归时用 `tdd`。
+- 缺陷先定位根因、给出最小修复方案和回归方式，默认等用户确认方案再改代码。已明确授权直接修复时继续执行。复杂诊断用 `systematic-debugging`，流程见 `repo-delivery`。
 - 新依赖、外部集成、通用组件或关键选型先用 `reuse-research`，形成采用/扩展/组合/自建的证据化决策
 - 认证授权、外部输入、敏感操作、依赖或 Agent 配置变更使用 `security-review`；高危结论必须有利用路径并做对抗式复核
 - 设计定稿由 `design-pipeline` 负责；代码交付用 `delivery-gate`，收口前用 `route-eval` 对照 Route Card 检查最低路线与最终 diff 漂移。验证结论以治理 profile 要求的持久回执为证，无回执不得声称验证通过
