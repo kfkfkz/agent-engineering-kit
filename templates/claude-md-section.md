@@ -5,7 +5,7 @@
 - 跨项目协作准则见 `docs/memory/constitution.md`（首次安装种子、项目可编辑）；开始非平凡任务前阅读。它不替代用户指令、项目规范或 AEK 治理门禁；轻量任务仍按任务路由处理
 
 - 非平凡的功能实现、缺陷修复、重构或迁移，使用 `repo-delivery` 技能先做低成本 Route Card 分流，再按 Direct / Bounded / Standard / Initiative 最轻安全路线提取适用门禁；只有正向证据才升径，并遵循 `execution_profile` 限制上下文、设计与验证深度；复用项目既有 spec/SDD，不另建平行文档体系
-- 显式启动：Claude Code 使用 `/repo-delivery [任务描述]`；Codex 使用 `$repo-delivery [任务描述]`。自然语言请求仍可自动触发
+- 自然语言提出非平凡变更时也走 `repo-delivery`。写入前先核实实际目标、现状、必须保持的行为和验收。显式入口为 Claude Code `/repo-delivery [任务描述]`、Codex `$repo-delivery [任务描述]`。
 - 第一次结构检索必须先用 `codebase-memory` 绑定当前工作树和图谱。字面量、配置、非代码及 coverage 缺口用有界源码检索；切分支、更新或写入后重验。
 - 缺陷先定位根因、给出最小修复方案和回归方式，默认等用户确认方案再改代码。已明确授权直接修复时继续执行。复杂诊断用 `systematic-debugging`，流程见 `repo-delivery`。
 - 新依赖、外部集成、通用组件或关键选型先用 `reuse-research`，形成采用/扩展/组合/自建的证据化决策

@@ -27,7 +27,9 @@ Claude Code：`/repo-delivery`；Codex：`$repo-delivery`。canonical skill：`d
 
 ## 零阶段路线
 
-只读请求、根指引、governance marker、候选入口，建立 Route Card 并运行路线裁决；
+先读请求、根指引和 governance marker。用候选入口或相关测试做最小只读核实，分清目标、现状、必须保持的行为和可观察的验收条件。用户提出的改法或文件位置作为取证线索。结构问题按下文图谱规则取证。
+
+根据这些事实填写 Route Card 并运行路线裁决。`intent_gaps=none` 要有明确需求或现有契约支撑；无法确定且会改变业务结果、兼容性或授权范围时，指出缺口和可行方案，等用户裁决后再写入。其他可逆假设简要说明即可。
 工作种类与路线正交，只有正向证据才升径，不因未读全仓库而升径。
 
 | Route | 判定 | 默认执行深度 |
@@ -57,6 +59,8 @@ Claude Code：`/repo-delivery`；Codex：`$repo-delivery`。canonical skill：`d
 
 ## 执行与升级
 
+首次修改实现、配置或交付文档前，向用户简报目标和保持项、证据支持的最小方案与影响、验收和验证方式。Direct/Bounded 复用对话、当前 issue 或已有任务载体，一两句即可。正式设计和 Bug 仍按各自的确认要求推进。
+
 需要项目知识时先调预算化 `memory_recall` MCP，绑定 Route/stage/subject/session；purpose 普通取证
 `target_evidence`、评审 `review_required`，业务说明写 query。仅不可见/不兼容/调用前失败才降级
 等价 CLI，再失败才有界 metadata 查找；已开始而结果未知则停止披露。MCP schema 支持时用
@@ -79,7 +83,7 @@ stage：依赖选型 `design`，实施/复验 `execution`，交付审查 `closeo
 - 默认等待用户确认方案后再修改代码或配置。用户只要求排查时，给出诊断和建议后收口。用户已确认本轮方案，或明确要求直接修复、无需再确认时，直接推进。
 - 简单缺陷在对话或已有 issue 中用几行交付方案，沿当前 Route 执行。确认后继续修复与回归。方案实质超出已确认范围时再确认。本轮实施引入的测试失败在已授权范围内继续处理。
 
-简报可用 `路线(所选/最低) | 门禁 | 依据 | 风险 | 验证 | 下一步`。无需签核的安全步骤自动推进。
+简报附上适用路线与门禁。无需签核的安全步骤自动推进。
 
 ## 收口
 

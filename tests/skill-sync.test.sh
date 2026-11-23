@@ -383,6 +383,12 @@ grep -q 'route_fit=too_heavy' "$RD" \
 grep -q 'execution_profile' "$RD" \
     && ok "repo-delivery 消费机器可读执行深度" \
     || bad "repo-delivery 未消费 execution_profile"
+grep -Eq 'intent_gaps=none. 要有明确需求或现有契约支撑' "$RD" \
+    && grep -q '首次修改实现、配置或交付文档前' "$RD" \
+    && grep -q '一两句即可' "$RD" \
+    && grep -q '写入前确定的验收条件和必须保持的行为' "$(dirname "$RD")/references/evidence-closeout.md" \
+    && ok "repo-delivery 写入前核实、轻量简报并按原验收收口" \
+    || bad "repo-delivery 缺少写入前判断或验收对照"
 
 DG="$P/.agents/skills/delivery-gate/SKILL.md"
 DGREF="$P/.agents/skills/delivery-gate/references/review-evidence.md"
@@ -439,6 +445,10 @@ for guide in "$P/AGENTS.md" "$P/CLAUDE.md"; do
     grep -q '默认等用户确认方案再改代码' "$guide" \
         && ok "$(basename "$guide") 保留缺陷修复确认" \
         || bad "$(basename "$guide") 缺少缺陷修复确认"
+    grep -q '自然语言提出非平凡变更时也走' "$guide" \
+        && grep -q '写入前先核实实际目标、现状、必须保持的行为和验收' "$guide" \
+        && ok "$(basename "$guide") 自然语言任务保留写入前核实" \
+        || bad "$(basename "$guide") 自然语言任务缺少写入前核实"
 done
 for root in .claude .agents; do
     for tool in repo-delivery systematic-debugging; do
