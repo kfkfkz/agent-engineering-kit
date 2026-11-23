@@ -526,6 +526,18 @@
       "skill-claude-delivery-gate": "canonical_sha256:3911837c3c133f007e4b9ec93c86b54f9d822191b6dce3a12682547ae12b39ad",
       "skill-claude-repo-delivery": "canonical_sha256:963e9a237b32ed7a32357afda09282d4d651eebcfc100c1d7f7a39182d20a644"
     },
+    "620b6a8": {
+      "agents-md-block": "canonical_sha256:42a1b0958aba48d8c92a588406f9ba7e1d8be8e567bc81d6c01bade867e67405",
+      "claude-md-block": "canonical_sha256:c3eff838d5dff4aa3c25b12a6b61f9b1b52170370b6b41c892a7439255ee3924",
+      "skill-agents-repo-delivery": "canonical_sha256:845c502d0066a8ec9443acee072e544824393f2fd48c8396cfc6dbd561a0f2e4",
+      "skill-agents-repo-delivery-reference-evidence-closeout": "canonical_sha256:f3c2de7f35a5241573e7a2b7fb13f9fffa91b3228ac8ed42da702d3e844adec6",
+      "skill-claude-repo-delivery": "canonical_sha256:845c502d0066a8ec9443acee072e544824393f2fd48c8396cfc6dbd561a0f2e4",
+      "skill-claude-repo-delivery-reference-evidence-closeout": "canonical_sha256:f3c2de7f35a5241573e7a2b7fb13f9fffa91b3228ac8ed42da702d3e844adec6"
+    },
+    "620b6a8:legacy-section": {
+      "agents-md-block": "canonical_sha256:307a79d5096d312d2543b6061a93eaabcfa7894d1e4902ab09760032c5d996fa",
+      "claude-md-block": "canonical_sha256:9ebe5a76ebca46b64000c585eee3da6022c46ab2bc30821b4b7215b50a0abd5e"
+    },
     "6426b50": {
       "archify-.agents-bin-archify.mjs": "canonical_sha256:5027cafc1187712c536f284e883011c400b08917db5886d6ffb4c2ca4958d060",
       "archify-.claude-bin-archify.mjs": "canonical_sha256:5027cafc1187712c536f284e883011c400b08917db5886d6ffb4c2ca4958d060",
