@@ -24,7 +24,7 @@ __all__ = ["main"]
 USAGE = ("用法: python3 -m installer [--update|--repair|--doctor|--uninstall|--dry-run] "
          "[--adopt-legacy] [--recover=rollback|roll-forward] [--codex-root DIR] "
          "[--migrate-specify[=FEATURE,...]] [--sdd-layout --sdd-version V] "
-         "[--with-codebase-memory] [--svn] [--lightweight] /path/to/your-project")
+         "[--with-codebase-memory] [--svn] [--lightweight|--strict] /path/to/your-project")
 
 
 # ══════════════════════════ 参数模型（降低 main 圈复杂度） ══════════════════════════
@@ -41,7 +41,7 @@ class CliArgs:
     dry_run: bool = False
     with_codebase_memory: bool = False
     with_svn: bool = False
-    lightweight: bool = False
+    lightweight: Optional[bool] = None
     link_strategy: Optional[str] = None   # auto|symlink|copy（默认 auto=POSIX symlink/Windows copy）
 
 
@@ -62,7 +62,6 @@ _FLAG_ACTIONS = {
     "--sdd-layout":       lambda a: setattr(a, "sdd_layout", True),
     "--with-codebase-memory": lambda a: setattr(a, "with_codebase_memory", True),
     "--svn":             lambda a: setattr(a, "with_svn", True),
-    "--lightweight":     lambda a: setattr(a, "lightweight", True),
 }
 
 _ARG_ACTIONS = {
@@ -84,6 +83,12 @@ def _parse_args(argv: list[str]) -> CliArgs:
 
 
 def _parse_one(arg: str, rest: list[str], a: CliArgs) -> None:
+    if arg in ("--lightweight", "--strict"):
+        lightweight = arg == "--lightweight"
+        if a.lightweight is not None and a.lightweight != lightweight:
+            sys.exit("✗ --lightweight 与 --strict 互斥")
+        a.lightweight = lightweight
+        return
     if arg in _FLAG_ACTIONS:
         _set_mode(a, arg)
         _FLAG_ACTIONS[arg](a)
@@ -163,8 +168,8 @@ def _validate(a: CliArgs) -> Path:
          "错误: --with-codebase-memory 不能与 --uninstall/--doctor 同时使用"),
         (a.with_svn and a.mode not in ("install", "repair"),
          "错误: --svn 仅用于安装方向（治理初始化）"),
-        (a.lightweight and a.mode not in ("install", "repair"),
-         "错误: --lightweight 仅用于安装方向"),
+        (a.lightweight is not None and a.mode not in ("install", "repair"),
+         "错误: --lightweight / --strict 仅用于安装方向"),
         (a.migrate_features is not None and a.mode != "install",
          "错误: --migrate-specify 仅用于安装方向"),
         (a.link_strategy is not None and a.link_strategy not in ("auto", "symlink", "copy"),

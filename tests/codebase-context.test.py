@@ -37,11 +37,17 @@ class CodebaseContextTests(unittest.TestCase):
         self.assertEqual(classify_query("find exact error text in yaml"),
                          QueryKind.TEXTUAL)
         for query in ("查多租户分支的调用链和影响范围", "谁调用 TenantFilter",
-                      "查 TenantFilter 的配置和调用链"):
+                      "查 TenantFilter 的配置和调用链", "UserService 在哪里实现？",
+                      "LoginService#findUser 在哪？", "谁调用这段错误文案的生成逻辑？"):
             with self.subTest(query=query):
                 self.assertEqual(classify_query(query), QueryKind.STRUCTURAL)
         self.assertEqual(classify_query("查调用失败的错误文案"), QueryKind.TEXTUAL)
         self.assertEqual(classify_query("找配置值"), QueryKind.TEXTUAL)
+        self.assertEqual(classify_query("精确匹配错误文案"), QueryKind.TEXTUAL)
+        self.assertEqual(classify_query("找入口", "STRUCTURAL"), QueryKind.STRUCTURAL)
+        self.assertEqual(classify_query("调用", "TEXTUAL"), QueryKind.TEXTUAL)
+        with self.assertRaises(ValueError):
+            classify_query("找入口", "unrecognized")
 
     def test_continuous_code_writes_share_one_dirty_epoch(self) -> None:
         state = DirtyState.clean("identity-a")

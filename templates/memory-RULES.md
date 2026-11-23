@@ -83,7 +83,7 @@ L0  权威文档与代码（记忆区外）   证据：源码（第一事实源�
 ### 时效规则
 
 - 日期在 frontmatter：`created` 为定位/创建日期，`verified` 为最近验证日期（playbook 必填，即"最后有效"）。
-- **用后即校**：任何 Agent 或人引用条目时发现与现状不符，必须当场矫正内容并更新 `verified`；无法确认的标记 `deprecated`。
+- **用后即校**：引用条目时发现与现状不符，按当前证据矫正并更新 `verified`。无法确认时列为待核实；转为 `deprecated` 或 `superseded` 须人工确认。
 - **巡检触发**：用户或项目治理要求全量巡检时执行。变更波及有锚点的记忆、已有证据失配或任务要求核查时，定向使用 Claude Code 的 `/memory-check <符号>` 或 Codex 的 `$memory-check <符号>`。内部可用 `memory-build --changed` 定位受影响条目。
 
 ### 前置依赖（默认强制）

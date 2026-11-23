@@ -6,11 +6,7 @@
 
 1. 从生效的 constitution/根指令只提取本任务强制项：spec 先行、模块边界、数据安全、测试/性能、
    人工评审、文档与版本控制。优先级为用户本次要求 > constitution > 根指令 > 技能默认。
-2. 使用 `codebase-memory` 做 Verify 级结构检索、调用链和影响分析，关键结论回到源码/测试；字符串和
-   未索引脚本再文本检索。只展开相关记忆、规范和 SDD，不遍历归档。Memory 先调用
-   `memory_recall` MCP context；仅在 MCP 调用开始前不可用时内部降级 `memory-recall --context-json`，
-   两者均绑定当前 Route/subject/session。Standard 默认候选≤8、正文≤3；
-   只消费机器选择的 `expanded`，风险候选截断时携目的扩展或升径，不把 top-k 当完整证明。
+2. 按入口的[取证约定](../SKILL.md#项目知识取证)查相关记忆，补当前规范和 SDD。用 Verify 级图谱核对调用链和影响，关键结论回到源码与测试。风险证据截断时评估扩展或升径。
 3. 新依赖/关键选型先 `reuse-research`；安全敏感变更走 `security-review`。
 
 ## 适用设计

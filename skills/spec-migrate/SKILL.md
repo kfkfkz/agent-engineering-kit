@@ -1,6 +1,6 @@
 ---
 name: spec-migrate
-description: "检查并迁移已有 Spec Kit 文档到统一交付字段，保留原文、补结构化待核验章节并更新未来模板。适用于仓库已有 .specify/specs，或用户要求迁移/体检 Spec Kit 文档；不会凭空补业务事实。"
+description: "检查已有 Spec Kit 文档。经授权增量迁移并保留原文及待核验项。"
 ---
 
 # Spec Kit 文档迁移

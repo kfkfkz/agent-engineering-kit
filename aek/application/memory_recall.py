@@ -10,6 +10,7 @@ from aek.application.context_capsule import get_or_rebuild_capsule
 from aek.application.context_telemetry import (
     record_context_delivery,
     report_for_budget,
+    validate_route_history,
 )
 from aek.core.context.budget import CONTEXT_PURPOSES, ContextBudget
 from aek.core.context.capsule import (
@@ -25,6 +26,7 @@ from aek.core.context.lookup import (
 )
 from aek.core.context.memory import CandidateSet, select_expansions
 from aek.core.context.telemetry import (
+    ContextChannelLimit,
     ContextReport,
     validate_context_session_id,
     validate_context_subject_digest,
@@ -85,8 +87,10 @@ def recall_context(
     validate_context_session_id(session_id)
     validate_context_subject_digest(subject_digest)
     known = set(validate_known_digests(known_digests))
+    history = ledger.read()
+    validate_route_history(history, budget.route)
     previously_delivered = {
-        (event.logical_path, event.source_digest) for event in ledger.read()
+        (event.logical_path, event.source_digest) for event in history
         if event.channel == "memory_open" and event.delivered_bytes > 0
         and event.session_id == session_id and event.subject_digest == subject_digest
         and event.stage == budget.stage and event.route == budget.route
@@ -106,6 +110,14 @@ def recall_context(
         raise ValueError("candidate adapter returned an invalid batch")
     if len(batch.candidates) > budget.memory_candidate_limit:
         raise ValueError("candidate adapter exceeded the route budget")
+    selection = select_expansions(
+        batch, limit=budget.memory_expand_limit, risk_required=risk_required)
+    use_capsule = budget.route in {"standard", "initiative"}
+    if use_capsule and capsule_store is None:
+        raise ValueError("standard and initiative recall require a capsule store")
+    # Validate the candidate generation and sources before reporting delivery.
+    bodies = tuple((ref, candidate_read(repo, ref, batch.generation))
+                   for ref in selection.selected)
     metadata = json.dumps({
         "generation": batch.generation, "source": batch.source,
         "has_more": batch.has_more,
@@ -117,18 +129,34 @@ def recall_context(
         expansion_purpose=purpose, session_id=session_id,
         subject_digest=subject_digest,
         logical_path="generated/memory-candidates.json")
-    selection = select_expansions(
-        batch, limit=budget.memory_expand_limit, risk_required=risk_required)
+    expanded = []
+    reused = []
+    admitted = []
+    deferred = False
+    for ref, content in bodies:
+        if (ref.path, ref.content_digest) in previously_delivered:
+            reused.append(ReusedMemory(ref.path, ref.content_digest))
+        else:
+            try:
+                record_context_delivery(
+                    ledger, budget, content, source="memory", source_kind="memory",
+                    channel="memory_open", event_purpose=purpose,
+                    expansion_purpose=purpose, session_id=session_id,
+                    subject_digest=subject_digest, logical_path=ref.path,
+                    stage_channel_byte_limit=budget.memory_byte_limit)
+            except ContextChannelLimit:
+                deferred = True
+                continue
+            expanded.append(ExpandedMemory(ref.path, ref.content_digest, content))
+        admitted.append(ref)
     capsule = None
     capsule_reused = False
-    if budget.route in {"standard", "initiative"}:
-        if capsule_store is None:
-            raise ValueError("standard and initiative recall require a capsule store")
+    if use_capsule:
         sources = tuple(CapsuleSource(ref.path, ref.content_digest)
-                        for ref in selection.selected)
+                        for ref in admitted)
         claims = tuple(CapsuleClaim(
             f"memory-{index + 1}", ref.anchor, (ref.path,))
-            for index, ref in enumerate(selection.selected))
+            for index, ref in enumerate(admitted))
         capsule_result = get_or_rebuild_capsule(
             capsule_store, subject_digest=subject_digest, stage=budget.stage,
             profile_version=profile_version, sources=sources, claims=claims)
@@ -144,20 +172,6 @@ def recall_context(
             session_id=session_id, subject_digest=subject_digest,
             logical_path=f"generated/context-capsules/{capsule.capsule_id}.json",
             cache_hit=capsule_reused)
-    expanded = []
-    reused = []
-    for ref in selection.selected:
-        # Always revalidate live source bytes and the generation before eliding a body.
-        content = candidate_read(repo, ref, batch.generation)
-        if (ref.path, ref.content_digest) in previously_delivered:
-            reused.append(ReusedMemory(ref.path, ref.content_digest))
-            continue
-        record_context_delivery(
-            ledger, budget, content, source="memory", source_kind="memory",
-            channel="memory_open", event_purpose=purpose,
-            expansion_purpose=purpose, session_id=session_id,
-            subject_digest=subject_digest, logical_path=ref.path)
-        expanded.append(ExpandedMemory(ref.path, ref.content_digest, content))
     # The report covers the complete stage ledger, including earlier lookups.
     expected = ("host_native", "memory_candidate", "memory_open") + (
         ("capsule_loader",) if capsule is not None else ())
@@ -165,17 +179,18 @@ def recall_context(
         ledger, budget, coverage="partial",
         expected_channels=expected,
         observed_channels=None, bypass_detected=False)
-    if not batch.candidates:
-        uncertainty = "no_match_unknown"
-    elif selection.needs_more_candidates or batch.has_more:
+    if deferred or selection.needs_more_candidates or batch.has_more:
         uncertainty = "truncated_unknown"
+    elif not batch.candidates:
+        uncertainty = "no_match_unknown"
     elif batch.source == "fallback":
         uncertainty = "index_fallback"
     else:
         uncertainty = lookup_plan.uncertainty
     return MemoryRecallResult(
-        batch, tuple(expanded), selection.needs_more_candidates,
-        selection.reason, capsule, capsule_reused, report,
+        batch, tuple(expanded), selection.needs_more_candidates or (deferred and risk_required),
+        "MEMORY_BYTE_LIMIT" if deferred else selection.reason,
+        capsule, capsule_reused, report,
         lookup_plan.selected_path, lookup_plan.reason_code,
         lookup_plan.capability_snapshot.as_dict(), uncertainty,
         report.delivered_bytes,

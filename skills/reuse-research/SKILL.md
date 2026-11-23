@@ -1,6 +1,6 @@
 ---
 name: reuse-research
-description: "在引入依赖、外部集成、通用组件或关键技术方案前执行轻量复用调研，输出采用/扩展/组合/自建决策及证据。适用于新能力选型和重复造轮子风险；不用于已有实现路径明确的小改动。"
+description: "在引入依赖、外部集成或关键选型前，比较采用、扩展、组合与自建。"
 ---
 
 # 复用优先调研
@@ -28,10 +28,9 @@ description: "在引入依赖、外部集成、通用组件或关键技术方案
 
 涉及拟采用/升级/降级/替换依赖时，先完整读
 [依赖采用与交付复验](../security-review/references/dependencies.md)（Catalog `security-dependencies`）。
-Memory 先用 `stage=design/purpose=target_evidence` 取依据，成功只消费 expanded，不重复CLI/grep；
-再做新鲜图谱/coverage与精确源码取证。准确拟版本、适用新鲜公告、环境/API兼容及风险处置是设计
-前置，PENDING 提交现有设计评审，不能以交付复扫延期。真实解析/产物单独后补；无 import/PoC 或
-没有 CVE 编号不抹去已匹配公告。只有可信scope完整证明无依赖影响且无拟依赖时复用，不信作者空数组。
+按 [项目知识取证](../repo-delivery/SKILL.md#项目知识取证) 用 `stage=design/purpose=target_evidence`，
+结合当前图谱与源码核实依赖使用面。设计评审根据具体拟用版本、公告、兼容性和处置决定是否采用。
+PENDING 提交设计评审；真实解析与产物复验按依赖参考在适用阶段补证。
 
 ## 输出契约
 

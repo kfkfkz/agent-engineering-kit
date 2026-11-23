@@ -95,7 +95,7 @@ pipeline = (ROOT / "skills/design-pipeline/SKILL.md").read_text(encoding="utf-8"
 if "返回 `repo-delivery`" not in pipeline:
     errors.append("design-pipeline 完成后没有明确返回 repo-delivery")
 for phrase in ("docs/需求/<版本>/<名称>/", "init <名称> --version <版本>", "package.design_root",
-               "package.source_root", "index_registration", "--package-ref"):
+               "package.source_root", "index_registration"):
     if phrase not in pipeline:
         errors.append(f"design-pipeline 缺少实际需求包定位约定: {phrase}")
 
@@ -105,27 +105,25 @@ for phrase in ("docs/需求/<版本>/<名称>/", "init <名称> --version <版�
 # ending with copy/paste commands labelled as the user's next step.
 for phrase in (
     "人工决策与机械执行分离",
-    "只询问是否通过和签核人",
+    "当前稿件链接",
+    "本轮实际变化",
+    "待裁决项",
+    "结论和签核人",
     "由 Agent 写入签核记录并完成内部冻结",
-    "不得把 `doc-gate` 命令列为“你的下一步”",
-    "用户可见的继续入口只能是 canonical skill",
+    "按计划进入下一个参与阶段",
+    "给当前客户端的 canonical skill 入口",
     "`/design-pipeline <SDD目录>`",
     "`$design-pipeline <SDD目录>`",
     "当前任务可继续时自动续跑",
     "用户提示零 CLI 泄漏",
-    "请确认本轮业务流程设计是否通过，并提供评审人姓名；确认后我会继续当前 design-pipeline 流程并进入详细设计。",
     "不得出现 `doc-gate`、`.repo-memory-kit/bin/`、`--stage` 或 `--by`",
 ):
     if phrase not in pipeline:
         errors.append(f"design-pipeline 缺少自动续跑约束: {phrase}")
 if re.search(r"提醒\s*维护者运行\s*`?\.repo-memory-kit/bin/doc-gate freeze", pipeline):
     errors.append("design-pipeline 仍要求维护者手工运行 doc-gate freeze")
-safe_review_prompt = (
-    "请确认本轮业务流程设计是否通过，并提供评审人姓名；"
-    "确认后我会继续当前 design-pipeline 流程并进入详细设计。"
-)
-if pipeline.count(safe_review_prompt) < 2:
-    errors.append("业务流程阶段没有复用零 CLI 泄漏的固定评审话术")
+if "确认后我会继续当前 design-pipeline 流程并进入详细设计" in pipeline:
+    errors.append("业务流程评审话术将下一参与阶段写死为详细设计")
 if re.search(
     r"评审人明确通过当前版本后.{0,160}doc-gate freeze",
     pipeline,
@@ -141,6 +139,8 @@ if "doc-gate" in review_note:
     errors.append("业务流程模板的人工评审记录仍向读者暴露内部 CLI")
 if "完成内部冻结" not in review_note:
     errors.append("业务流程模板没有说明评审后由 Agent 自动续跑")
+if "总览图" not in business_flow_template or "只在本次有界面影响时引用实际原型证据" not in business_flow_template:
+    errors.append("业务流程模板未区分必需总览图和按 UI 影响使用的原型证据")
 
 requirements_template = (
     ROOT / "templates/requirements/需求分析.md"

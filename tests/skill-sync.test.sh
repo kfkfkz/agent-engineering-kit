@@ -41,7 +41,7 @@ for tool in $KIT_SKILLS; do
 done
 
 # 截图理解提示词按需加载，但两个客户端都必须取得同一份实际资源。
-for reference in screenshot-observation screenshot-observation-workflow ui-source-baseline prototype-confirmation-workflow business-flow-diagrams reviewer-issues; do
+for reference in screenshot-observation screenshot-observation-workflow ui-source-baseline prototype-confirmation-workflow ui-reference-workflow business-flow-diagrams reviewer-issues review-workflow; do
     for root in .claude .agents; do
         prompt_src="$SRC/skills/design-pipeline/references/$reference.md"
         prompt_dst="$P/$root/skills/design-pipeline/references/$reference.md"
@@ -278,9 +278,14 @@ def internal_flags(skill, verb):
     return shlex.split(match.group(1).rstrip("。"))
 
 for tree in ("agents", "claude"):
-    skill = (target / f".{tree}/skills/design-pipeline/SKILL.md").read_text(encoding="utf-8")
+    skill_path = target / f".{tree}/skills/design-pipeline/SKILL.md"
+    skill = skill_path.read_text(encoding="utf-8")
+    review = (skill_path.parent / "references/review-workflow.md").read_text(encoding="utf-8")
+    assert "需要 AI Reviewer 时读取" in skill and "references/review-workflow.md" in skill
+    assert "UI 参与设计时读取" in skill and "references/ui-reference-workflow.md" in skill
+    assert "doc-gate review-input" not in skill and "bind-prototype" not in skill
     check_flags = internal_flags(skill, "check")
-    review_flags = internal_flags(skill, "review-input")
+    review_flags = internal_flags(review, "review-input")
     assert "--precheck-summary" in review_flags
     repo = tmp / f"skill-cli-{tree}"
     (repo / ".git").mkdir(parents=True)
@@ -347,9 +352,10 @@ for root in .agents .claude; do
         && ok "$root/delivery-gate 按需性能审查参考一致" \
         || bad "$root/delivery-gate 按需性能审查参考缺失或漂移"
 done
-grep -q 'doc-gate review-input' "$DP" \
-    && grep -q 'review-receipt.json' "$DP" \
-    && grep -q 'request.mode=full|incremental' "$DP" \
+DP_REVIEW="$P/.agents/skills/design-pipeline/references/review-workflow.md"
+grep -q 'doc-gate review-input' "$DP_REVIEW" \
+    && grep -q 'review-receipt.json' "$DP_REVIEW" \
+    && grep -q 'request.mode=full|incremental' "$DP_REVIEW" \
     && ok "design-pipeline 通过 ReviewService 绑定实际送审输入" \
     || bad "design-pipeline 未接 ReviewService/receipt"
 ! grep -q '^```mermaid' "$P/docs/01-需求/_模板/业务流程设计.md" \
@@ -392,6 +398,18 @@ grep -Eq 'intent_gaps=none. 要有明确需求或现有契约支撑' "$RD" \
 
 DG="$P/.agents/skills/delivery-gate/SKILL.md"
 DGREF="$P/.agents/skills/delivery-gate/references/review-evidence.md"
+dg_bytes="$(wc -c < "$DG")"
+if [ "$dg_bytes" -le 6144 ] \
+    && grep -q 'references/full-receipt.md' "$DG" \
+    && ! grep -q '^type: receipt' "$DG" \
+    && cmp -s "$SRC/skills/delivery-gate/references/full-receipt.md" \
+        "$P/.agents/skills/delivery-gate/references/full-receipt.md" \
+    && cmp -s "$P/.agents/skills/delivery-gate/references/full-receipt.md" \
+        "$P/.claude/skills/delivery-gate/references/full-receipt.md"; then
+    ok "交付入口按需引用完整回执模板，两端均已安装"
+else
+    bad "回执模板重复进入主提示或安装引用缺失"
+fi
 grep -q 'receipt_detail=compact' "$DG" \
     && grep -q '不得扩成全仓库审查' "$DG" \
     && ok "delivery-gate 对轻路线保持紧凑验证预算" \

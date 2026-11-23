@@ -18,6 +18,8 @@ def discover(test_root: Path) -> tuple[Path, ...]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--list", action="store_true")
+    parser.add_argument("--suite", action="append", default=[], metavar="NAME.test.py",
+                        help="Run a specific discovered suite (repeatable)")
     parser.add_argument("--summary-log", type=Path, help="Save full output to a new file and emit a JSON summary")
     args = parser.parse_args(argv)
     if args.list and args.summary_log is not None:
@@ -29,6 +31,12 @@ def main(argv: list[str] | None = None) -> int:
     if not suites:
         print("no Python behavior suites discovered", file=sys.stderr)
         return 2
+    if args.suite:
+        requested = set(args.suite)
+        unknown = requested - {suite.name for suite in suites}
+        if unknown:
+            parser.error("unknown suite: " + ", ".join(sorted(unknown)))
+        suites = tuple(suite for suite in suites if suite.name in requested)
     if args.list:
         for suite in suites:
             print(suite.relative_to(repo).as_posix())

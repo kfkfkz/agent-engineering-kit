@@ -42,6 +42,16 @@ class SuiteSummaryTests(unittest.TestCase):
             self.assertEqual(repeated.returncode, 2)
             self.assertEqual(path.read_bytes(), raw)
 
+            scoped_path = repo / "selected.log"
+            selected = subprocess.run(command[:-1] + [
+                str(scoped_path), "--suite", "pass.test.py", "--suite", "failure.test.py",
+            ], capture_output=True, check=False, timeout=20)
+            self.assertEqual(selected.returncode, 1, selected.stderr)
+            filtered = json.loads(selected.stdout)
+            self.assertEqual(filtered["passed"], 1)
+            self.assertEqual(filtered["failures"], [{"suite": "tests/failure.test.py", "exit_code": 3}])
+            self.assertNotIn(b"error.test.py", scoped_path.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

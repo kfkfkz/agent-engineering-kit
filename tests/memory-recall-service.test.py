@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import subprocess
 import sys
@@ -11,7 +12,7 @@ import unittest
 from pathlib import Path
 
 from aek.adapters.capsule import CapsuleStore
-from aek.adapters.memory import fallback_candidates, read_candidate
+from aek.adapters.memory import StaleCandidate, fallback_candidates, read_candidate
 from aek.adapters.telemetry import ContextLedger
 from aek.application.memory_recall import recall_context
 from aek.core.context.budget import resolve_context_budget
@@ -56,16 +57,18 @@ class MemoryRecallServiceTests(unittest.TestCase):
             (memory / f"item-{index}.md").write_text(
                 f"# database item {index}\n\nbody {index}\n", encoding="utf-8")
 
-    def recall(self, route: str, *, known_digests=(), stage="routing"):
+    def recall(self, route: str, *, known_digests=(), stage="routing",
+               stream=None, candidate_read=read_candidate):
         budget = resolve_context_budget(route, stage, "quick")
-        ledger = ContextLedger(self.repo / f"{route}.jsonl")
+        stream = stream or route
+        ledger = ContextLedger(self.repo / f"{stream}.jsonl")
         return recall_context(
             self.repo, "database", budget, ledger,
-            session_id=f"session-{route}", subject_digest="a" * 64,
+            session_id=f"session-{stream}", subject_digest="a" * 64,
             risk_required=False,
             candidate_search=lambda repo, query: fallback_candidates(
                 repo, query, limit=budget.memory_candidate_limit),
-            candidate_read=read_candidate,
+            candidate_read=candidate_read,
             capsule_store=CapsuleStore(
                 self.repo / ".repo-memory-kit/context/capsules"),
             lookup_plan=plan_knowledge_lookup(CapabilitySnapshot(
@@ -89,6 +92,64 @@ class MemoryRecallServiceTests(unittest.TestCase):
         self.assertIn("host_native", result.report.unobserved_channels)
         self.assertGreater(result.delivered_bytes, 0)
         self.assertEqual(result.tool_calls["memory_open"], 2)
+
+    def test_bounded_counts_utf8_bodies_across_calls_and_resets_by_stage(self) -> None:
+        memory = self.repo / "docs/memory/pitfalls"
+        for index, chars in ((0, 20000), (1, 11000)):
+            (memory / f"item-{index}.md").write_text(
+                "# database\n" + "界" * chars, encoding="utf-8")
+        first = self.recall("bounded")
+        self.assertEqual(first.reason, "MEMORY_BYTE_LIMIT")
+        self.assertEqual(first.uncertainty, "truncated_unknown")
+        self.assertEqual([Path(item.path).name for item in first.expanded], ["item-1.md"])
+        self.assertEqual(Path(first.candidates.candidates[0].path).name, "item-0.md")
+        self.assertFalse(self.recall("bounded").expanded)
+        reused = self.recall("bounded", known_digests=(first.expanded[0].content_digest,))
+        self.assertEqual([item.path for item in reused.reused], [first.expanded[0].path])
+        ledger = ContextLedger(self.repo / "bounded.jsonl")
+        self.assertEqual(sum(event.delivered_bytes for event in ledger.read()
+                             if event.channel == "memory_open"),
+                         len(first.expanded[0].content.encode("utf-8")))
+        self.assertEqual(len(self.recall("bounded", stage="execution").expanded), 1)
+
+    def test_rejected_route_or_stale_source_preserves_the_ledger(self) -> None:
+        first = self.recall("standard", stream="shared")
+        path = self.repo / "shared.jsonl"
+        before = path.read_bytes()
+        with self.assertRaisesRegex(ValueError, "route transition"):
+            self.recall("bounded", stream="shared", stage="design")
+        self.assertEqual(path.read_bytes(), before)
+
+        def stale(*_args):
+            raise StaleCandidate("source changed")
+
+        with self.assertRaises(StaleCandidate):
+            self.recall("standard", stream="shared", candidate_read=stale)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertTrue(self.recall("standard", stream="shared",
+            known_digests=tuple(item.content_digest for item in first.expanded)).reused)
+
+    def test_structured_sdd_recall_agrees_with_corpus_on_fallback_and_zvec(self):
+        cli = Path(__file__).resolve().parents[1] / "memory-recall"
+        rel = "docs/03-SDD/014-依赖迁移/需求分析.md"
+        path = self.repo / rel
+        path.parent.mkdir(parents=True)
+        path.write_text("# dependency migration\n\nApproved SDD material.\n", encoding="utf-8")
+        for source in ("fallback", "zvec"):
+            with self.subTest(source=source):
+                if source == "zvec":
+                    if importlib.util.find_spec("zvec") is None:
+                        break
+                    subprocess.run([sys.executable, "-X", "utf8", str(cli), "--rebuild",
+                                    str(self.repo)], check=True, capture_output=True, timeout=30)
+                command = [sys.executable, "-X", "utf8", str(cli), "dependency",
+                           str(self.repo), "--context-json", "--route", "standard",
+                           "--session", f"sdd-{source}", "--subject", "f" * 64,
+                           "--type", "sdd"]
+                result = json.loads(subprocess.check_output(command, timeout=20))
+                self.assertEqual(result["candidates"]["source"], source)
+                self.assertEqual([item["path"] for item in result["expanded"]], [rel])
+                self.assertIn("Approved SDD material.", result["expanded"][0]["content"])
 
     def test_standard_builds_and_reuses_source_bound_capsule(self) -> None:
         first = self.recall("standard")

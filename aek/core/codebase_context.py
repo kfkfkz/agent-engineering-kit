@@ -126,17 +126,27 @@ class CodebaseObservation:
 _STRUCTURAL = re.compile(
     r"\b(callers?|callees?|calls?|symbols?|functions?|classes?|methods?|"
     r"dependencies|dependents?|impact|architecture|implements?|inherits?)\b"
-    r"|调用|符号|函数|(?<!\w)类(?!\w)|类定义|哪个类|方法定义|依赖|影响范围|架构|继承关系", re.I)
+    r"|调用|符号|函数|(?<!\w)类(?!\w)|类定义|哪个类|方法定义|依赖|影响范围|架构|继承关系"
+    r"|(?:在哪[里儿]?|哪里|何处)(?:实现|定义)|(?:实现|定义)在(?:哪|何处)"
+    r"|\b[A-Za-z_]\w*[#.][A-Za-z_]\w*\s*(?:在)?(?:哪|何处)", re.I)
 _EXPLICIT_TEXT = re.compile(
-    r"\b(exact|literal|error text)\b|字面量|错误文案|精确匹配", re.I)
+    r"\b(exact match|exact string|literal)\b|字面量|精确匹配", re.I)
+_CALLER_QUESTION = re.compile(r"谁(?:在)?调用|哪些(?:地方|代码)?调用|\bwho calls\b", re.I)
+_TEXT_SUBJECT = re.compile(r"\berror text\b|错误文案", re.I)
 _NON_CODE_SUFFIXES = {".md", ".txt", ".rst", ".json", ".yaml", ".yml",
                       ".toml", ".ini", ".cfg", ".csv", ".tsv"}
 
 
-def classify_query(query: str) -> QueryKind:
+def classify_query(query: str, declared_kind: str | None = None) -> QueryKind:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("codebase query is required")
+    if declared_kind is not None:
+        return QueryKind(declared_kind)
     if _EXPLICIT_TEXT.search(query):
+        return QueryKind.TEXTUAL
+    if _CALLER_QUESTION.search(query):
+        return QueryKind.STRUCTURAL
+    if _TEXT_SUBJECT.search(query):
         return QueryKind.TEXTUAL
     if _STRUCTURAL.search(query):
         return QueryKind.STRUCTURAL

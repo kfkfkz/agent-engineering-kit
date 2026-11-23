@@ -66,6 +66,7 @@ from aek.adapters.memory import (
 from aek.adapters.telemetry import ContextLedger
 from aek.application.memory_recall import recall_context, validate_known_digests
 from aek.core.context.budget import CONTEXT_PURPOSES, resolve_context_budget
+from aek.core.context.memory import is_memory_markdown
 from aek.core.context.lookup import (
     CapabilitySnapshot,
     plan_knowledge_lookup,
@@ -120,7 +121,6 @@ def _fsync_directory(path):
 
 ZVEC_ROOT_REL = ".repo-memory-kit/zvec"
 LEGACY_STORE_REL = ".repo-memory-kit/zvec/recall"
-EXCLUDE_SUFFIXES = ("01-索引/README.md", "docs/memory/README.md")
 
 def _under_repo_no_symlinks(p: Path, repo: Path) -> bool:
     """p 及其 repo 内祖先均不是符号链接，且 resolve 后仍在 repo 内——
@@ -146,7 +146,7 @@ def iter_docs(repo):
         return
     for p in sorted(docs.rglob("*.md")):
         rel = p.relative_to(repo).as_posix()
-        if p.name.startswith("_") or any(rel.endswith(s) for s in EXCLUDE_SUFFIXES):
+        if not is_memory_markdown(rel):
             continue
         if not _under_repo_no_symlinks(p, repo):
             continue
@@ -667,22 +667,26 @@ def main():
         candidate_limit = budget.memory_candidate_limit
         if args.top is not None:
             candidate_limit = min(candidate_limit, args.top)
-        result = recall_context(
-            repo, args.query, budget, ledger, session_id=args.session,
-            subject_digest=args.subject, risk_required=args.risk_required,
-            candidate_search=lambda root, query: search_candidates(
-                root, query, limit=candidate_limit, types=types,
-                status=args.status, module=args.module),
-            candidate_read=read_candidate,
-            capsule_store=CapsuleStore(
-                repo / ".repo-memory-kit/context/capsules"),
-            lookup_plan=plan_knowledge_lookup(CapabilitySnapshot(
-                mcp_configured=args.lookup_channel == "mcp",
-                mcp_visible=args.lookup_channel == "mcp",
-                mcp_compatible=args.lookup_channel == "mcp",
-                cli_available=True, bounded_text_available=True,
-                evidence=(f"adapter:{args.lookup_channel}",))),
-            purpose=args.purpose, known_digests=known_digests)
+        try:
+            result = recall_context(
+                repo, args.query, budget, ledger, session_id=args.session,
+                subject_digest=args.subject, risk_required=args.risk_required,
+                candidate_search=lambda root, query: search_candidates(
+                    root, query, limit=candidate_limit, types=types,
+                    status=args.status, module=args.module),
+                candidate_read=read_candidate,
+                capsule_store=CapsuleStore(
+                    repo / ".repo-memory-kit/context/capsules"),
+                lookup_plan=plan_knowledge_lookup(CapabilitySnapshot(
+                    mcp_configured=args.lookup_channel == "mcp",
+                    mcp_visible=args.lookup_channel == "mcp",
+                    mcp_compatible=args.lookup_channel == "mcp",
+                    cli_available=True, bounded_text_available=True,
+                    evidence=(f"adapter:{args.lookup_channel}",))),
+                purpose=args.purpose, known_digests=known_digests)
+        except (OSError, ValueError) as exc:
+            print(f"✗ 结构化记忆检索失败：{exc}", file=sys.stderr)
+            return 1
         output = asdict(result)
         if not known_digests:
             output.pop("reused")

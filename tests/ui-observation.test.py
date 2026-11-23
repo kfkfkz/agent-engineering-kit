@@ -40,8 +40,12 @@ class UiObservationTests(unittest.TestCase):
             ".claude/skills/design-pipeline/references/screenshot-observation-workflow.md"})
         root = Path(__file__).resolve().parents[1]
         self.assertLess(len((root / resource).read_bytes()), 8 * 1024)
-        self.assertIn("references/screenshot-observation-workflow.md",
-                      (root / "skills/design-pipeline/SKILL.md").read_text(encoding="utf-8"))
+        pipeline = root / "skills/design-pipeline"
+        self.assertIn("references/ui-reference-workflow.md",
+                      (pipeline / "SKILL.md").read_text(encoding="utf-8"))
+        ui_workflow = (pipeline / "references/ui-reference-workflow.md").read_text(encoding="utf-8")
+        self.assertIn("(screenshot-observation-workflow.md)", ui_workflow)
+        self.assertIn("--package-ref", ui_workflow)
 
     def inputs(self):
         source = {"scope_digest": "a" * 64, "evidence_id": "P1", "image_sha256": "b" * 64}

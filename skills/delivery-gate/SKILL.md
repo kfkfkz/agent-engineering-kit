@@ -1,176 +1,48 @@
 ---
 name: delivery-gate
-description: "代码交付门禁：Route Card 最低路线与最终 diff 漂移校验 + 治理引擎裁决 + 证据化审查（含风险触发式性能/容量审查）+ 验证闭环 + 交付回执。两阶段：route-eval/governance-eval 确定性裁决与对抗式复核，然后按项目门禁执行验证闭环。回执载体由 governance 标记决定。结论枚举 READY / NOT READY / NEEDS HUMAN REVIEW。"
+description: "评审代码变更，或校验最终范围和治理要求后验证交付并形成持久回执。"
 ---
 
-# 交付门禁（代码变更）
+# 代码交付门禁
 
-## 治理等级（governance profile）
+只读代码评审固定被审版本、范围与验收目标，执行「评审」并报告发现。交付任务依次执行以下各节。
 
-第一步读取 `.repo-memory-kit/governance`：strict（默认）非平凡变更落正式回执；
-lightweight 仅数据库 schema、外部 API 契约、安全域等高风险变更要求独立文件，低风险
-文案/配置/内部重构可用 commit/PR 验证结论。marker 决定载体，优先于下文模板；
-lightweight 不降低风险判断和测试标准。
+## 范围与治理
 
-## 阶段一：路线复核、治理评估与最终 diff 审查
+1. 固定目标、验收、基线、Route Card 和最终 diff，区分本轮改动与用户已有改动。Direct 以对话保存等价事实时，收口前生成临时 Route Card。
+2. 内部运行 `.repo-memory-kit/bin/route-eval <仓库根> --card <卡片> --git-ref <基线> --json`。默认包含 tracked 与未忽略的 untracked 文件。仅在已有可信完整 diff 时用 `--diff`。`route_valid=false`、`route_efficient=false` 或 `drift_detected=true` 时阻断，说明路径新增原因，修正路线或保留有依据的 `route_override` 后复验。
+3. 采用 `route-eval` 返回的治理命中和 `required_actions`，单独诊断才运行 `governance-eval`。旧 `min_route:*` 按程序的迁移结果转换为治理要求，风险本身不升任务路线。
+
+## 评审
 
 ### 代码评审取证顺序
 
-代码评审前完整执行 [取证规范](references/review-evidence.md)：预算化 Memory MCP→
-有条件 CLI 降级→新鲜 graph/coverage→精确源码；成功不重复，缺口不解释为没有约束。
+按 [取证规范](references/review-evidence.md) 使用预算化 Memory MCP、新鲜图谱和当前源码。复用与本轮范围、阶段和身份相符的已有证据。
 
-1. 固定本次任务目标、验收条件、Route Card、基线和最终 diff；区分本次修改与用户已有改动。
-2. **路线与范围裁决**：运行
-   `.repo-memory-kit/bin/route-eval <仓库根> --card <Route Card> --git-ref <基线> --json`；
-   它会合并 tracked diff 与未忽略的 untracked 文件。仅当 CI 已提供可信完整 diff 时使用
-   `--diff <文件>`，不得用默认漏掉 untracked 的 `git diff` 冒充最终范围。
-   `route_valid=false`、`route_efficient=false` 或 `drift_detected=true` 时阻断：路线过轻就
-   补充适用设计/检查或升径；路线过重就降到 `recommended_route`，除非存在带具体原因的
-   `route_override`。不得在交付阶段静默扩大 `planned_paths` 以制造 PASS；新增
-   路径必须说明来源和影响。Direct 若只在进度中记录等价字段，收口前生成临时卡片供校验。
-3. **治理引擎裁决**（确定性，不是你的语义判断）：`route-eval` 已复用同目录
-   `governance-eval` 的结果；需要单独诊断规则时再把 diff 喂给
-   `.repo-memory-kit/bin/governance-eval <仓库根目录> --diff <file>`（或管道），
-   拿到命中规则 ID 与 required_actions（receipt / independent_review / inline_review /
-   required_check / review_depth / receipt / artifact）。旧 `min_route:*` 只按机器返回的
-   deprecated migration 映射为明确治理要求，绝不提升 Task Route。
-   引擎输出即门禁要求——命中 `independent_review` 时本节对抗式复核必须执行。
-4. 至少逐项检查：行为正确性与失败路径、项目宪章/规范、调用影响与兼容性、
-   测试充分性、复杂度与维护性、文档/记忆一致性、**与冻结设计文档的偏离**
-   （diff 超出 任务清单 预计修改范围 = 显式记录，静默超范围视作未声明范围蔓延）。
-5. 命中安全触发条件时调用 `security-review`，并把其结果纳入同一门禁。
-   完整读 [安全工作流](../security-review/references/workflow.md)（Catalog `security-workflow`），
-   按受控facts/真实阶段/政策把安全 requirements/provenance 与当前证据接原 Composer，不删其他要求。
-   未知/旧/缺/ERROR 技术证据 PENDING，硬违反 FAIL；风险接受不替代技术证明，NOT_APPLICABLE
-   不伪 PASS。仅可信原 READY + 同 VERIFIED 快照 closure_proof 能关闭，旧 PASS 仅适配参数。
-6. 专项检查含 `sql-performance-screen` 时只执行数据库无关初查；Route Card 含
-   `performance_capacity` 或治理要求 `performance-review` 时才执行深度验证。
-   未命中时不增加性能专项步骤。
-7. 普通发现按严重性、准确位置、触发与影响、最小修复方向回传。合并同根因并保留全部位置。
-   按 `CRITICAL/HIGH/MEDIUM/LOW` 标级。高风险或阻断项保留因果和验证证据，复杂修复可附短伪代码。
-   无发现时交代已核范围和未知项。纯偏好不作为阻塞项。
+核对行为和失败路径、宪章、调用面与兼容性、测试、维护性、文档和记忆、实际 diff 与冻结设计。按 CRITICAL/HIGH/MEDIUM/LOW 报告位置、触发条件、影响、证据和最小修复方向。合并同根因，保留关联位置。未覆盖范围和不确定性写进结论。纯偏好不阻塞。
+
+命中安全规则时调用 `security-review`，按 [安全工作流](../security-review/references/workflow.md) 将当前要求、来源和证明送入原 Composer。未知、过期、缺失或 ERROR 证据保持 PENDING，硬违反为 FAIL。风险接受不能替代技术证明。关闭须可信 READY 及同一 VERIFIED 快照的 closure_proof。
 
 ### 性能与容量风险覆盖
 
-命中 `sql-performance-screen` 或 `performance-review` 时，按风险级别读取 [性能审查参考](references/performance-review.md)。数据库无关初查与深度验证各自保留对应证据。
+命中 `sql-performance-screen` 时执行数据库无关初查。`performance_capacity` 或 `performance-review` 触发深度验证。按 [性能参考](references/performance-review.md) 取适用证据，未命中时不增加性能专项步骤。
 
 ### 对抗式复核
 
-对 HIGH/CRITICAL 和会阻止交付的结论，另做一次"证明它是误报"的复核：检查不可达分支、
-上游校验、事务边界、部署配置和已有测试。运行环境提供子 Agent **且当前上层指令允许
-委派**时，把 diff、验收条件与本轮发现交给一个**未参与实现的独立审查 Agent** 复核；
-不可用时在同一 Agent 中清空假设做第二遍，并在回执中披露这是同上下文复核。
-评审子 Agent 默认继承当前会话模型，不指定模型覆盖；仅用户明确要求时改用其他模型。
-无法确认继承或当前模型不可用时披露限制，不静默换用更低档模型。
-同一文档或同一变更的修复复验优先复用原独立 Reviewer 会话，仍核当前 diff/证据和未决问题；
-原会话不可用、参与过实现或模型不再匹配时才更换并披露，不能沿用旧结论或重置问题历史。
+HIGH、CRITICAL 和交付阻断发现须检查反证，包括不可达、上游拦截、部署条件和已有测试。宿主具备能力且允许委派时，交未参与实现的独立 Reviewer 复核当前 diff。否则在同一上下文二审并披露，治理强制的独立审查仍为待满足。子 Agent 默认继承当前模型，无法继承时披露。复验优先复用同一独立 Reviewer 会话，用当前证据核对未决发现。换会话时说明原因并保留问题历史。
 
-只保留证据和置信度足够的发现，重复问题合并为根因项。任何审查维度未完成、工具异常
-或证据相互矛盾时 fail closed：结论只能更严，不得把缺失检查当作通过。
+## 验证与回执
 
-## 阶段二：验证闭环
+按项目宪章、CI 和 `execution_profile.verification_depth` 执行适用的构建、静态检查、测试和专项验证。`receipt_detail=compact` 只跑改动直接相关的检查和快速审查，不得扩成全仓库审查。治理强制检查仍要完成。按实际影响扩展集成、契约、并发或性能验证。性能证据记录代表性数据规模、基线、命令和原始指标。线上联调的 NOT_RUN 按事实保留。
 
-先从项目宪章、根指令、CI 和构建文件提取真实门禁，不硬编码语言、覆盖率或工具。
-按项目与变更适用性运行，先快后慢，并遵循 `execution_profile.verification_depth`：当
-`receipt_detail=compact`（Direct/Bounded）时，只执行改动直接相关的验证和快速审查，
-不得扩成全仓库审查、无关测试矩阵或独立设计复核；治理规则/风险覆盖项明确要求的检查除外。
-Standard/Initiative 才按影响面扩大验证：
+优先消费可核对的测试或构建摘要，保留完整日志、摘要、命令及真实退出码。修复后复跑直接回归。不明原因按 `systematic-debugging` 诊断。不得通过放宽断言或改写验收放行。失败、工具异常、证据矛盾或未执行的强制项须记录影响与人工补验。
 
-1. 构建、编译或类型检查；
-2. 格式化、lint 和静态分析；
-3. 针对性测试、相关模块测试、必要的全量/集成/契约/并发/性能测试；命中性能覆盖项时附上
-   数据规模、预算/基线、命令与原始指标摘要，不能只写“性能通过”；
-4. `security-review` 要求的扫描与安全回归；
-5. spec/设计文档、变更记录、用户文档和项目记忆的一致性检查；
-6. 需求目录有线上联调清单时核对其完整性：遗留 NOT_RUN 项必须如实进回执，
-   **不得按"应该成功"代填 PASS**（事实文档原则）。
+从 `.repo-memory-kit/governance` 读取回执载体。strict 的非平凡变更落 `docs/delivery-receipts/YYYY-MM-DD-<中文任务名>.md`。lightweight 的低风险变更可用 commit/PR 持久回执，高风险项按治理要求落独立文件。同日同任务重跑追加编号，保留旧回执。回执详细程度由 `receipt_detail` 决定，紧凑回执记录任务、基线、范围、路线和治理裁决、验证命令与结果、发现和结论。完整回执按需读 [模板](references/full-receipt.md)。
 
 ### 计划执行统一收口
 
-存在已过计划门禁的 SDD 时，执行期间只更新《任务清单》的执行记录与 checkbox；任务定义、
-预计范围和验证方式仍由执行前计划基线保护。
+ArtifactPlan 要求计划阶段而计划尚未过门禁时，先返回设计流程。计划过门禁后，执行期只更新执行记录与勾选状态。执行前计划基线保护任务定义、范围与验证方式。上游或任务定义改变时返回 `design-pipeline`，按当前证据重开评审并保留原 Issue 和轮次。
 
-若需文档重评，返回 `design-pipeline` 内部显式 v2/summary 流程；完整预检仍执行，必要
-目标/背景/安全正文仍实际交付。材料基线、缓存命中或简洁预检成功不代表批准；未知位置、
-未覆盖 Issue 或无进展停止都不能 READY。保留原 Lifecycle、有效 FIXED 声明与已有轮次，
-等待合法 Reviewer 定位或新相关证据；恢复不重置原 3 轮上限，不以重复全文或旧 receipt 关问题。
+验证结束后回写完成状态、实际范围和测试结果，落验证回执并核对最终范围。Agent 内部运行 `.repo-memory-kit/bin/doc-gate closeout <SDD目录>` 一次，核验 `reviews/计划.closeout.json` 为 PASS 且状态为已收口。收口后正文改变须复验。不得逐任务重冻或用 `gate --no-review` 代替。无需计划阶段的任务跳过收口。
 
-验证闭环完成后按顺序：
-
-1. 回写每个任务的完成状态、实际改动范围、验证结果和备注，并完成适用的测试/回归 checkbox；
-2. 落验证回执并完成最终范围对照，不把超范围修改伪装成执行记录；
-3. 由 Agent 内部运行 `.repo-memory-kit/bin/doc-gate closeout <SDD目录>` 统一收口；
-4. 核验 `reviews/计划.closeout.json` 为 PASS，且状态显示“已收口”。
-
-closeout 会重新执行计划硬校验、拒绝未完成任务或执行前计划基线漂移，并绑定任务清单与测试
-方案的完整终态哈希。收口后再修改任何内容都会回到 DRAFT，必须重新验证并再次收口。只有
-该步骤 PASS 后才能对外给出 READY；不得逐任务重冻，也不得用 `gate --no-review` 覆盖执行期
-的任务定义变化。没有 SDD/计划阶段的 Direct 或 Bounded 任务不增加这一步。
-
-失败原因未明或反复出现时使用 `systematic-debugging`；不得跳过、放宽断言或改写验收条件
-来制造绿色。因环境、权限或缺少依赖无法运行时，在回执中记录准确原因、影响和人工补验
-步骤。阶段一的修复必须重跑直接回归后重新过门，不能仅凭 diff 看起来合理就关闭。
-
-## 验证回执（必需产物）
-
-验证结论必须落持久回执，这是**声称验证通过的唯一证据形态**——对话内叙述的验证结果
-不构成完成依据。回执载体由 `.repo-memory-kit/governance` 决定（见「治理等级」节）：
-strict 写入 `docs/delivery-receipts/YYYY-MM-DD-<中文任务名>.md`，lightweight 低风险
-允许 commit message 内嵌；**同日同任务重跑时追加 `-2`、`-3` 序号，不覆盖**（目录不存在
-则创建）：
-
-回执的**存在形式**与**详细程度**正交：strict 仍要求 Direct/Bounded 落文件，但
-`receipt_detail=compact` 时只保留任务、范围、路线、实际执行命令/结果、发现和结论，不为
-填满模板运行无关检查；`receipt_detail=full` 才使用完整影响面与审查细节。下列模板是 full
-上限，compact 可删除不适用的表格行，但不得省略失败、未执行的强制项或人工补验步骤。
-
-```markdown
----
-type: receipt
-created: YYYY-MM-DD HH:MM
-task: <一句话任务>
-scope: <变更范围（文件/模块）>
-verdict: READY / NOT READY / NEEDS HUMAN REVIEW
-governance: <引擎命中规则与 required_actions 摘要>
-route: <selected/minimum；是否存在 drift>
-review: <审查结论；对抗复核为独立 Agent 或同上下文>
-commit: <HEAD SHA 或 "uncommitted">
-base: <基线 SHA 或 "none">
----
-
-# 交付验证回执：<任务>
-
-## 门禁执行
-
-| 检查 | 方式/命令 | 结果 |
-| --- | --- | --- |
-| 治理评估 | governance-eval（命中规则/无命中） | <要求与满足情况> |
-| 路线复核 | route-eval（selected/minimum + drift） | <一致/已升径/阻断> |
-| 构建 | <命令>（退出码 <code>） | <一句话> |
-| 范围对照 | diff vs 任务清单预计修改范围 | <一致/超范围项> |
-
-未执行项必须写明原因与人工补验步骤，不得留空。
-
-## 审查发现与处置
-
-| 严重性 | 位置 | 证据 | 处置（已修复 / 留档 / 误报-复核依据） |
-| --- | --- | --- | --- |
-
-## 结论
-
-<READY / NOT READY / NEEDS HUMAN REVIEW 及依据；人工审核项逐条列出>
-```
-
-只有适用门禁全部通过、没有未裁决的阻塞发现、代码与权威文档无已知冲突时才可 `READY`。
-项目要求人工审核时必须 `NEEDS HUMAN REVIEW`，即使自动检查全绿。回执落盘后不改写历史
-行；重跑门禁就写新回执。
-
-## 来源
-
-多维审查、证据门槛、skeptic 复核与分阶段验证闭环思路参考并改编自
-[Everything Claude Code 的 orch-review workflow 与 verification-loop](https://github.com/affaan-m/ECC)，
-Copyright 2026 Affaan Mustafa，MIT License。按风险启用审查维度的思路参考
-[PR-Agent 的可配置 review sections](https://github.com/The-PR-Agent/pr-agent/blob/main/docs/docs/tools/review.md)，
-MIT License；SQL 迁移静态规则思路参考
-[Squawk](https://github.com/sbdchd/squawk)，MIT OR Apache-2.0；执行计划证据口径参考
-[PostgreSQL EXPLAIN 文档](https://www.postgresql.org/docs/current/using-explain.html)，PostgreSQL License。
+仅当适用验证、治理、回执及计划收口满足后给 READY。存在技术阻断或证据不足时给 NOT READY。仍需人工裁决时报 NEEDS HUMAN REVIEW，并列出待决项。

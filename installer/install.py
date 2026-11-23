@@ -56,6 +56,7 @@ from .registry import (
     legacy_state_owned,
     resolve_spec,
     secure_mkdir,
+    secure_open,
     staged_rel,
 )
 from .transaction import (
@@ -189,6 +190,14 @@ class GroupPlan:
     specs: list[ResourceSpec]
     before_states: dict[str, str] = field(default_factory=dict)   # spec_id → before_state（审计）
 
+    @property
+    def unchanged(self) -> bool:
+        mode = self.step.pre_mode
+        mask = stat_module.S_IWRITE if os.name == "nt" else 0o7777
+        return (self.step.kind == "replace" and mode is not None
+                and self.step.pre_container_hash == self.step.post_container_hash
+                and mode & mask == self.mode & mask)
+
 
 def group_specs(specs: list[ResourceSpec]) -> list[list[ResourceSpec]]:
     """按 destination 分组；组内按 Registry 全序，组间按锚的全序。"""
@@ -207,6 +216,10 @@ def _read_container(dst: Path) -> tuple[bytes | None, int | None]:
         fd = os.open(dst, os.O_RDONLY | _plat.O_NOFOLLOW | _plat.O_BINARY)
     except FileNotFoundError:
         return None, None
+    return _read_open_container(fd, dst)
+
+
+def _read_open_container(fd: int, dst: Path) -> tuple[bytes, int]:
     try:
         st = os.fstat(fd)
         if not stat_module.S_ISREG(st.st_mode):
@@ -327,11 +340,17 @@ def assemble_manifest(target: Path, preflight: PreflightResult,
                       codex_root_cli: Path | None) -> Manifest:
     entries: list[ManifestEntry] = []
     committed_ids: set[str] = set()
+    previous_entries = {entry.spec_id: entry for entry in old_manifest.entries} if old_manifest else {}
     for gp in plans:
         for spec in gp.specs:
             committed_ids.add(spec.id)
             frag = fragment_from_bytes(spec, gp.content)
             installed, canonical = compute_fragment_hashes(frag, target)
+            previous = previous_entries.get(spec.id)
+            if (gp.unchanged and previous is not None
+                    and previous.installed_hash == installed and previous.canonical_hash == canonical):
+                entries.append(previous)
+                continue
             status = preflight.status_of(spec.id)
             if status == "adopted_legacy":
                 action = "adopted_legacy"
@@ -345,7 +364,8 @@ def assemble_manifest(target: Path, preflight: PreflightResult,
                 installed_hash=installed, canonical_hash=canonical,
                 codex_root=None,
                 created_container=(spec.resource_type == "managed_block"
-                                   and gp.step.pre_container_hash is None)))
+                                   and (gp.step.pre_container_hash is None
+                                        or bool(previous and previous.created_container)))))
 
     # codex_link：--codex-root 传入时逐链接登记（哈希取期望链接目标的确定性指纹）
     if codex_root_cli is not None:
@@ -480,7 +500,7 @@ def ensure_codex_links(target: Path, codex_root: Path,
 def run_install(target: Path, *, repair: bool = False,
                 codex_root: Path | None = None,
                 dry_run: bool = False,
-                lightweight: bool = False,
+                lightweight: bool | None = None,
                 link_strategy: str = "symlink") -> int:
     target = target.resolve()
     if not target.is_dir():
@@ -538,18 +558,38 @@ def run_install(target: Path, *, repair: bool = False,
         # 步骤前直接写盘，外部冲突回滚后形成"清单在、资源无"的分裂状态——
         # 现在与受管资源同一套 plan/stage/backup/commit/CAS-rollback 机制，
         # 提交顺序：受管资源 → 治理标记 → 治理规则 → Manifest 最后）
-        profile = "lightweight" if lightweight else "strict"
-        gov_path = target / ".repo-memory-kit" / "governance"
+        gov_rel = STATE_REGISTRY["state.governance-profile"].destination_path
+        gov_path = target / gov_rel
+        try:
+            fd = secure_open(target, gov_rel, os.O_RDONLY)
+            gov_bytes, gov_mode = _read_open_container(fd, gov_path)
+        except FileNotFoundError:
+            gov_bytes, gov_mode = None, None
+        except (OSError, SecurityError, ValueError) as exc:
+            tx.status = "failed"
+            tx.write(target)
+            print(f"✗ 无法读取治理配置: {exc}")
+            return 1
+        if lightweight is None:
+            existing_profile = gov_bytes.strip() if gov_bytes is not None else b"strict"
+            if existing_profile not in (b"lightweight", b"strict"):
+                tx.status = "failed"
+                tx.write(target)
+                print("✗ 治理标记无效，请显式指定 --strict 或 --lightweight")
+                return 1
+            profile = existing_profile.decode("ascii")
+        else:
+            profile = "lightweight" if lightweight else "strict"
         gov_content = (profile + "\n").encode()
-        gov_pre = file_sha256(gov_path) if gov_path.is_file() else None
+        gov_pre = hashlib.sha256(gov_bytes).hexdigest() if gov_bytes is not None else None
         state_plans = [GroupPlan(
             step=CommitStep(
                 spec_id="state.governance-profile",
                 spec_ids=("state.governance-profile",), kind="replace",
                 pre_container_hash=gov_pre,
                 post_container_hash=hashlib.sha256(gov_content).hexdigest(),
-                pre_mode=0o644 if gov_pre else None),
-            content=gov_content, mode=0o644, specs=[])]
+                pre_mode=gov_mode),
+            content=gov_content, mode=gov_mode if gov_mode is not None else 0o644, specs=[])]
         # governance.json：**仅在缺失时创建**（团队定制文件永不覆盖、不入 plan）
         gov_json_path = target / ".repo-memory-kit" / "governance.json"
         if not gov_json_path.is_file():
@@ -620,7 +660,9 @@ def run_install(target: Path, *, repair: bool = False,
         plans = plans + state_plans
 
         # 步骤 6：Staging
-        tx.plan = [gp.step for gp in plans]
+        unchanged = [gp for gp in plans if gp.unchanged]
+        writes = [gp for gp in plans if not gp.unchanged]
+        tx.plan = [gp.step for gp in writes]
         if codex_root is not None and link_strategy == "copy":
             expected_contents = {spec.id: gp.content for gp in plans for spec in gp.specs
                                  if spec.resource_type == "owned_file"}
@@ -637,13 +679,13 @@ def run_install(target: Path, *, repair: bool = False,
         tx.write(target)          # ★ 完整 plan 一次性原子写入（不变量 1）
         tx.status = "staging"
         tx.write(target)
-        for gp in plans:
+        for gp in writes:
             if gp.step.kind == "replace":
                 stage_resource(target, gp.step.spec_id, tx.tx_id,
                                gp.content, mode=gp.mode)
 
         # 步骤 7：Validate（只读 staged）
-        errors = validate_staged(target, plans, tx.tx_id)
+        errors = validate_staged(target, writes, tx.tx_id)
         if errors:
             for line in errors:
                 print(f"✗ {line}")
@@ -654,9 +696,27 @@ def run_install(target: Path, *, repair: bool = False,
             return 1
 
         # 步骤 8：Backup（仅对实际存在的文件）
-        for gp in plans:
+        for gp in writes:
             if not backup_container(target, gp.step, tx.tx_id):
                 print(f"✗ 备份失败（目标在 plan 后被修改）: {gp.step.spec_id}")
+                cleanup_staging(target, tx)
+                tx.status = "failed"
+                tx.write(target)
+                return 1
+
+        # Retained resources still have to match the preflight snapshot before
+        # publishing a manifest that vouches for their contents.
+        for gp in unchanged:
+            rel = resolve_spec(gp.step.spec_id).destination_path
+            try:
+                fd = secure_open(target, rel, os.O_RDONLY)
+                raw, mode = _read_open_container(fd, target / rel)
+                is_current = (mode == gp.step.pre_mode
+                              and hashlib.sha256(raw).hexdigest() == gp.step.pre_container_hash)
+            except (OSError, SecurityError, ValueError):
+                is_current = False
+            if not is_current:
+                print(f"✗ 保留资源在 plan 后被修改: {gp.step.spec_id}")
                 cleanup_staging(target, tx)
                 tx.status = "failed"
                 tx.write(target)
@@ -678,7 +738,7 @@ def run_install(target: Path, *, repair: bool = False,
         # 旧值存入事务记录 codex_root_old（HMAC 保护——P1 第六轮：旁路备份
         # 文件 O_TRUNC 崩溃窗口不可信，必须进事务记录）
         if codex_root is not None:
-            from .registry import secure_open, write_all
+            from .registry import write_all
             marker_rel = STATE_REGISTRY["state.codex-workspace-marker"].destination_path
             old_marker_path = target / marker_rel
             old_value = (old_marker_path.read_text(encoding="utf-8").strip()
@@ -699,7 +759,7 @@ def run_install(target: Path, *, repair: bool = False,
         tx.write(target)
 
         # 步骤 10：Commit（逐组；每组完成后更新进度）
-        for gp in plans:
+        for gp in writes:
             result = commit_one(target, gp.step, tx.tx_id)
             if result.status == "needs_human":
                 tx.status = "needs_human"
@@ -746,7 +806,7 @@ def run_install(target: Path, *, repair: bool = False,
     finally:
         os.close(lock_fd)
 
-    _install_report(target, preflight, plans, codex_root)
+    _install_report(target, preflight, writes, codex_root, unchanged=len(unchanged))
     for line in legacy_reports:
         print(line)
     for line in link_reports:
@@ -782,13 +842,14 @@ def _dry_run(target: Path, repair: bool, codex_root: Path | None) -> int:
 
 
 def _install_report(target: Path, preflight: PreflightResult,
-                    plans: list[GroupPlan], codex_root: Path | None) -> None:
+                    plans: list[GroupPlan], codex_root: Path | None, *, unchanged: int = 0) -> None:
     created = sum(1 for gp in plans if gp.step.pre_container_hash is None)
     updated = len(plans) - created
     adopted = sum(1 for d in preflight.decisions
                   if d.action == "install" and d.status == "adopted_legacy")
     print(f"✓ 已安装/更新 {len(plans)} 个资源组（新建 {created} / 更新 {updated}"
-          + (f" / legacy 原地升级 {adopted}" if adopted else "") + "）")
+          + (f" / legacy 原地升级 {adopted}" if adopted else "")
+          + (f" / 原样保留 {unchanged}" if unchanged else "") + "）")
     for line in preflight.skipped_reports():
         print(f"• 跳过 {line}")
     if codex_root is None:

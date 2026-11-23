@@ -837,6 +837,28 @@ echo "$OUT" | grep -q "计划.*DRAFT.*收口后有改动" \
 run_rc python3 "$DG" closeout "$D"
 assert_eq "收口后更新可统一重冻" "$rc" "0"
 
+D_REBOUND="$REPO/docs/03-SDD/098-上游重新冻结后拒绝收口"
+cp -r "$D" "$D_REBOUND"
+cp "$D_REBOUND/reviews/计划.closeout.json" "$T/original-closeout.json"
+sed -i 's/版本号控制/版本号控制并记录审计决定/' "$D_REBOUND/详细设计.md"
+rm -f "$D_REBOUND/reviews/详细设计.review-request.json" \
+    "$D_REBOUND/reviews/详细设计.review-receipt.json" "$D_REBOUND/reviews/详细设计.review-baseline.json"
+write_issues "$D_REBOUND" 详细设计
+run_rc python3 "$DG" gate "$D_REBOUND" --stage 详细设计
+assert_eq "上游详细设计修改并重新过门禁" "$rc" "0"
+rc=0
+REBOUND_OUT="$(python3 "$DG" closeout "$D_REBOUND" --json)" || rc=$?
+assert_eq "现有计划无法随上游变化直接收口" "$rc" "1"
+echo "$REBOUND_OUT" | grep -q '指纹失配.*重新过计划门禁' \
+    && ok "收口失败明确报告上游变化" || bad "未指明上游变化: $REBOUND_OUT"
+cmp -s "$T/original-closeout.json" "$D_REBOUND/reviews/计划.closeout.json" \
+    && ok "失败保留原收口凭证" || bad "失败覆盖了原收口凭证"
+rm "$D_REBOUND/reviews/计划.closeout.json"
+run_rc python3 "$DG" closeout "$D_REBOUND"
+assert_eq "无旧凭证也拒绝用过期计划首次收口" "$rc" "1"
+[ ! -e "$D_REBOUND/reviews/计划.closeout.json" ] \
+    && ok "失败未产生新收口凭证" || bad "失败产生了新收口凭证"
+
 D_LEGACY="$REPO/docs/03-SDD/018-旧计划凭证收口"
 cp -r "$D" "$D_LEGACY"
 rm -f "$D_LEGACY/reviews/计划.closeout.json"

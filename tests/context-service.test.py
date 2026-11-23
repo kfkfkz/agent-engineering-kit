@@ -100,6 +100,20 @@ class ContextServiceTests(unittest.TestCase):
                     coverage="partial", expected_channels=("aek_skill",),
                     observed_channels=("aek_skill",), bypass_detected=False)
 
+    def test_other_writer_cannot_append_a_lower_route_after_reroute(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "events.jsonl"
+            first, second = ContextLedger(path), ContextLedger(path)
+            fields = dict(stage="routing", source_kind="reference", channel="aek_skill",
+                          purpose="reroute_evidence", cache_hit=False, session_id="test-session",
+                          subject_digest="a" * 64, logical_path="skills/repo-delivery/SKILL.md")
+            first.append_text("bounded", route="bounded", **fields)
+            second.append_text("standard", route="standard", **fields)
+            before = path.read_bytes()
+            with self.assertRaisesRegex(ValueError, "route transition"):
+                first.append_text("stale", route="bounded", **fields)
+            self.assertEqual(path.read_bytes(), before)
+
     def test_reroute_retains_prior_material(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             ledger = ContextLedger(Path(temp) / "events.jsonl")

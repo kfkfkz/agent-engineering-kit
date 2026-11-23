@@ -26,6 +26,8 @@
 ./install.sh --svn /path/to/project
 ```
 
+新装默认使用 strict。更新和修复保留已有治理档位，使用 `--strict` 或 `--lightweight` 可显式切换。
+
 基础安装可离线执行；`--with-codebase-memory` 使用 [codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) 的安装或配置入口。
 
 POSIX 默认使用 workspace 技能链接，Windows 默认使用副本。Windows compatible 文件后端采用 reparse-point 预检；若需要针对恶意本机并发进程的 POSIX 文件安全保证，使用 WSL。macOS 使用 POSIX 后端，自动 CI 平台为 Ubuntu 和 Windows。
@@ -294,6 +296,12 @@ sh tests/skill-sync.test.sh
 sh tests/doc-gate.test.sh
 sh tests/installer.test.sh
 sh tests/benchmark.test.sh
+```
+
+只验证本次涉及的套件时，可以保留完整日志并只读取 JSON 结果。日志路径必须尚不存在。
+
+```bash
+python3 tests/run-python-tests.py --suite memory-recall-service.test.py --summary-log /tmp/aek-memory-check.log
 ```
 
 测试依赖按 CI 环境准备。性能与上下文 fixture 用于验证行为、容量和材料约束，不代表真实 Agent Token 节省或产品收益。开发侧离线诊断不要求连接模型服务。

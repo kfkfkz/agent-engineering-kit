@@ -111,6 +111,9 @@ assert data['kit_version'] != 'not installed'
 " && ok "tools/call kit_status：版本/索引状态" || bad "kit_status 异常: $RESP"
 
 # ── T4 tools/call memory_recall（先建索引再检索） ──
+SDD="$P/docs/需求/合同迁移"
+mkdir -p "$SDD"
+printf '# contractfixture\n\nApproved SDD evidence.\n' > "$SDD/需求分析.md"
 python3 "$P/.repo-memory-kit/bin/memory-recall" --rebuild "$P" >/dev/null 2>&1
 RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"RULES"}}}')
 printf '%s\n' "$RESP" | python3 -c "
@@ -142,6 +145,31 @@ assert data['returncode']==0 and not r['result']['isError'], data
 assert data['output']=='' and data['expanded']==[]
 assert data['report']['coverage']=='partial'
 " && ok "memory_recall 紧凑响应不重复嵌套 payload" || bad "memory_recall 紧凑响应异常: $RESP"
+
+REQ='{"jsonrpc":"2.0","id":44,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"contractfixture","type":"sdd","context":{"schema_version":1,"route":"standard","stage":"design","subject_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","session_id":"sdd-mcp-test","compact":true}}}}'
+OUT=$(mcp_rpc "$REQ")
+printf '%s\n' "$OUT" | python3 -c '
+import json, sys
+result = json.load(sys.stdin)["result"]
+data = json.loads(result["content"][0]["text"])
+assert not result["isError"] and data["returncode"] == 0, data
+assert data["candidates"]["source"] == "zvec", data
+assert len(data["expanded"]) == 1, data
+assert data["expanded"][0]["path"] == "docs/需求/合同迁移/需求分析.md", data
+' && ok "已安装 Memory MCP 召回新版中文目录 SDD" || bad "MCP SDD 召回异常: $OUT"
+LEDGER="$P/.repo-memory-kit/context/sdd-mcp-test-bbbbbbbbbbbb.jsonl"
+cp "$LEDGER" "$T/sdd-mcp-before.jsonl"
+LOWER=$(printf '%s' "$REQ" | sed 's/"route":"standard"/"route":"bounded"/')
+OUT=$(mcp_rpc "$LOWER")
+printf '%s\n' "$OUT" | python3 -c '
+import json, sys
+result = json.load(sys.stdin)["result"]
+data = json.loads(result["content"][0]["text"])
+assert result["isError"] and data["returncode"] != 0, data
+assert "route transition" in data["error"] and "Traceback" not in data["error"], data
+' && cmp -s "$LEDGER" "$T/sdd-mcp-before.jsonl" \
+    && ok "MCP 拒绝降级路线且原账本不变" || bad "MCP 降级路线处理异常: $OUT"
+
 if python3 - "$P/.repo-memory-kit/context/mcp-context-test-aaaaaaaaaaaa.jsonl" <<'PY'
 import json
 import pathlib

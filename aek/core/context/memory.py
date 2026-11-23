@@ -10,6 +10,15 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _GENERATION = re.compile(r"^[A-Za-z0-9-]{1,64}$")
 
 
+def is_memory_markdown(path: object) -> bool:
+    return (isinstance(path, str) and path.startswith("docs/") and path.endswith(".md")
+            and "\\" not in path and ":" not in path
+            and not any(ord(char) < 32 for char in path)
+            and all(part not in {"", ".", ".."} for part in path.split("/"))
+            and not path.rsplit("/", 1)[-1].startswith("_")
+            and not path.endswith(("01-索引/README.md", "docs/memory/README.md")))
+
+
 @dataclass(frozen=True)
 class CandidateRef:
     path: str
@@ -19,10 +28,7 @@ class CandidateRef:
     anchor: str
 
     def __post_init__(self) -> None:
-        if (not isinstance(self.path, str) or not self.path.startswith("docs/memory/")
-                or "\\" in self.path or "\0" in self.path
-                or any(part in {"", ".", ".."} for part in self.path.split("/"))
-                or not self.path.endswith(".md")):
+        if not is_memory_markdown(self.path):
             raise ValueError("candidate path must be a safe memory Markdown path")
         if isinstance(self.score, bool) or not isinstance(self.score, (int, float)) \
                 or not math.isfinite(self.score) or self.score < 0:
@@ -52,7 +58,7 @@ class CandidateSet:
             raise ValueError("candidate generation mismatch")
         if len({item.path for item in self.candidates}) != len(self.candidates):
             raise ValueError("duplicate candidate path")
-        if type(self.has_more) is not bool or (self.has_more and not self.candidates):
+        if type(self.has_more) is not bool:
             raise ValueError("invalid candidate pagination")
         if self.source not in {"zvec", "fallback"}:
             raise ValueError("unknown candidate source")

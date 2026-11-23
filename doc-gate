@@ -3862,6 +3862,17 @@ def _cmd_closeout_locked(req_dir: Path, as_json: bool, dynamic_state=None, *, ma
     failures.extend(_plan_completion_failures(req_dir, source_materials=sources))
     if any(value is None for value in upstream.values()):
         failures.append("上游阶段指纹不可验证")
+    elif upstream != gate.get("upstream_fingerprints", {}):
+        # Compare with the approved plan, not a prior closeout. Only a
+        # verified dependency binding can carry the approval across changes.
+        binding = None
+        if material_view is not None:
+            try:
+                binding = _document_materials(req_dir, publication_view, dynamic_state).verify("计划")
+            except (OSError, PlanInvalid, TypeError, ValueError):
+                pass
+        if binding is None or binding.material_revision.get("dependency_identity") is None:
+            failures.append("上游阶段已重新冻结（指纹失配），需重新过计划门禁")
 
     reviews_dir.mkdir(parents=True, exist_ok=True)
     _atomic_review_write(reviews_dir / "hard-checks.json",

@@ -1,6 +1,6 @@
 ---
 name: systematic-debugging
-description: "定位 Bug、测试失败和异常行为，提交根因证据、最小修复方案与回归方式，按用户确认推进。"
+description: "定位根因未明的故障或反复失败，给出证据、最小修复方案和回归方式。"
 ---
 
 # 系统化诊断

@@ -15,12 +15,8 @@
 
 ## 上下文与实现
 
-- 只读目标模块与接缝。Memory 先看 metadata，默认候选不超过 5、正文展开不超过 2；命中高风险、
-  截断或低置信时记录目的后扩展，不能把 top-k 未命中当作“无约束”。
-  先用 `memory_recall` MCP context；仅在 MCP 调用开始前不可用时，Agent 内部降级
-  `memory-recall --context-json`，并传冻结 Route、subject digest、稳定 session ID；
-  只消费返回的 `expanded`，不得绕过预算直接打开未选择候选。partial report 中未观测的宿主通道
-  必须保留披露，不得改写成 complete。
+- 只读目标模块与接缝。Memory 沿用入口的[取证约定](../SKILL.md#项目知识取证)，以当前预算为准。
+  高风险取证仍有缺口时说明目的并评估是否扩展或升径。保留 partial report 的未观测通道。
 - 采用“简短验收与范围 → 必要 TDD → 定向测试 → 快速审查”。测试观察公共接缝，不验证私有调用顺序。
 - SQL/ORM 变化先执行 `sql-performance-screen` 数据库无关初查，初查不自动升径；只有命中
   性能/容量风险才产生 `performance_capacity`、叠加 `performance-review` 并升 Standard。

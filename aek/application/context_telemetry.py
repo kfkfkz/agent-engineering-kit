@@ -7,10 +7,9 @@ from typing import Protocol
 from aek.core.context.budget import (
     ContextBudget, ExpansionDecision, decide_context_expansion,
 )
-from aek.core.context.telemetry import ContextEvent, ContextReport, build_context_report
-
-
-_ROUTES = ("direct", "bounded", "standard", "initiative")
+from aek.core.context.telemetry import (
+    ContextEvent, ContextReport, build_context_report, require_monotonic_route,
+)
 
 
 class LedgerReader(Protocol):
@@ -33,7 +32,7 @@ def record_context_delivery(
     source: str, source_kind: str, channel: str, event_purpose: str,
     session_id: str, subject_digest: str, logical_path: str,
     expansion_purpose: str | None = None, cache_hit: bool = False,
-    occurred_at: str | None = None,
+    occurred_at: str | None = None, stage_channel_byte_limit: int | None = None,
 ) -> RecordedDelivery:
     """Gate one AEK-owned delivery before persisting its metadata event.
 
@@ -52,13 +51,23 @@ def record_context_delivery(
         source=source, purpose=expansion_purpose)
     if decision.action == "REQUIRE_PURPOSE_OR_REROUTE":
         raise ValueError("context expansion needs a controlled purpose or reroute")
+    limits = ({} if stage_channel_byte_limit is None
+              else {"stage_channel_byte_limit": stage_channel_byte_limit})
     event = ledger.append_text(
         content, route=budget.route, stage=budget.stage,
         source_kind=source_kind, channel=channel, purpose=event_purpose,
         cache_hit=cache_hit, session_id=session_id,
         subject_digest=subject_digest, logical_path=logical_path,
-        occurred_at=occurred_at)
+        occurred_at=occurred_at, **limits)
     return RecordedDelivery(event, decision)
+
+
+def validate_route_history(events: tuple[ContextEvent, ...], route: str) -> None:
+    previous = "direct"
+    for row in events:
+        require_monotonic_route(previous, row.route)
+        previous = row.route
+    require_monotonic_route(previous, route)
 
 
 def report_for_budget(
@@ -74,13 +83,7 @@ def report_for_budget(
     if not isinstance(budget, ContextBudget) or not callable(getattr(ledger, "read", None)):
         raise ValueError("ledger and budget are required")
     events = ledger.read()
-    previous_rank = -1
-    current_rank = _ROUTES.index(budget.route)
-    for row in events:
-        rank = _ROUTES.index(row.route)
-        if rank < previous_rank or rank > current_rank:
-            raise ValueError("ledger stage or route transition conflicts with budget")
-        previous_rank = rank
+    validate_route_history(events, budget.route)
     if observed_channels is None:
         observed_channels = tuple(sorted({row.channel for row in events if row.stage == budget.stage}))
     return build_context_report(

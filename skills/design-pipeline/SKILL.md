@@ -1,293 +1,58 @@
 ---
 name: design-pipeline
-description: "设计文档工程流水线：从已冻结的需求分析出发，编排 概要设计→(UI设计)→详细设计(含API设计/数据库设计)→任务清单+测试方案 的迭代式生成与评审——Author 生成 → doc-gate 硬校验 → AI 评审出 issues → doc-gate 确定性判定 → 冻结进入下一阶段；阶段通过后回填需求索引行。适用于新功能链 ③④⑤ 阶段的文档产出；不用于编码本身（编码走 tdd/repo-delivery）。"
+description: "为需要正式设计的需求编排产物、评审和冻结。适用于已确认需求的概要、UI、业务流程、详细设计和实施计划，以及设计修改和复审。"
 ---
 
-把需求文档从"人给定的输入"推进到"冻结可编码的设计"。本技能只负责**编排**；
-裁决由 `.repo-memory-kit/bin/doc-gate`（确定性）承担——**你不判 PASS，issues 也不由你裁决**。
+# 设计流水线
 
-本技能只由任务 Route Card 的 Standard（确有正式设计需要）或 Initiative 路线调用。
-Direct/Bounded 不为满足仪式进入完整流水线；Bounded 把验收、范围、决策、风险和验证写入
-项目已有计划/issue/spec 载体即可。治理 profile 为 strict 也不会单独触发本技能。
+目标是交付可评审、可实现、可验证的设计。Author 提出设计，Reviewer 提交问题，维护者决定业务口径和人工签核，`doc-gate` 校验和发布凭证。
 
-## 调用入口
+由 `repo-delivery` 在确需正式设计的 Standard 或 Initiative 路线调用。Direct/Bounded 在已有任务载体记录必要决策，strict 治理等级本身不触发完整设计。显式入口为 Claude Code `/design-pipeline <SDD目录>`、Codex `$design-pipeline <SDD目录>`。
 
-- Claude Code：`/design-pipeline <SDD目录>`
-- Codex：`$design-pipeline <SDD目录>`
+## 定位当前阶段
 
-通常由 `repo-delivery` 内部路由，无需用户手工串联；只有任务已结束、跨会话恢复或客户端
-不能在原任务续跑时，才把上述当前客户端对应的 canonical skill 作为用户可见继续入口。
+- 绑定用户指定的仓库和已登记需求包。新包默认使用 `docs/需求/<版本>/<名称>/`，内部运行 `doc-gate init <名称> --version <版本> --repo <仓库根> --json`，使用返回的 `package.source_root`、`package.design_root`、`index_registration`。已有包沿用其实际布局，旧双目录需要时指定 `--layout legacy`。
+- 先用 `doc-gate status` 读当前状态。需要初始化动态计划时，按当前 Route Card、任务起点 Git commit 和内置 facts producer 执行 `plan-prepare`、`plan-freeze`。扫描范围不能完整证明 false 时保留 unknown。已有且无动态 sidecar 的旧包沿 legacy-static 接续。残缺或失效的 sidecar 按工具诊断修复或经明确授权回滚。
+- 由计划决定本阶段参与的文档和已批准前置。仅处理参与文档，`skipped` 保留机器记录。无 UI 影响只跳过计划明确免除的 UI 产物。可选 AI 评审仍需完成适用的硬校验、门禁和绑定。
 
-## 统一原则
+## 写出设计
 
-```
-LLM 不做最终裁决
-LLM 不产生不可验证状态
-LLM 只产生结构化观察和候选内容
-```
+1. 根据当前确认的需求与验收，核实和决策相关的现状。需要历史知识时按 `repo-delivery` 的预算约定先用 `memory_recall` MCP。第一次结构检索必须用 `codebase-memory`，核对当前工作树、代次和 coverage。复用已核实证据，遇到冲突或缺口时补读必要来源。
+2. 说明现有能力能复用什么、本次改变什么、哪些行为必须保持。写清关键路径、失败时的结果和可观察的验收。只展开会影响实现、兼容性、风险或验收的取舍。缺少会改变设计结论的事实时，指出要核实什么或请谁裁决。
+3. 用当前阶段模板输出参与文档，保留门禁解析的标题、A/F/D/T/TC 追踪和边界标记。必填章节不适用时说明原因，选用内容按实际影响展开。引用已有证据和上游结论；追踪矩阵由工具生成。计划中的任务保留预计修改范围、验证方式、发布阻塞性和对应设计。延期须在冻结前明确为非阻塞，执行记录仍需实际范围和验证证据。
+4. 外部设计保留单一写者与实际来源，沿 ArtifactPlan 的 `--source-map` 接入逻辑 ID 和审批。明确当前客户端入口与可用产物；配置、当前可见性和实际调用结果分别取证。
 
-新需求包默认登记在 `docs/需求/<版本>/<名称>/`。沿已登记的包元数据或项目明确布局分别读取
-原始需求根、设计根及受管索引。旧 `docs/01-需求/NNN-名称` 与 `docs/03-SDD/NNN-名称`
-按原位置接续。原始需求及原始材料由维护者提供，正式门禁读取本阶段参与设计来源。
+按当前工作打开相关参考：
 
-阶段顺序由冻结的 ArtifactPlan 决定。以下是完整拓扑，不是“每次都做”的固定清单；标记
-`skipped` 的 Artifact 不生成、不评审、不冻结，后继阶段使用计划解析出的最近参与前置：
+- UI 参与设计时读取 [UI 取证与原型](references/ui-reference-workflow.md)。截图、观察和实际原型分别验证并沿原确认流程推进。
+- 引入或变更第三方依赖时使用 `reuse-research` 并读取 [依赖采用前置](../security-review/references/dependencies.md)。记录拟采用的准确版本、公告来源与核验时点、覆盖、兼容性和风险处置。前置缺证以 PENDING 提交评审，补齐后再冻结采纳；实际解析或发布物证据单独后补。无依赖影响以当前范围证据为准。
+- 写《业务流程设计》时，用业务语言讲清参与者、规则、例外和业务影响。功能标题用 `### 3.1 名称`，以 `对应功能点：F1` 追踪并写明业务含义。按项目现有写作约定组织正文。总览图及必要的复杂交互附图按 [业务流程图交付](references/business-flow-diagrams.md) 生成和核验。
+- 需要 AI Reviewer 时读取 [送审与定向复审](references/review-workflow.md)。复用原独立 Reviewer 会话和当前模型，送审范围、输入正文与 receipt 由现有服务绑定。
 
-```
-需求分析（维护者冻结）→ 概要设计 → (UI设计) → 业务流程设计（人工评审！）
-                      → 详细设计(详细+API+数据库三文档) → 计划(任务清单+测试方案)
-```
+## 校验与推进
 
-### 0. 冻结本次 ArtifactPlan
-
-仅 Standard/Initiative 进入本技能。首次为该 SDD 工作且 `reviews/artifact-plan.json` 不存在时，
-Agent 使用 Route Card 已冻结的路线与任务起点 Git commit，内部依次执行 `plan-prepare` 和
-`plan-freeze`；不得让用户手工运行命令。计划必须来自当前 Git 可见范围的内置 facts producer：
-扫描不能完整证明 false 时保持 unknown 并增加产物，禁止由 LLM 口头声明 false 来减少文档。
-
-读取机器返回的 plan items，建立本轮唯一产物集合：`required` 需要生成；`skipped` 只保留
-计划中的 reason/evidence，不把模板占位文件当成待完成产物。阶段全部 skipped 时直接越过；
-部分 skipped（例如 API/数据库设计）时，硬校验、评审输入和冻结只覆盖参与文档。每个阶段
-PASS 后原有门禁入口会自动建立 plan binding；状态必须为 `FROZEN/BOUND` 才能进入真实后继。
-无 UI 影响只免除计划明确跳过的 UI 产物，不免除其他 required 设计阶段；`review=optional`
-只影响 AI 评审是否必需，不能免除硬校验、阶段门禁或计划绑定。解析失败要修解析/材料，不能改为 SKIPPED。
-残缺 plan、credential、binding、事务日志或 STALE/INVALID 一律停止并修复/显式回滚，绝不
-回退 legacy-static 猜测。已有且无动态 sidecar 的 1.0 文档继续走 legacy-static，不强制迁移。
-
-## 流程
-
-### 人工决策与机械执行分离
-
-需求确认和业务流程评审的**结论**必须由维护者/业务方给出，但本地文件与 CLI 操作由 Agent
-完成。尚未确认时只询问是否通过和签核人（以及本阶段必需的开发人员/上线时间），不要把
-命令当作问题答案。用户对当前明确版本确认后，由 Agent 写入签核记录并完成内部冻结，
-检查成功后自动进入下一阶段。
-不得把 `doc-gate` 命令列为“你的下一步”，也不得要求用户手工串联 `init/check/gate/status`
-等本地 CLI。只有命令需要超出已授权范围，或本地执行在申请权限/重试后仍受阻时，才说明
-阻塞原因。**用户可见的继续入口只能是 canonical skill**：当前任务可继续时自动续跑；需要
-重新触发时，Claude Code 提示 `/design-pipeline <SDD目录>`，Codex 提示
-`$design-pipeline <SDD目录>`，不能用内部 CLI 代替 skill 入口。
-不得从沉默、模糊回复或旧评审记录推断本轮已批准。
-
-**用户提示零 CLI 泄漏**：面向用户的确认问题、阶段汇报和“下一步”
-不得出现 `doc-gate`、`.repo-memory-kit/bin/`、`--stage` 或 `--by`，也不描述“我将执行某 CLI”。内部命令只出现在
-Agent 的工具调用中；仅当用户明确要求诊断底层命令时才展示。人工评审节点使用以下话术：
-
-`请确认本轮业务流程设计是否通过，并提供评审人姓名；确认后我会继续当前 design-pipeline 流程并进入详细设计。`
-
-若当前任务不能续跑，再追加当前客户端的 skill 入口；不要追加内部实现命令。
-
-### 1. 定位与取上下文
-
-1. 解析 SKILL.md 的真实位置以定位 kit 模板，再从目标工作区确定当前仓库。使用明确指定的需求包或
-   当前已登记的包。沿包记录的 `source_root` 读取原始需求，沿 `design_root` 处理阶段文档。
-2. 新需求用本轮已明确的版本与名称，从内部调用
-   `doc-gate init <名称> --version <版本> --repo <仓库根> --json`。
-   默认 `auto` 先检查当前项目布局，随后使用同目录版本包。后续阶段用实际返回的
-   `package.design_root`、`package.source_root` 和 `index_registration`。项目或维护者明确沿用旧双目录时，
-   使用其实际 `NNN-名称` 及 `--layout legacy`。已有包按现有身份打开，目录或索引冲突时说明具体位置。
-3. 生成前先取证：先调用 `memory_recall` MCP，按 `repo-delivery` 的紧凑取证约定绑定当前 Route、stage、`purpose=target_evidence`、subject
-   digest 和稳定 session ID；仅在 MCP 不可见/不兼容/调用开始前失败时内部降级到等价
-   `memory-recall --context-json`，再失败才做有界 metadata 文本查找。只读取返回的 expanded 正文，
-   不在 MCP 成功后重复 CLI/grep；读业务域地图确认模块口径；
-   能力/调用链的第一次结构检索必须用 `codebase-memory`（含 freshness/coverage），禁先 grep；
-   **禁止编造现状**。
-4. 运行 `.repo-memory-kit/bin/doc-gate status <SDD目录>` 了解参与阶段的当前状态；`SKIPPED`
-   是冻结计划授权的正常终态，不补模板、不伪造 gate。
-   需求分析若已签写冻结记录但无凭证（status 显示 未冻结/未过 freeze），Agent 从记录读取
-   签核人并运行 `.repo-memory-kit/bin/doc-gate freeze <SDD目录> --by <名>` 落哈希凭证——
-   文本"已冻结"不构成冻结凭证，冻结后改动会被哈希检出。若当前文档在既有凭证后有改动，
-   必须先展示本轮差异并重新取得确认；不要自动沿用旧签核。
-   **冻结时机提醒**：需求分析冻结前，向维护者确认两件事——开发人员、需求上线
-   时间。回填实际包登记的受管索引行。旧双目录使用原索引，第三方索引由对应项目流程更新。
-
-### 2. Author：按模板生成阶段文档
-
-- 已采用项目外部设计 Skill 时先落实单一写者、当前客户端入口和真实产物路径。通过原 ArtifactPlan 的
-  `--source-map` 绑定外部概要、业务流程、UI 或详细设计。保留原正文，在映射中建立逻辑 ID。当前客户端
-  可见性和调用结果分别观察，配置存在仅说明配置。外部业务流程以当前完整文件和映射送人评审，确认后把
-  内部预检给出的本轮 `approved_input_sha256` 交给原冻结操作。
-- 骨架从模板复制；**不适用的章节写 N/A + 原因，不删节**（结构稳定是确定性校验的前提）。
-- 接地规则：设计令牌/文案/菜单树取自真实源码与运行环境；复用能力一句话引用；
-  现状描述必须有代码证据。
-- ID 规范（doc-gate 机械解析，格式必须精确）：
-  - 需求分析：`场景1`（前置/操作/结果）、验收项 `- [ ] A1：…（场景 1）`
-  - 概要设计：`### F1：…` + `覆盖验收项：A1`
-  - UI设计：`### PAGE-1：…（对应 F1 / A1）`
-  - 详细设计三文档共用 D-ID（全局唯一）：详细设计.md 业务逻辑 `### D1：…（对应 F1 / A1）`；
-    API设计.md 接口 `### D2：…（对应 F1 / A1）`；数据库设计.md 变更 `### D3：…（对应 F1 / A1）`
-  - 任务清单：`### T1：…` + `对应设计：D1、TC-1` + `发布阻塞：是|否` +
-    `预计修改范围：<glob>`；缺省按“是”。只有冻结计划在实现前明确标为“否”的任务，
-    执行记录才可写 `延期/DEFERRED`，且仍须填写实际范围与验证证据；Agent 不得在执行期
-    临时把阻塞任务降级为非阻塞。
-  - 测试方案：用例行 `| TC-1 | … | A1 | …`
-- 汇总矩阵（验收覆盖表/需求→任务映射）**不手写**——doc-gate 生成 traceability，双写必漂移。
-
-拟引入/变更依赖时，使用 `reuse-research` 并完整读取
-[依赖采用前置](../security-review/references/dependencies.md)（Catalog `security-dependencies`）；Memory
-context 的 stage 为 `design`，purpose=`target_evidence` 或审查的 `review_required`，不是文档中文阶段名。
-在本阶段既有取舍/详细设计载体留下准确拟包版本、适用公告时点/来源、环境/API兼容和当前风险处置。
-必要设计证据 PENDING 必须提交现有评审，不能继续冻结采纳；实际解析/发布物未生成可独立后补。
-未知匹配/来源不能猜 ADOPTABLE，模型候选安全不变量不变成已确认硬要求；无依赖影响须可信scope证明。
-
-#### UI 参考截图与原型（仅 UI 影响时执行）
-
-- 先从本次需求、场景、验收和概要功能点识别页面、关键交互状态和权限上下文；按布局/行为去重，给出最小截图清单。不要枚举权限、数据范围、版本、视口的全组合；无 UI 影响时标 `N/A + 原因` 并跳过本节。
-- 先确认用户提供的组件体系/版本/主题。用户未知时，先用 `codebase-memory` 定位前端入口、依赖和设计令牌，再读必要配置/源码；记录证据路径或 `unknown`，不得猜测。
-- 已登记的新布局沿同一个包定位器读取材料。所有截图操作使用同一 `--package-ref <仓库相对包路径>`，从实际包元数据取得机器 ID 与材料根。旧目录继续用原参数。
-- 用受管 UI helper 从 UTF-8 JSON 准备占位图和 `截图索引.json`。按返回路径列出待替换的文件、页面/状态、采集权限、版本、视口和脱敏提醒。旧 `003-中文需求名称` 用 `change_id: "CHG-003"` 和该单级 `requirement_dir`。新包以实际 `--package-ref` 定位。
-- 用户替换后沿同一定位参数执行 `validate`、`record-review`、`bind-prototype`。每个 `applies_to` 上下文独立核实图片技术有效、视觉适用和当前性。共享布局仍按各自权限核实。图片不可读取、未确认或不适用时阻断依赖它的页面或区域。
-- 需要观察文本时按需读取[截图观察工作流](references/screenshot-observation-workflow.md)，使用显式v2准备/记录入口；来源当前且区域足够则复用，缺失才读取[提取契约](references/screenshot-observation.md)并用获准通道定向看图，不自动调用模型。观察不代替适用性、必要视觉核对或人工确认；旧安装缺入口时只保留候选，不宣称已缓存。
-- 原型依赖组件、布局或Token源码时按需读取[源码区域基线](references/ui-source-baseline.md)，绑定实际来源及区域意图；沿原联合依赖摘要复核，不把来源哈希当语义批准或扩大上游范围。
-- 对确实可读取的图像做视觉核对；否则请维护者核实。只有已看过材料且上下文对应时才通过受限 `record-review` 更新，使用当前索引 SHA 做 CAS；不手写/替代派生状态。`git_status` 保留 `tracked/untracked/unknown` 语义，`git_staging` 单独报告 `added/modified/renamed/copied/deleted/unmerged/none/unknown`，原始截图已暂存或跟踪时告警；只读检查使用字面路径，不改写 Git 配置或索引，不自动 add/commit。Git 不可用或非仓库时为 `unknown`。
-- UI 原型放在现有 ArtifactPlan 批准的来源根。静态 schema1/2 使用自包含 HTML。需要脚本时显式使用 schema3，由已配置的可信宿主运行固定交互序列。逐页和区域关联截图、权限、F/A、设计体系及实际依赖，通过 `bind-prototype` 写反向引用。原 Gate 复核实际字节与依赖摘要。
-- 需要确认时按需读取[原型确认工作流](references/prototype-confirmation-workflow.md)。展示当前预览，维护者在终端作一次明确决定。旧凭证仅用于其原始范围。交互原型还须核验当前可信运行观察。
-
-### 3. 硬校验循环
-
-需要 AI 评审且本轮已准备送审时直接走 §4，由送审入口在当前快照上执行完整硬校验。
-人工签核前、仅做预检或按治理规则免 AI 评审时，单独执行：
+AI 送审入口在当前快照执行完整硬校验。仅做预检、人工签核或治理允许免 AI 评审时，使用内部入口：
 
 ```bash
 .repo-memory-kit/bin/doc-gate check <SDD目录> --stage <阶段> --summary --json
 ```
 
-读取 `schema_version/stage/status/summary/failures/full_result_ref/result_digest`；summary 只压缩输出，
-完整硬校验仍执行，不能把预检成功当阶段批准。有 FAIL → 按失败规则与位置**定向修复**
-（不重写全文）；需补证时从 `full_result_ref` 展开并核验完整结果字节的摘要，再重跑。
-薄输入拒绝：需求分析场景/验收还是占位符 → 停止生成，向用户报告"需求意图不完整，
-请维护者补齐原始需求或口径"——不带空意图往下游走。
+按失败位置定向修复。需要完整报告时核对 `full_result_ref` 与 `result_digest`。需求场景或验收仍是占位时，先让维护者补齐。预检通过后按阶段要求进入人工签核或 AI 评审与机器门禁。
 
-### 4. AI Reviewer（sensor——不是你裁决）
+### 人工决策与机械执行分离
 
-用**未参与生成的独立子 Agent**（可用且上层指令允许委派时）做评审；不可用时清空假设做第二遍，
-并在 issues.json 中写 `"reviewer": "same-context"`（披露）。
-评审子 Agent 默认继承当前会话模型，不指定模型覆盖；仅用户明确要求时改用其他模型。
-无法确认继承或当前模型不可用时如实披露，不为省成本静默降级，也不把同上下文复核称作独立评审。
-同一文档/阶段的修订轮次优先复用原独立 Reviewer 会话，用当前受控送审输入继续核对未决问题；
-上下文复用不豁免本轮必读材料、摘要与 receipt 校验。原会话不可用、已参与编写或无法保持当前模型时
-才重建并说明原因；保留原问题和轮次，不借换会话重置评审上限。
+需求确认和业务流程由维护者或业务方评审。发送当前稿件链接、本轮实际变化及关键取舍和待裁决项。用自然语言询问对**当前版本**的结论和签核人；需求分析按需一并确认开发人员和上线时间。业务流程阶段收到结论前停在人工评审，按意见逐条处理。
 
-进入本轮 AI 评审时，Agent 内部运行
-`.repo-memory-kit/bin/doc-gate review-input <SDD目录> --stage <阶段> --schema-version 2 --json --precheck-summary --compact-json`。
-Reviewer 能直接读取同一仓库时可加 `--request-ref`。短请求仍内联；长请求由实际 Reviewer
-调用同一 `review-input --read-request <request_ref.sha256> --record-delivery`，传入相同需求目录和阶段。
-接口核验后返回原字节，并登记实际交付的正文摘要与大小。纯核对用 `--read-request`。
-出现摘要失配或不可读时重新准备本轮输入。超限时报告实际大小和上限，不向 Reviewer 投递不兼容的材料。
-Reviewer 无法直接读取时内联送审。
-返回 `failures/full_result_ref/result_digest` 时按 §3 定向修复，修完重跑此入口；
-有有效 `request` 或可读的 `request_ref`，且返回 `receipt` 后才启动 Reviewer。其他诊断按工具结论处置。
-旧 CLI 未指定版本时仍是 v1；本技能显式使用 v2，不把旧 receipt 改写成新版证明。
-由 ReviewService 决定 `request.mode=full|incremental`：只把 `request.full_documents`
-或 `request.section_documents`（二者恰有一个非空），加 `request.reference_sections` 的本阶段
-必要背景正文与 `request.supporting_context` 送给 reviewer；携带机器生成的 `scope_proof`，
-不得自行扩缩章节。目标是变更/未决问题及其消费者；provider/global 是必须核验的背景，
-不能只发指针，也不能因 `cache_hit` 免交付或抵扣实际已发正文。合法 full sensor 即使带 Issue
-也只建立材料基线，不代表批准。解析缺口、全局约束/标题/引用/实际上游字节或凭证变化、旧证明
-不可用会自动选择 full；无标记/未知边界的旧文档不能由 Agent 补标记后直接增量。receipt
-失配时重新生成输入并按工具结论全文重送，不能继续沿用旧评审。
+当前版本获明确同意后，由 Agent 写入签核记录并完成内部冻结。冻结前核对送审材料仍是用户确认的版本；稿件有实质变化、只有旧记录或当前凭证缺失且无法证明对应版本时，先展示变化并取得当前确认。外部映射业务流程需提交本轮预检的 `approved_input_sha256`。成功后回填实际包登记的受管索引行，按计划进入下一个参与阶段。
 
-输入准备若返回无进展/需定位/达到上限的停止诊断，保留现有 Gate/Lifecycle 和未决问题，
-不调用新 Reviewer。新增相关证据后才恢复；改 REV-ID、无关编辑、删除 Gate 或换会话不重置
-原 `max_iterations=3` 上限，恢复先核验当前来源、完整问题集、已有轮次及 FIXED claim。
+用户提示零 CLI 泄漏。常规确认、汇报和下一步不得出现 `doc-gate`、`.repo-memory-kit/bin/`、`--stage` 或 `--by`。用户明确要求底层诊断时展示所需命令。当前任务可继续时自动续跑，需重新触发时给当前客户端的 canonical skill 入口。
 
-Reviewer 在这份受控输入上做**分层取证**：已验证事实直接采信（业务域地图口径、已确认
-记忆条目、上游阶段已核实的声明与取证），只对新增/未覆盖/可疑声明做代码查证
-（`codebase-memory`）。评审不是文档对文档，而是文档对事实；内部自洽但现状失实的设计
-必须被打回。不从零重复核查已有结论。
+### 机器门禁与交接
 
-评审输出 `reviews/<阶段>.issues.json`，并把 review-input 返回的 `receipt` 写入
-`reviews/<阶段>.review-receipt.json`；无定位澄清时原样保存，需要定位时仅实际 Reviewer 添加
-参考中的 `issue_locations`，原输入绑定字段保持不变。receipt 只证明实际送审输入，不代表 PASS；不得手工改
-request/receipt digest。issues 无总分、无 PASS/FAIL、不改文档正文：
+内部运行 `doc-gate gate <SDD目录> --stage <阶段>`。根据实际状态推进：
 
-实际送审时读取 [评审问题与定位格式](references/reviewer-issues.md)，按原受控输入写问题、定位和必要证据。当前全文仍无法定位时保持未决，避免重复送审。
+- PASS 且已完成适用的 FROZEN/BOUND 确认，回填登记索引并继续。第三方索引沿项目入口更新。
+- NEEDS_REVISION 按本轮失败规则、位置或未决问题定向修订并复核。BLOCKED、无进展或证据不足时保留原问题和轮次，说明需要补的证据或人工决定。
+- 上游冻结口径有问题时交维护者裁决。原请求及已冻结结论由维护者决定调整；变更后按实际受影响前置和当前状态重新评审。
 
-Reviewer 的 `issues.json` 是不可变 sensor，不在后续轮次删除或反写旧问题。门禁首次接收后会建立
-`reviews/<阶段>.issue-lifecycle.json`，其中稳定 fingerprint 忽略临时 REV-ID，并保留每轮
-occurrence。Author 定向修复后，Agent 读取该文件的 `snapshot_digest` 和目标 fingerprint，按当前
-文档 hash 内部写入 `reviews/<阶段>.issue-claims.json`：
-
-```json
-{"schema_version":1,"stage":"详细设计","base_snapshot_digest":"<当前 lifecycle digest>",
- "doc_hashes":{"详细设计.md":"<修改后 sha256>"},
- "claims":[{"fingerprint":"<目标 fingerprint>","state":"FIXED"}]}
-```
-
-Author 只能声明 `FIXED`，不能写 `VERIFIED/CLOSED`。随后必须用当前文档重新生成 review-input；
-Reviewer 未再次命中才推进 `VERIFIED`，再次命中则 `REOPENED` 并追加 occurrence。只有绑定同一
-lifecycle snapshot 的确定性 PASS gate 才能派生 `CLOSED`；Agent 不手改 lifecycle/gate。
-
-### 5. 门禁判定
-
-```bash
-.repo-memory-kit/bin/doc-gate gate <SDD目录> --stage <阶段>
-```
-
-- **PASS（退出码 0）** → 文档冻结 → 回填实际包登记的受管索引行 → 进入下一阶段。
-  旧双目录更新原索引中本需求的阶段列。第三方生成索引沿项目入口更新。
-- **NEEDS_REVISION（1）** → 只修 gate.json 指定的问题（REV-ID/hard 项），有新相关证据后回步骤 3。
-  **定向修改，禁止借机重写全文**——防设计漂移。完成修改后按步骤 4 写 FIXED claim 并重送当前
-  Review；不得仅清空 issues.json 或复用旧 receipt 来制造通过。
-- **BLOCKED（2）** → 连续 3 轮不达标。停止迭代，向用户汇总：已试轮次、未解决问题、
-  建议的人工裁决点。**不得通过反复重试碰运气**。
-  无进展或当前 full 问题仍未定位时可提前停止；同一已接收观察不增加伪轮次，也不清空历史重开。
-
-### 6. 业务流程设计（人工评审关口）
-
-仅当 ArtifactPlan 中 `business-flow` 为 required 时执行本节；若为 skipped，不生成流程图、
-不询问人工评审，直接沿解析后的真实前置进入后继阶段。
-
-概要设计 PASS 后按功能五件套（界面原型/业务逻辑/性能/安全/三方依赖）写通俗业务闭环，不含代码、表或字段。
-功能标题用 `### 3.1 名称`，子节用 `#### 3.1.1 界面设计`；正文用 `对应功能点：F1` 追踪，勿以 F-ID 编号。
-面向评审者的正文、评审问题和变更说明必须展开功能名称与业务含义；F/A 编号只作附带追踪，
-不能以“按 F1/见需求 A3”代替说明，也不能要求评审者先翻原始需求才能理解本稿。
-复杂交互按需补最小图：多角色/异步/先后约束用时序图，复杂状态转换或分支补偿用状态/活动图；
-不是每个功能点必画。使用业务角色与动作名称，文字规则仍完整；仅采用已安装绘图工具支持的图型，
-archify 中时序用 `sequence`、状态用 `lifecycle`、活动/分支用 `workflow`；分别读取对应 schema/示例并校验，
-各图型使用自己的 schema 和回执。
-
-需要图表时读取 [业务流程图交付](references/business-flow-diagrams.md)。核验 archify 产物、内容摘要和回执后再送审。
-
-生成并完成内部结构检查后，**停下交维护者/业务方人工评审**（评审意见逐条处理并回写
-修订记录；这是本阶段的门禁——无 AI 评审）。面向用户只发送固定话术：
-
-`请确认本轮业务流程设计是否通过，并提供评审人姓名；确认后我会继续当前 design-pipeline 流程并进入详细设计。`
-
-收到当前版本的明确“通过”与评审人姓名后，按以下内部状态转换执行，禁止向用户复述其中的
-机械步骤或命令名：
-
-```text
-persist_review(conclusion="通过", reviewer, reviewed_at, resolved_comments)
-freeze_stage(stage="业务流程设计", signer=reviewer)
-assert_stage_frozen(stage="业务流程设计")
-continue_to(stage="详细设计")
-```
-
-### 7. 打回上游（口径割裂处理）
-
-评审中明确的上游问题（需求不可实现/场景缺口）：在 issues.json 标 `upstream: true`
-（不计入本阶段阈值），单独整理**待维护者裁决清单**——你**不改原始需求和需求分析的
-冻结口径**（维护者裁决）。维护者更新并重新冻结后：受影响阶段全部重过门禁
-（哈希失配会强制暴露）。
-
-### 8. 完成与交接
-
-全部参与阶段为 FROZEN、计划跳过阶段为 SKIPPED 后：`doc-gate status` 确认 →
-返回 `repo-delivery`，由总编排按 Route Card
-进入 ⑥；需要编码时由它调用 `tdd` 按任务清单做纵向切片，最后由它调用
-`delivery-gate` 收口。若本技能是被单独显式调用的，只向用户建议当前客户端对应的
-canonical 入口（Claude Code：`/repo-delivery`；Codex：`$repo-delivery`），不要把 `tdd`、
-`delivery-gate` 或阶段名称冒充为并列的“下一步 skill”。小需求不强制走全链——但走了的
-阶段必须过门禁，没有“半冻结”状态。
-
-计划阶段 PASS 建立的是**执行前计划基线**：任务定义、预计范围、验证方式保持冻结；进入
-实现后允许任务清单更新执行记录和 checkbox 状态。它们不是设计漂移，也不要求逐任务重跑
-计划门禁；完整终态由后续 `delivery-gate` 在统一收口时冻结。
-
-## 来源
-
-迭代式评审、sensor/judge 分离与有界修订循环改编自 kit 设计文档
-`docs/design/document-pipeline.md`（ChatGPT 方案 + Claude 修正综合）。
-v2 目标/背景、简洁预检及无进展恢复遵循
-`docs/03-SDD/005-AEK-1.0.5评审效率与收敛/详细设计.md` 与 `API设计.md`；不扩展原批准权限。
+计划通过后保存执行前计划基线。实现期按原协议更新执行记录与勾选，最终由交付入口统一收口。所有参与阶段已冻结、计划免除项已跳过后，返回 `repo-delivery`。单独启动设计的用户可从 Claude Code `/repo-delivery` 或 Codex `$repo-delivery` 继续。

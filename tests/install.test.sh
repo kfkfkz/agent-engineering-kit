@@ -102,6 +102,33 @@ assert_eq "二次安装 CLAUDE.md 段落仍=1" "$(grep -c '^## 项目记忆（�
 if grep -q "CUSTOM INDEX LINE" "$P/docs/memory/README.md"; then ok "README 用户内容保留"; else bad "README 被覆盖"; fi
 if grep -q "CUSTOM CHARTER LINE" "$P/docs/memory/constitution.md"; then ok "宪章用户定制保留"; else bad "宪章用户定制被覆盖"; fi
 
+python3 - "$KIT/install.sh" "$P" <<'PY' \
+    && ok "幂等更新保留治理档位、内容和 mtime；repair 仍恢复工具权限" \
+    || bad "重复安装改变未改资源或治理档位"
+import subprocess, sys
+from pathlib import Path
+
+install, project = map(Path, sys.argv[1:])
+marker = project / ".repo-memory-kit/governance"
+leaf = project / ".repo-memory-kit/lib/aek/__init__.py"
+tool = project / ".repo-memory-kit/bin/doc-gate"
+
+def run(*args):
+    return subprocess.run([str(install), *args, str(project)], capture_output=True, check=True)
+
+run("--update", "--lightweight")
+expected = {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (marker, leaf, tool)}
+run("--update")
+assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in expected} == expected
+assert marker.read_bytes() == b"lightweight\n"
+tool.chmod(0o644)
+run("--repair")
+assert tool.stat().st_mode & 0o111 == 0o111
+assert marker.read_bytes() == b"lightweight\n"
+run("--update", "--strict")
+assert marker.read_bytes() == b"strict\n"
+PY
+
 # ── T3 用户修改 kit 管辖文件 → conflict 保护（update/repair 均不覆盖）；
 #      kit 历史版本内容（drifted）→ --repair 显式恢复 ──
 echo "# local hack" >> "$P/docs/memory/RULES.md"

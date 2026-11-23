@@ -164,7 +164,7 @@ def _run(action: str, store: CodebaseStateStore, value: dict[str, object]) -> ob
             state = mark_dirty(state, batch_id=identity, identity_digest=identity,
                                paths=state.changed_paths, reason="identity_changed")
         capabilities = value["capabilities"]
-        kind = classify_query(value["query"])
+        kind = classify_query(value["query"], value.get("query_kind"))
         lease = store.load_refresh_reservation(state) if kind == QueryKind.STRUCTURAL else None
         pending = (lease is not None and lease.active
                    and state.refresh_started_epoch != state.dirty_epoch)

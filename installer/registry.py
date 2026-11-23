@@ -251,10 +251,13 @@ def _skill_reference_specs() -> list[ResourceSpec]:
                 merge_policy="replace", expected_mode=0o644))
     for skill, name in (("delivery-gate", "review-evidence"),
                         ("delivery-gate", "performance-review"),
+                        ("delivery-gate", "full-receipt"),
                         ("design-pipeline", "business-flow-diagrams"),
                         ("design-pipeline", "reviewer-issues"),
+                        ("design-pipeline", "review-workflow"),
                         ("design-pipeline", "screenshot-observation"),
                         ("design-pipeline", "screenshot-observation-workflow"),
+                        ("design-pipeline", "ui-reference-workflow"),
                         ("design-pipeline", "ui-source-baseline"),
                         ("design-pipeline", "prototype-confirmation-workflow")):
         for tree in ("claude", "agents"):

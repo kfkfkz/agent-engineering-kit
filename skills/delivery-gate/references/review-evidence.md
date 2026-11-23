@@ -19,3 +19,13 @@ AEK 只约束顺序与回执。
 
 回执至少记录 Memory selected path/reason、codebase generation、coverage 路径并集、实际图工具和
 文本回退原因；缺任一必需阶段不能给 `READY`。
+
+## 来源
+
+多维审查、证据门槛、skeptic 复核与分阶段验证闭环思路参考并改编自
+[Everything Claude Code 的 orch-review workflow 与 verification-loop](https://github.com/affaan-m/ECC)，
+Copyright 2026 Affaan Mustafa，MIT License。按风险启用审查维度的思路参考
+[PR-Agent 的可配置 review sections](https://github.com/The-PR-Agent/pr-agent/blob/main/docs/docs/tools/review.md)，
+MIT License；SQL 迁移静态规则思路参考
+[Squawk](https://github.com/sbdchd/squawk)，MIT OR Apache-2.0；执行计划证据口径参考
+[PostgreSQL EXPLAIN 文档](https://www.postgresql.org/docs/current/using-explain.html)，PostgreSQL License。

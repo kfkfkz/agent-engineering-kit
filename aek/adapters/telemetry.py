@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from aek.core.context.telemetry import (
-    ContextEvent, ContextEventInput, next_event, validate_events,
+    ContextChannelLimit, ContextEvent, ContextEventInput, next_event,
+    require_monotonic_route, validate_events,
 )
 
 
@@ -102,15 +103,20 @@ class ContextLedger:
         self._cached_last: ContextEvent | None = None
         self._cached_total: int | None = None
         self._cached_by_stage: dict[str, int] = {}
+        self._cached_by_stage_channel: dict[tuple[str, str], int] = {}
 
     def _cache_rows(self, rows: tuple[ContextEvent, ...], info: os.stat_result) -> None:
         self._cached_identity = self._identity(info)
         self._cached_last = rows[-1] if rows else None
         self._cached_total = sum(row.delivered_bytes for row in rows)
         self._cached_by_stage = {}
+        self._cached_by_stage_channel = {}
         for row in rows:
             self._cached_by_stage[row.stage] = (
                 self._cached_by_stage.get(row.stage, 0) + row.delivered_bytes)
+            key = (row.stage, row.channel)
+            self._cached_by_stage_channel[key] = (
+                self._cached_by_stage_channel.get(key, 0) + row.delivered_bytes)
 
     @staticmethod
     def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -193,7 +199,7 @@ class ContextLedger:
             finally:
                 os.close(fd)
 
-    def append(self, item: ContextEventInput) -> ContextEvent:
+    def append(self, item: ContextEventInput, *, stage_channel_byte_limit: int | None = None) -> ContextEvent:
         if not isinstance(item, ContextEventInput):
             raise ValueError("append needs a validated event input")
         with _exclusive_lock(self.lock_path):
@@ -209,6 +215,12 @@ class ContextLedger:
                     previous = rows[-1] if rows else None
                     previous_total = sum(row.delivered_bytes for row in rows)
                     self._cache_rows(rows, os.fstat(fd))
+                if previous is not None:
+                    require_monotonic_route(previous.route, item.route)
+                key = (item.stage, item.channel)
+                channel_bytes = self._cached_by_stage_channel.get(key, 0) + item.delivered_bytes
+                if stage_channel_byte_limit is not None and channel_bytes > stage_channel_byte_limit:
+                    raise ContextChannelLimit("stage channel byte limit exceeded")
                 if os.fstat(fd).st_size != committed_end:
                     os.ftruncate(fd, committed_end)
                     os.fsync(fd)
@@ -224,6 +236,7 @@ class ContextLedger:
                 self._cached_total = previous_total + row.delivered_bytes
                 self._cached_by_stage[row.stage] = (
                     self._cached_by_stage.get(row.stage, 0) + row.delivered_bytes)
+                self._cached_by_stage_channel[key] = channel_bytes
                 return row
             finally:
                 os.close(fd)
@@ -233,6 +246,7 @@ class ContextLedger:
         channel: str, purpose: str, cache_hit: bool, session_id: str,
         subject_digest: str, logical_path: str, occurred_at: str | None = None,
         note: str = "", duplicate_delivery: bool = False,
+        stage_channel_byte_limit: int | None = None,
     ) -> ContextEvent:
         """Record actual delivered UTF-8 text without writing its body."""
         if not isinstance(content, str):
@@ -249,4 +263,4 @@ class ContextLedger:
                 "%Y-%m-%dT%H:%M:%SZ"),
             note=note, duplicate_delivery=duplicate_delivery,
         )
-        return self.append(item)
+        return self.append(item, stage_channel_byte_limit=stage_channel_byte_limit)

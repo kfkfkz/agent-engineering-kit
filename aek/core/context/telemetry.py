@@ -13,7 +13,7 @@ from dataclasses import dataclass
 CONTEXT_SUBJECT_PATTERN = r"^[0-9a-f]{64}$"
 CONTEXT_SESSION_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 _DIGEST = re.compile(CONTEXT_SUBJECT_PATTERN)
-_ROUTES = {"direct", "bounded", "standard", "initiative"}
+_ROUTES = ("direct", "bounded", "standard", "initiative")
 _STAGES = {"routing", "design", "execution", "closeout"}
 _SOURCES = {"skill", "reference", "code", "test", "memory", "document", "tool",
             "capsule"}
@@ -24,6 +24,15 @@ _SESSION = re.compile(CONTEXT_SESSION_PATTERN)
 _TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _NOTES = {"", "fallback", "cache_reuse", "reroute", "user_requested"}
 _ZERO = "0" * 64
+
+
+class ContextChannelLimit(ValueError):
+    """Another body would exceed the current stage's channel allowance."""
+
+
+def require_monotonic_route(previous: str, current: str) -> None:
+    if _ROUTES.index(previous) > _ROUTES.index(current):
+        raise ValueError("ledger stage or route transition conflicts with budget")
 
 
 def _canonical(value: dict[str, object]) -> bytes:

@@ -1,6 +1,6 @@
 ---
 name: codebase-memory
-description: "使用 codebase-memory-mcp 知识图谱完成代码结构检索、调用链追踪、影响分析和架构取证。适用于理解代码库、查找符号与调用方、评估变更影响、识别架构热点；不用于纯字符串、配置值或非代码文件搜索。"
+description: "用当前工作树的代码图谱定位符号、追调用链和分析变更影响。"
 ---
 
 # Codebase Memory
@@ -27,7 +27,7 @@ description: "使用 codebase-memory-mcp 知识图谱完成代码结构检索、
 
 ## 标准流程
 
-1. 先分类查询：符号、调用链、依赖、架构和影响范围是 STRUCTURAL；字面量、错误文案、配置和非代码文件是 TEXTUAL。STRUCTURAL 的第一次检索必须是图工具，禁止先 grep；TEXTUAL 可直接有界 rg/grep，且不触发索引刷新。
+1. 先按查询目的分类。定位实现、追调用者或检查依赖用 STRUCTURAL，即使问题引用错误文案；匹配具体字符串、查配置或非代码文件用 TEXTUAL。内部 `codebase-context plan` 可传 `query_kind: "STRUCTURAL" | "TEXTUAL"`。STRUCTURAL 的第一次检索必须使用图工具；TEXTUAL 直接有界查找，无需刷新索引。
 2. `search_graph` 找到精确符号或候选模块。
 3. `trace_path` 按问题检查 inbound、outbound 或 both；跨服务、异步与数据流关系同时检查相应边。
 4. `get_code_snippet` 阅读关键实现；配置、注解、字符串和未索引文件回到源码检索。

@@ -1,6 +1,7 @@
 """Safe source expansion and deterministic no-zvec metadata fallback."""
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
@@ -8,7 +9,7 @@ import re
 import stat
 from pathlib import Path
 
-from aek.core.context.memory import CandidateRef, CandidateSet
+from aek.core.context.memory import CandidateRef, CandidateSet, is_memory_markdown
 
 
 TYPE_BY_PREFIX = (
@@ -17,6 +18,7 @@ TYPE_BY_PREFIX = (
     ("docs/memory/playbooks/", "playbook"),
     ("docs/02-业务域地图/", "domain"),
     ("docs/03-SDD/", "sdd"),
+    ("docs/需求/", "sdd"),
     ("docs/delivery-receipts/", "receipt"),
 )
 DOMAIN_STATUS = {"已确认": "confirmed", "草稿": "draft", "待确认": "draft", "已废弃": "deprecated"}
@@ -77,7 +79,9 @@ def _safe_path(repo: Path, rel: str) -> Path:
     current = root
     for part in rel.split("/"):
         current = current / part
-        if current.is_symlink():
+        info = current.lstat()
+        if stat.S_ISLNK(info.st_mode) or (getattr(info, "st_file_attributes", 0)
+                                        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)):
             raise StaleCandidate("memory path contains a symlink")
     try:
         candidate.resolve().relative_to(root)
@@ -86,7 +90,9 @@ def _safe_path(repo: Path, rel: str) -> Path:
     return candidate
 
 
-def _read_source(repo: Path, rel: str) -> bytes:
+def _read_source(repo: Path, rel: str, *, prefix_bytes: int | None = None) -> bytes:
+    if not is_memory_markdown(rel):
+        raise StaleCandidate("memory source is outside the Markdown corpus")
     path = _safe_path(repo, rel)
     if (os.open in os.supports_dir_fd and getattr(os, "O_NOFOLLOW", 0)
             and getattr(os, "O_DIRECTORY", 0)):
@@ -113,7 +119,7 @@ def _read_source(repo: Path, rel: str) -> bytes:
         if not stat.S_ISREG(status.st_mode) or status.st_size > 1_000_000:
             raise StaleCandidate("memory source is not a bounded regular file")
         chunks: list[bytes] = []
-        remaining = status.st_size
+        remaining = status.st_size if prefix_bytes is None else min(status.st_size, prefix_bytes)
         while remaining:
             chunk = os.read(fd, remaining)
             if not chunk:
@@ -180,16 +186,16 @@ def fallback_candidates(repo: Path, query: str, *, limit: int, types: tuple[str,
         return CandidateSet("fallback", (), False, "fallback")
     tokens = tuple(token.casefold() for token in query.split() if token)
     rows: list[CandidateRef] = []
-    root = repo / "docs/memory"
+    root = repo / "docs"
     if not root.is_dir():
         return CandidateSet("fallback", (), False, "fallback")
     for path in sorted(root.rglob("*.md")):
         rel = path.relative_to(repo).as_posix()
+        if not is_memory_markdown(rel):
+            continue
         try:
-            content = _read_source(repo, rel)
-            if not _matches_filters(rel, content, types, status, module):
-                continue
-            head = content[:4096].decode("utf-8", errors="strict")
+            prefix = _read_source(repo, rel, prefix_bytes=4096)
+            head = codecs.getincrementaldecoder("utf-8")().decode(prefix, final=False)
         except (OSError, UnicodeError, StaleCandidate):
             continue
         metadata = "\n".join(
@@ -198,6 +204,12 @@ def fallback_candidates(repo: Path, query: str, *, limit: int, types: tuple[str,
         haystack = (rel + "\n" + metadata).casefold()
         hits = sum(token in haystack for token in tokens)
         if hits == 0:
+            continue
+        try:
+            content = _read_source(repo, rel)
+            if not content.startswith(prefix) or not _matches_filters(rel, content, types, status, module):
+                continue
+        except (OSError, UnicodeError, StaleCandidate):
             continue
         anchor = next((line[2:].strip() for line in metadata.splitlines()
                        if line.startswith("# ")), path.stem)
@@ -247,10 +259,13 @@ def search_candidates(repo: Path, query: str, *, limit: int, types: tuple[str, .
         rows: list[CandidateRef] = []
         for result in results:
             path = result.fields.get("path")
-            if not isinstance(path, str) or not path.startswith("docs/memory/"):
+            if not is_memory_markdown(path):
                 continue
-            content = _read_source(repo, path)
-            if not _matches_filters(path, content, types, status, module):
+            try:
+                content = _read_source(repo, path)
+                if not _matches_filters(path, content, types, status, module):
+                    continue
+            except (OSError, UnicodeError, StaleCandidate):
                 continue
             anchor = result.fields.get("title") or Path(path).stem
             rows.append(CandidateRef(

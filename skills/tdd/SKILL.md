@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: "项目要求测试先行、用户明确要求 TDD 或关键行为需要回归时，按 RED→GREEN→REFACTOR 保留可验证证据。"
+description: "为指定或关键行为按 RED→GREEN→REFACTOR 实施测试先行。"
 license: MIT
 metadata:
   source: "Adapted from mattpocock/skills tdd and improve-codebase-architecture"
