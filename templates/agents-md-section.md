@@ -10,7 +10,7 @@
 - 缺陷先定位根因、给出最小修复方案和回归方式，默认等用户确认方案再改代码。已明确授权直接修复时继续执行。复杂诊断用 `systematic-debugging`，流程见 `repo-delivery`。
 - 新依赖、外部集成、通用组件或关键选型先用 `reuse-research`，形成采用/扩展/组合/自建的证据化决策。
 - 认证授权、外部输入、敏感操作、依赖或 Agent 配置变更使用 `security-review`；高危结论必须有利用路径并做对抗式复核。
-- 设计定稿由 `design-pipeline` 负责；代码交付用 `delivery-gate`，收口前用 `route-eval` 对照 Route Card 检查最低路线与最终 diff 漂移。验证结论以治理 profile 要求的持久回执为证，无回执不得声称验证通过。
+- 设计定稿用 `design-pipeline`。代码交付或用户点名时立即载入 `delivery-gate`，复用已得证据。交付范围、治理和持久回执由该 Skill 核对，无回执不得声称交付通过。
 - 已有 `.specify/specs` 先用 `spec-migrate` 检查；只有明确要求时才增量迁移，待核验标记不等于设计完成。
 - 项目建有 `docs/03-SDD/` 时，功能的设计交付物（业务流程设计/详细设计/API/验收）以其版本目录为载体。
 - 任务中断或跨 Agent/会话移交时使用 `task-handoff`，以当前源码和权威 spec 复核交接内容。

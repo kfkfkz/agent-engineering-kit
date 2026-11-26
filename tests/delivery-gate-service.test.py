@@ -130,6 +130,16 @@ class DeliveryGateServiceTests(unittest.TestCase):
         self.assertEqual(result["identity"]["state"], "STALE")
         self.assertIn("IDENTITY_COMPONENT_CHANGED", result["reason_codes"])
 
+    def test_missing_business_check_remains_pending_with_other_checks_passed(self):
+        route = route_result()
+        route["requirements"]["required_checks"].append("tenant-policy-effect")
+        result = compose_delivery_gate(
+            route_result=route,
+            identity=IdentityComparison(IdentityState.VALID),
+            review_plan=review_plan(), evidence_by_requirement=evidence())
+        self.assertEqual(result["verdict"], "NOT_READY")
+        self.assertEqual(result["pending_requirements"], ["checks:tenant-policy-effect"])
+
     def test_pending_independent_review_needs_human(self):
         result = compose_delivery_gate(
             route_result=route_result(),

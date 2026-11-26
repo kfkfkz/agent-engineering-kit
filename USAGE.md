@@ -50,6 +50,8 @@ AEK 的记忆 MCP 与 codebase-memory MCP 处理不同的信息：
 
 使用 Git worktree 时，从实际改动所在目录匹配索引，并核对工作树根目录和 HEAD。若索引建在子项目，按任务涉及的子项目分别查图。索引覆盖有缺口时，继续用图谱查已覆盖路径，对缺口读取对应源码。
 
+Memory 单独绑定实际工作树和分支。多工作树时，Agent 从 `memory-recall --scope-info <当前工作树根>` 获取 `scope_digest` 后交给 MCP。MCP 绑定不匹配时，由同机可用的 CLI 对当前工作树检索。子分支可读取父分支显式标为 `inherit` 的经验。环境记忆使用 `worktree`，同级分支各自取证。索引和缓存按当前范围校验。
+
 AEK 注册的 MCP 工具为 `memory_recall`、`memory_build`、`domain_check`、`kit_status`，均绑定安装目标仓库。codebase-memory 的工具由其独立运行时提供。
 
 语义检索的可选依赖是 `zvec`。将它安装到 MCP 使用的 Python 环境后，在项目目录重建索引：
@@ -284,6 +286,16 @@ doctor 还会比较团队治理规则与当前默认规则，列出缺失和不�
 `--adopt-legacy` 拒绝覆盖已有 manifest；恢复策略需依据事务报告选择。卸载不会移除机器级 codebase-memory MCP。
 
 ## 开发与验证
+
+交付时优先读取项目原生摘要。对只输出日志的前台构建或测试，`delivery-gate` 可运行
+`validation-run --log <新日志路径> -- <命令> [参数…]`，源码树入口为 `python3 validation-run`，
+安装后入口在 `.repo-memory-kit/bin/`。日志目录须已存在。输出含真实退出码、完整日志引用、
+长度和 SHA-256。失败时按日志位置补读，门禁继续以当前机器裁决及项目回执为准。
+
+跨步骤复用时同时传 `--scope <快照文件> --receipt <新回执文件>`。范围快照由宿主按当前证据核对，
+记录实际代码身份（含未提交改动）、工作树、适用输入，以及联调所用环境、租户与策略版本等非秘密标识。
+复验用同一工作目录、日志和命令，再加 `--reuse`。快照内容、命令、日志版本任一变化即拒绝复用。
+该模式只核验已有检查结果。外部状态需由宿主重新核实。检查回执与项目交付回执是两个层次。
 
 [CI 工作流](.github/workflows/ci.yml) 是自动验证清单的来源，覆盖 Ubuntu 全量回归、ShellCheck、archify 实际执行和原生 Windows 生命周期。新增 Python 行为套件由测试运行器自动发现。
 

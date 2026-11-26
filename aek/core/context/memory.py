@@ -26,10 +26,15 @@ class CandidateRef:
     generation: str
     content_digest: str
     anchor: str
+    origin_ref: str | None = None
 
     def __post_init__(self) -> None:
         if not is_memory_markdown(self.path):
             raise ValueError("candidate path must be a safe memory Markdown path")
+        if self.origin_ref is not None and (
+                not isinstance(self.origin_ref, str) or not self.origin_ref.startswith("refs/heads/")
+                or len(self.origin_ref) > 512 or any(ord(ch) < 32 for ch in self.origin_ref)):
+            raise ValueError("candidate origin must be a Git branch")
         if isinstance(self.score, bool) or not isinstance(self.score, (int, float)) \
                 or not math.isfinite(self.score) or self.score < 0:
             raise ValueError("candidate score must be finite and non-negative")

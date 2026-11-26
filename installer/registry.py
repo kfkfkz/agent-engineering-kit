@@ -126,7 +126,7 @@ KIT_TOOLS = [
     "domain-check", "session-reminder", "agent-engineering-mcp",
     "doc-gate", "governance-eval", "route-eval",
     "codebase-context",
-    "security-check",
+    "security-check", "validation-run",
 ]
 
 
@@ -367,6 +367,7 @@ AEK_PACKAGE_FILES = (
     "adapters/capsule.py",
     "adapters/telemetry.py",
     "adapters/memory.py",
+    "adapters/memory_scope.py",
     "adapters/plan_transaction.py",
     "adapters/evidence.py",
     "adapters/change_scope.py",

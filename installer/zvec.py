@@ -142,7 +142,8 @@ def rebuild(repo: Path) -> None:
     try:
         # 2. 父进程固定完整语料快照（JSONL，含所有索引字段）
         recall = _load_memory_recall()
-        docs = recall.build_docs(repo)
+        scope = recall.resolve_memory_scope(repo)
+        docs = recall.build_docs(repo, scope=scope)
         if not docs:
             sys.exit("✗ docs/ 下没有可索引的 Markdown 文档")
         snapshot_hash = compute_corpus_hash(docs)
@@ -192,9 +193,9 @@ def rebuild(repo: Path) -> None:
                 shutil.rmtree(gen_dir, ignore_errors=True)
                 sys.exit("子进程语料 hash 与父进程不一致")
 
-            current_docs = recall.build_docs(repo)
+            current_docs = recall.build_docs(repo, scope=scope)
             current_hash = compute_corpus_hash(current_docs)
-            if snapshot_hash != current_hash:
+            if recall.resolve_memory_scope(repo) != scope or snapshot_hash != current_hash:
                 shutil.rmtree(gen_dir, ignore_errors=True)
                 sys.exit("语料在构建期间变化")
 
@@ -241,7 +242,7 @@ def rebuild(repo: Path) -> None:
         fsync_dir(gen_dir)               # generation 落盘完成后才能发布
 
         # 7. 原子切换 pointer（secure_open：唯一 tmp + O_EXCL|O_NOFOLLOW + fsync）
-        pointer = {"generation": gen_name, "docs": len(docs)}
+        pointer = {"generation": gen_name, "docs": len(docs), "memory_scope_digest": scope.digest}
         tmp_rel = f"{ZVEC_REL}/current.json.{uuid.uuid4()}.tmp"
         fd = secure_open(repo, tmp_rel, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
         try:

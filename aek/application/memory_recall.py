@@ -38,12 +38,14 @@ class ExpandedMemory:
     path: str
     content_digest: str
     content: str
+    origin_ref: str | None = None
 
 
 @dataclass(frozen=True)
 class ReusedMemory:
     path: str
     content_digest: str
+    origin_ref: str | None = None
 
 
 def validate_known_digests(value: object) -> tuple[str, ...]:
@@ -121,7 +123,8 @@ def recall_context(
     metadata = json.dumps({
         "generation": batch.generation, "source": batch.source,
         "has_more": batch.has_more,
-        "candidates": [asdict(item) for item in batch.candidates],
+        "candidates": [{key: value for key, value in asdict(item).items() if value is not None}
+                       for item in batch.candidates],
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     record_context_delivery(
         ledger, budget, metadata, source="memory", source_kind="memory",
@@ -135,7 +138,7 @@ def recall_context(
     deferred = False
     for ref, content in bodies:
         if (ref.path, ref.content_digest) in previously_delivered:
-            reused.append(ReusedMemory(ref.path, ref.content_digest))
+            reused.append(ReusedMemory(ref.path, ref.content_digest, ref.origin_ref))
         else:
             try:
                 record_context_delivery(
@@ -147,7 +150,7 @@ def recall_context(
             except ContextChannelLimit:
                 deferred = True
                 continue
-            expanded.append(ExpandedMemory(ref.path, ref.content_digest, content))
+            expanded.append(ExpandedMemory(ref.path, ref.content_digest, content, ref.origin_ref))
         admitted.append(ref)
     capsule = None
     capsule_reused = False

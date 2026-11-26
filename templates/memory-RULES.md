@@ -150,4 +150,12 @@ L0  权威文档与代码（记忆区外）   证据：源码（第一事实源�
 | summary | 可选 | 索引一句话（缺省用标题） |
 | supersedes / conflicts_with / related | 可选 | 替代/冲突/关联条目（相对路径）；status 为 superseded 的条目必须被某条的 supersedes 指向 |
 
+### 工作树与分支范围
+
+新记忆默认复制 `memory-recall --scope-info <当前工作树根>` 的 `entry_fields`，包括 `memory_scope: worktree`、`memory_ref` 和 `memory_worktree`。环境、租户和部署记忆使用这一范围。工作树移动、重建或换机后，核对归属再更新绑定。
+
+- `memory_scope: inherit` 配合所属分支的完整 `memory_ref`，允许本分支和子分支查找工程经验。省略 `memory_worktree`。父分支有唯一已登记的本地工作树时读取其共享条目，否则查已随 Git 同步到当前工作树的条目。默认父分支是项目主分支，其他父子关系由本地 Git 配置 `branch.<分支名>.aekMemoryParent` 明确指定。
+- `memory_scope: branch` 配合完整 `memory_ref`，仅在该分支可查。`memory_scope: project` 可用于明确批准的项目通用记忆，两种范围均省略 `memory_worktree`，`project` 也省略 `memory_ref`。
+- 旧无范围记忆仅在主工作树的主分支按原口径召回。附加工作树和其他分支先核对来源，再补范围字段。通过 Git 同步父分支已共享的条目。
+
 正文：一级标题 + 内容小节 + 「校验点」（巡检记录与补充事实）。状态与日期**不再写在正文**——单一事实源在 frontmatter。模板：`_PITFALL_TEMPLATE.md`、`_DECISION_TEMPLATE.md`、`_PLAYBOOK_TEMPLATE.md`、`_PROFILE_TEMPLATE.md`（复制到对应模块目录、按 `YYYY-MM-DD-<中文标题>.md` 命名，纯代码符号名可保留英文）。存量英文命名条目可运行 `memory-build --rename-by-title` 按标题批量重命名；存量 v3 类型目录（pitfalls/decisions/playbooks）条目可运行 `memory-build --migrate-to-modules` 迁入模块目录（交叉引用自动联动）——两者均在刷新索引时自动联动。

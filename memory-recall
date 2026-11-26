@@ -61,8 +61,10 @@ from dataclasses import asdict
 
 from aek.adapters.capsule import CapsuleStore
 from aek.adapters.memory import (
-    derive_status, derive_type, parse_frontmatter, read_candidate, search_candidates, zvec_filter,
+    StaleCandidate, _matches_filters, _read_source, _scoped_generation, derive_status,
+    derive_type, parse_frontmatter, read_candidate, search_candidates, zvec_filter,
 )
+from aek.adapters.memory_scope import resolve_memory_scope
 from aek.adapters.telemetry import ContextLedger
 from aek.application.memory_recall import recall_context, validate_known_digests
 from aek.core.context.budget import CONTEXT_PURPOSES, resolve_context_budget
@@ -139,11 +141,12 @@ def _under_repo_no_symlinks(p: Path, repo: Path) -> bool:
     return True
 
 
-def iter_docs(repo):
+def iter_docs(repo, *, scope=None):
     """语料提取：docs/**/*.md → (rel, fm, body, title, typ, meta)。不依赖 zvec。"""
     docs = repo / "docs"
     if not docs.is_dir():
         return
+    scope = scope or resolve_memory_scope(repo)
     for p in sorted(docs.rglob("*.md")):
         rel = p.relative_to(repo).as_posix()
         if not is_memory_markdown(rel):
@@ -155,6 +158,8 @@ def iter_docs(repo):
         except (OSError, UnicodeError):
             continue
         fm, body = parse_frontmatter(text)
+        if not scope.allows(rel, fm):
+            continue
         m = re.search(r"^# (.+)$", body, re.M)
         title = (m.group(1).strip() if m else p.stem)
         _anchors = fm.get("anchors", [])
@@ -165,9 +170,9 @@ def iter_docs(repo):
         yield rel, fm, body, title, derive_type(rel, fm, body), meta
 
 
-def build_docs(repo):
+def build_docs(repo, *, scope=None):
     out = []
-    for rel, fm, body, title, typ, meta in iter_docs(repo):
+    for rel, fm, body, title, typ, meta in iter_docs(repo, scope=scope):
         out.append({
             "rel": rel, "title": title, "type": typ,
             "status": derive_status(rel, fm, body),
@@ -364,7 +369,8 @@ def cmd_rebuild(repo):
         sys.exit("另一个 rebuild 正在运行")
     try:
         # 1. 父进程固定完整语料快照（JSONL，含所有索引字段）
-        docs = build_docs(repo)
+        scope = resolve_memory_scope(repo)
+        docs = build_docs(repo, scope=scope)
         if not docs:
             sys.exit("✗ docs/ 下没有可索引的 Markdown 文档")
         snapshot_hash = compute_corpus_hash(docs)
@@ -404,7 +410,8 @@ def cmd_rebuild(repo):
             if build_meta["corpus_hash"] != snapshot_hash:
                 shutil.rmtree(gen_dir, ignore_errors=True)
                 sys.exit("子进程语料 hash 与父进程不一致，旧索引保留")
-            if compute_corpus_hash(build_docs(repo)) != snapshot_hash:
+            if (resolve_memory_scope(repo) != scope
+                    or compute_corpus_hash(build_docs(repo, scope=scope)) != snapshot_hash):
                 shutil.rmtree(gen_dir, ignore_errors=True)
                 sys.exit("语料在构建期间变化，旧索引保留")
 
@@ -454,7 +461,8 @@ def cmd_rebuild(repo):
                      os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_BINARY | O_NOFOLLOW,
                      0o644)
         try:
-            os.write(fd, json.dumps({"generation": gen_name, "docs": len(docs)}).encode())
+            os.write(fd, json.dumps({"generation": gen_name, "docs": len(docs),
+                                     "memory_scope_digest": scope.digest}).encode())
             os.fsync(fd)
         finally:
             os.close(fd)
@@ -485,7 +493,19 @@ def _open_index(repo):
     return zvec.open(str(repo / LEGACY_STORE_REL)), None
 
 
-def cmd_query(repo, text, top, types, status, module):
+def cmd_query(repo, text, top, types, status, module, scope):
+    if scope.git:
+        batch = search_candidates(repo, text, limit=top, types=types,
+                                  status=status, module=module, scope=scope,
+                                  open_generation=open_current_generation)
+        if resolve_memory_scope(repo) != scope:
+            sys.exit("✗ 检索期间工作树或分支发生变化")
+        for ref in batch.candidates:
+            origin = f" [{ref.origin_ref}]" if ref.origin_ref else ""
+            print(f"  {ref.anchor}\n   {ref.path}{origin}")
+        if not batch.candidates:
+            print("当前工作树及允许继承的父分支范围内无命中。")
+        return
     require_zvec()
     from zvec import Query
     from zvec.extension.multi_vector_reranker import RrfReRanker
@@ -506,43 +526,50 @@ def cmd_query(repo, text, top, types, status, module):
             filter=zvec_filter(types, status),
         )
         shown = 0
-        print(f'语义检索: "{text}"')
+        lines = [f'语义检索: "{text}"']
         for d in results:
             f = d.fields
-            if types and f.get("type") not in types:
+            rel = f.get("path")
+            if not is_memory_markdown(rel):
                 continue
-            if status and f.get("status") != status:
-                continue
-            if module and module not in f.get("module", ""):
+            try:
+                source = _read_source(repo, rel)
+                if not _matches_filters(rel, source, types, status, module, scope):
+                    continue
+            except (OSError, UnicodeError, StaleCandidate):
                 continue
             shown += 1
             tag = f.get("type") or "doc"
             st = f.get("status") or "—"
-            print(f"{shown}. [score {d.score:.3f}] [{tag}/{st}] {f.get('title', '')}")
-            print(f"   {f.get('path') or d.id}")
+            lines.extend((f"{shown}. [score {d.score:.3f}] [{tag}/{st}] {f.get('title', '')}", f"   {rel}"))
             if shown >= top:
                 break
         if not shown:
-            print("无命中。可尝试去掉 --type/--status 过滤，或检查关键词。")
+            lines.append("当前范围内无命中。可检查关键词或补充当前工作树的记忆。")
+        if resolve_memory_scope(repo) != scope:
+            sys.exit("✗ 检索期间工作树或分支发生变化")
+        print("\n".join(lines))
     finally:
         if lock_fd is not None:
             os.close(lock_fd)
 
 
-def cmd_check(repo):
+def cmd_check(repo, scope):
     zvec_dir = repo / ZVEC_ROOT_REL
     current = zvec_dir / "current.json"
     if current.is_file():
         # 新布局：语料 hash 与发布元数据比对（比 mtime 计数更强的新鲜度判定）
         try:
+            generation = _scoped_generation(repo, scope)
             gen_dir, fd = open_current_generation(repo)
-        except (RuntimeError, ValueError) as e:
+        except (OSError, RuntimeError, ValueError) as e:
             print(f"✗ 语义索引不可用（{e}）")
             sys.exit(1)
         try:
             meta = json.loads((gen_dir / ".metadata.json").read_text())
-            current_hash = compute_corpus_hash(build_docs(repo))
-            if current_hash != meta.get("corpus_hash"):
+            current_hash = compute_corpus_hash(build_docs(repo, scope=scope))
+            if (current_hash != meta.get("corpus_hash") or gen_dir.name != generation
+                    or resolve_memory_scope(repo) != scope):
                 print("✗ 语义索引过期：语料已变化（运行 --rebuild）")
                 sys.exit(1)
             print(f"✓ 语义索引 generations/{gen_dir.name}：{meta.get('docs')} 篇（与语料一致）")
@@ -551,7 +578,7 @@ def cmd_check(repo):
             os.close(fd)
     # 旧布局（只读兼容）
     store = repo / LEGACY_STORE_REL
-    if not store.exists():
+    if scope.git or not store.exists():
         print("✗ 语义索引不存在（运行 memory-recall --rebuild）")
         sys.exit(1)
     try:
@@ -583,6 +610,8 @@ def main():
     ap.add_argument("--rebuild", action="store_true", help="全量重建语义索引")
     ap.add_argument("--check", action="store_true", help="显示索引状态")
     ap.add_argument("--list", action="store_true", help="列出语料清单（不依赖 zvec）")
+    ap.add_argument("--scope-info", action="store_true", help="输出当前 Memory 绑定和条目 scope 字段")
+    ap.add_argument("--expect-scope", help=argparse.SUPPRESS)
     ap.add_argument("--top", type=int, help="最大返回数（普通查询默认 8，结构化查询受 Route 预算约束）")
     ap.add_argument("--type", help="按类型过滤（逗号分隔：pitfall,decision,playbook,domain,sdd,receipt）")
     ap.add_argument("--status", help="按状态过滤（如 confirmed）")
@@ -626,7 +655,7 @@ def main():
         ap.error(str(exc))
 
     # --rebuild/--check/--list 模式下，单个位置参数视为目标仓库而非查询文本。
-    if args.rebuild or args.check or args.list:
+    if args.rebuild or args.check or args.list or args.scope_info:
         target_str = args.query or args.target
         args.query = None
     else:
@@ -635,17 +664,31 @@ def main():
     repo = Path(target_str).expanduser().resolve()
     if not repo.is_dir():
         sys.exit(f"✗ 目标目录不存在: {repo}")
+    try:
+        scope = resolve_memory_scope(repo)
+    except ValueError as exc:
+        sys.exit(f"✗ {exc}")
+    if args.scope_info:
+        print(json.dumps({"root": str(scope.root), "ref": scope.ref, "parents": scope.parents,
+                          "scope_digest": scope.digest, "entry_fields": scope.entry_fields()},
+                         ensure_ascii=False))
+        return 0
+    if args.expect_scope is not None and args.expect_scope != scope.digest:
+        sys.exit("✗ Memory 工作树或分支与请求不一致")
+
+    if args.top is not None and args.top < 0:
+        ap.error("--top 不能小于 0")
     if not (repo / "docs").is_dir():
         sys.exit(f"✗ 未找到 {repo}/docs（安装过 agent-engineering-kit 吗？）")
 
     if args.list:
-        docs = build_docs(repo)
+        docs = build_docs(repo, scope=scope)
         print(f"语料 {len(docs)} 篇：")
         for d in docs:
             print(f"  [{d['type']}/{d['status'] or '—'}] {d['rel']}")
         return 0
     if args.check:
-        cmd_check(repo)
+        cmd_check(repo, scope)
         return 0
     if args.rebuild:
         cmd_rebuild(repo)
@@ -654,16 +697,18 @@ def main():
         ap.error("提供检索文本，或 --rebuild/--check/--list")
     types = tuple(t.strip() for t in args.type.split(",") if t.strip()) if args.type else ()
     if args.context_json:
-        if args.top is not None and args.top < 0:
-            ap.error("--top 不能小于 0")
         if not args.route or not args.subject or not args.session:
             ap.error("--context-json 需要 --route、--subject 和 --session")
         budget = resolve_context_budget(
             args.route, args.stage,
             "thorough" if args.route in {"standard", "initiative"} else "quick")
-        ledger = ContextLedger(
-            repo / ".repo-memory-kit/context" /
-            f"{args.session}-{args.subject[:12]}.jsonl")
+        context_root = repo / ".repo-memory-kit/context"
+        ledger_name = f"{args.session}-{args.subject[:12]}.jsonl"
+        capsule_dir = "capsules"
+        if scope.git:
+            ledger_name = f"{scope.digest}-{ledger_name}"
+            capsule_dir = f"capsules-{scope.digest}"
+        ledger = ContextLedger(context_root / ledger_name)
         candidate_limit = budget.memory_candidate_limit
         if args.top is not None:
             candidate_limit = min(candidate_limit, args.top)
@@ -673,10 +718,10 @@ def main():
                 subject_digest=args.subject, risk_required=args.risk_required,
                 candidate_search=lambda root, query: search_candidates(
                     root, query, limit=candidate_limit, types=types,
-                    status=args.status, module=args.module),
-                candidate_read=read_candidate,
-                capsule_store=CapsuleStore(
-                    repo / ".repo-memory-kit/context/capsules"),
+                    status=args.status, module=args.module, scope=scope,
+                    open_generation=open_current_generation),
+                candidate_read=lambda root, ref, generation: read_candidate(root, ref, generation, scope=scope),
+                capsule_store=CapsuleStore(context_root / capsule_dir),
                 lookup_plan=plan_knowledge_lookup(CapabilitySnapshot(
                     mcp_configured=args.lookup_channel == "mcp",
                     mcp_visible=args.lookup_channel == "mcp",
@@ -684,16 +729,21 @@ def main():
                     cli_available=True, bounded_text_available=True,
                     evidence=(f"adapter:{args.lookup_channel}",))),
                 purpose=args.purpose, known_digests=known_digests)
+            if resolve_memory_scope(repo) != scope:
+                raise StaleCandidate("Memory 工作树或分支在检索期间发生变化")
         except (OSError, ValueError) as exc:
             print(f"✗ 结构化记忆检索失败：{exc}", file=sys.stderr)
             return 1
         output = asdict(result)
+        for row in (*output["candidates"]["candidates"], *output["expanded"], *output["reused"]):
+            if row["origin_ref"] is None:
+                del row["origin_ref"]
         if not known_digests:
             output.pop("reused")
         style = {"separators": (",", ":")} if args.compact_json else {"indent": 2}
         print(json.dumps(output, ensure_ascii=False, **style))
         return 0
-    cmd_query(repo, args.query, 8 if args.top is None else args.top, types, args.status, args.module)
+    cmd_query(repo, args.query, 8 if args.top is None else args.top, types, args.status, args.module, scope)
     return 0
 
 

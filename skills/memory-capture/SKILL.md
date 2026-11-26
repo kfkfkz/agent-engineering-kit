@@ -11,4 +11,6 @@ description: "从会话提取值得沉淀的项目经验。展示候选，经确
 
 在对话展示类型、标题、一句话和证据，用户确认后才写文件。模块、frontmatter 与业务域地图的归档规则由 RULES 定义。排除凭证、内网地址和真实个人信息。无法判断敏感性时先核实。
 
+用 `memory-recall --scope-info <当前工作树根>` 的 `entry_fields` 绑定新条目，环境与部署记忆使用这组字段。只有确认可供下游复用的工程经验才标 `memory_scope: inherit`，并填写所属分支的 `memory_ref`。
+
 入库后运行 `memory-build` 刷新索引与锚点。如达到画像蒸馏门槛，提示另行蒸馏。

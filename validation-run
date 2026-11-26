@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""Capture a foreground check or verify its existing local result."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+
+
+def emit(summary: dict) -> int:
+    print(json.dumps(summary, separators=(",", ":")))
+    return summary["exit_code"]
+
+
+def error(reason: str, **details) -> dict:
+    return {"status": "ERROR", "reason_code": reason, "exit_code": 2, **details}
+
+
+def create_file(path: Path):
+    flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    return os.fdopen(os.open(path, flags, 0o600), "w+b")
+
+
+def open_regular(path: Path):
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("expected a regular file")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def log_digest(log) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    byte_count = 0
+    for chunk in iter(lambda: log.read(1024 * 1024), b""):
+        digest.update(chunk)
+        byte_count += len(chunk)
+    return digest.hexdigest(), byte_count
+
+
+def scope_digest(path: Path) -> str:
+    with open_regular(path) as source:
+        snapshot = source.read(65537)
+    if not snapshot.strip() or len(snapshot) > 65536:
+        raise ValueError("expected a nonempty scope snapshot of at most 64 KiB")
+    return hashlib.sha256(snapshot).hexdigest()
+
+
+def reuse(path: Path, receipt: Path, binding: dict) -> dict:
+    try:
+        with open_regular(receipt) as source:
+            payload = source.read(65537)
+        if len(payload) > 65536:
+            return error("RECEIPT_INVALID")
+        summary = json.loads(payload)
+    except (OSError, ValueError, RecursionError):
+        return error("RECEIPT_UNREADABLE")
+    if not isinstance(summary, dict) or summary.get("receipt_version") != 1:
+        return error("RECEIPT_INVALID")
+    fields = ("scope_digest", "check_digest", "full_result_ref")
+    if (any(key not in summary for key in fields)
+            or type(summary.get("returncode")) is not int):
+        return error("RECEIPT_NOT_REUSABLE")
+    if (summary["scope_digest"] != binding["scope_digest"]
+            or summary["check_digest"] != binding["check_digest"]
+            or summary["full_result_ref"] != str(path)):
+        return error("EVIDENCE_SCOPE_MISMATCH")
+    returncode = summary["returncode"]
+    exit_code = returncode if returncode >= 0 else 128 - returncode
+    status = "PASS" if returncode == 0 else "FAIL"
+    if summary.get("status") != status or summary.get("exit_code") != exit_code:
+        return error("RECEIPT_INVALID")
+    try:
+        with open_regular(path) as log:
+            before = os.fstat(log.fileno())
+            digest, size = log_digest(log)
+            after = os.fstat(log.fileno())
+    except (OSError, ValueError):
+        return error("LOG_UNVERIFIED")
+    if ((before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+            != (after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+            or size != after.st_size or digest != summary.get("result_digest")
+            or size != summary.get("log_bytes")):
+        return error("LOG_UNVERIFIED")
+    return {"status": status, "returncode": returncode, "exit_code": exit_code,
+            "full_result_ref": str(path), "result_digest": digest, "log_bytes": size,
+            **binding, "reused": True}
+
+
+def run_check(path: Path, command: list[str]) -> dict:
+    returncode = None
+    try:
+        log = create_file(path)
+    except OSError as exc:
+        return error("LOG_NOT_CREATED", error=exc.strerror)
+
+    reason = None
+    try:
+        with log:
+            try:
+                child = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                         stderr=subprocess.STDOUT)
+            except OSError as exc:
+                log.write((str(exc) + "\n").encode("utf-8", errors="backslashreplace"))
+                reason, status = "COMMAND_NOT_STARTED", "ERROR"
+                exit_code = 127 if isinstance(exc, FileNotFoundError) else 126
+            else:
+                try:
+                    with child:
+                        try:
+                            shutil.copyfileobj(child.stdout, log, length=64 * 1024)
+                        except (OSError, KeyboardInterrupt):
+                            child.kill()
+                            raise
+                    returncode = child.returncode
+                    exit_code = returncode if returncode >= 0 else 128 - returncode
+                    status = "PASS" if returncode == 0 else "FAIL"
+                except KeyboardInterrupt:
+                    reason, status, exit_code = "INTERRUPTED", "ERROR", 130
+            log.flush()
+            os.fsync(log.fileno())
+            log.seek(0)
+            digest, byte_count = log_digest(log)
+    except OSError:
+        return error("LOG_UNVERIFIED", returncode=returncode, full_result_ref=str(path))
+
+    summary = {"status": status, "returncode": returncode, "exit_code": exit_code,
+               "full_result_ref": str(path), "result_digest": digest,
+               "log_bytes": byte_count}
+    if reason is not None:
+        summary["reason_code"] = reason
+    return summary
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog="validation-run", description="执行验证命令并保存完整日志")
+    parser.add_argument("--log", type=Path, required=True, help="完整日志路径，首次运行时必须不存在")
+    parser.add_argument("--scope", type=Path, help="当前范围快照（代码身份、环境、租户及适用输入）")
+    parser.add_argument("--receipt", type=Path, help="带范围绑定的检查结果文件，须同时提供 --scope")
+    parser.add_argument("--reuse", action="store_true", help="只校验当前范围和既有回执，绝不运行命令")
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="-- 后传入命令及各参数")
+    args = parser.parse_args()
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command:
+        parser.error("提供 -- 后的验证命令")
+    if bool(args.scope) != bool(args.receipt) or (args.reuse and args.receipt is None):
+        parser.error("--scope 和 --receipt 一起提供；--reuse 需要两者")
+
+    path = args.log.absolute()
+    if args.scope is None:
+        return emit(run_check(path, command))
+    try:
+        binding = {"receipt_version": 1, "scope_digest": scope_digest(args.scope),
+                   "check_digest": hashlib.sha256(
+                       json.dumps([os.getcwd(), command]).encode("ascii")).hexdigest()}
+    except (OSError, ValueError):
+        return emit(error("SCOPE_UNVERIFIED"))
+    if args.reuse:
+        summary = reuse(path, args.receipt, binding)
+        if summary.get("reused"):
+            try:
+                if binding["scope_digest"] != scope_digest(args.scope):
+                    return emit(error("SCOPE_CHANGED"))
+            except (OSError, ValueError):
+                return emit(error("SCOPE_UNVERIFIED"))
+        return emit(summary)
+
+    try:
+        receipt = create_file(args.receipt)
+    except OSError:
+        return emit(error("RECEIPT_NOT_CREATED"))
+    summary = {}
+    try:
+        with receipt:
+            summary = run_check(path, command)
+            try:
+                unchanged = binding["scope_digest"] == scope_digest(args.scope)
+            except (OSError, ValueError):
+                unchanged = False
+            if not unchanged:
+                return emit(error("SCOPE_CHANGED", check_result=summary))
+            summary.update(binding)
+            receipt.write(json.dumps(summary, separators=(",", ":")).encode("ascii") + b"\n")
+            receipt.flush()
+            os.fsync(receipt.fileno())
+    except OSError:
+        return emit(error("RECEIPT_UNVERIFIED", check_result=summary))
+    return emit(summary)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

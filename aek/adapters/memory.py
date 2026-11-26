@@ -7,8 +7,10 @@ import json
 import os
 import re
 import stat
+from dataclasses import replace
 from pathlib import Path
 
+from aek.adapters.memory_scope import MemoryScope, resolve_memory_scope
 from aek.core.context.memory import CandidateRef, CandidateSet, is_memory_markdown
 
 
@@ -131,36 +133,56 @@ def _read_source(repo: Path, rel: str, *, prefix_bytes: int | None = None) -> by
         os.close(fd)
 
 
-def read_candidate(repo: Path, ref: CandidateRef, generation: str) -> str:
+def _scoped_generation(repo: Path, scope: MemoryScope) -> str:
+    raw = json.loads((repo / ".repo-memory-kit/zvec/current.json").read_text(encoding="utf-8"))
+    generation = raw.get("generation") if isinstance(raw, dict) else None
+    if (not isinstance(generation, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,64}", generation)
+            or raw.get("memory_scope_digest") not in ((scope.digest,) if scope.git else (None, scope.digest))):
+        raise StaleCandidate("memory index is unavailable for the current scope")
+    return generation
+
+
+def _source_metadata(text: str):
+    return parse_frontmatter(text.replace("\r\n", "\n").replace("\r", "\n"))
+
+
+def read_candidate(repo: Path, ref: CandidateRef, generation: str, *, scope: MemoryScope | None = None) -> str:
     if not isinstance(ref, CandidateRef) or ref.generation != generation:
         raise StaleCandidate("candidate generation mismatch")
+    scope = scope or resolve_memory_scope(repo)
+    source_root = repo
+    if ref.origin_ref is not None:
+        source_root = dict(scope.parent_worktrees).get(ref.origin_ref)
+        if source_root is None:
+            raise StaleCandidate("memory parent source is no longer available")
     if generation != "fallback":
-        pointer = repo / ".repo-memory-kit/zvec/current.json"
         try:
-            raw = json.loads(pointer.read_text(encoding="utf-8"))
+            current = _scoped_generation(repo, scope)
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise StaleCandidate("memory generation pointer unavailable") from exc
-        if not isinstance(raw, dict) or raw.get("generation") != generation:
+        if current != generation:
             raise StaleCandidate("memory index generation changed")
     try:
-        content = _read_source(repo, ref.path)
+        content = _read_source(source_root, ref.path)
     except (OSError, UnicodeError) as exc:
         raise StaleCandidate("memory source unavailable") from exc
     if hashlib.sha256(content).hexdigest() != ref.content_digest:
         raise StaleCandidate("memory source digest changed")
     try:
-        return content.decode("utf-8")
+        text = content.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise StaleCandidate("memory source is not UTF-8") from exc
+    if not scope.allows(ref.path, _source_metadata(text)[0], ref.origin_ref):
+        raise StaleCandidate("memory source does not apply to the current scope")
+    return text
 
 
 def _matches_filters(rel: str, content: bytes, types: tuple[str, ...],
-                     status: str | None, module: str | None) -> bool:
-    if not (types or status or module):
-        return True
-    text = content.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-    frontmatter, body = parse_frontmatter(text)
-    return ((not types or derive_type(rel, frontmatter, body) in types)
+                     status: str | None, module: str | None, scope: MemoryScope,
+                     origin_ref: str | None = None) -> bool:
+    frontmatter, body = _source_metadata(content.decode("utf-8"))
+    return (scope.allows(rel, frontmatter, origin_ref)
+            and (not types or derive_type(rel, frontmatter, body) in types)
             and (not status or derive_status(rel, frontmatter, body) == status)
             and (not module or module in str(frontmatter.get("module") or "")))
 
@@ -177,18 +199,13 @@ def zvec_filter(types: tuple[str, ...], status: str | None) -> str | None:
     return " and ".join(clauses) or None
 
 
-def fallback_candidates(repo: Path, query: str, *, limit: int, types: tuple[str, ...] = (),
-                        status: str | None = None, module: str | None = None) -> CandidateSet:
-    """No semantic index: search only bounded metadata, never return bodies."""
-    if not isinstance(query, str) or not query.strip() or type(limit) is not int or limit < 0:
-        raise ValueError("fallback needs a non-empty query and non-negative limit")
-    if limit == 0:
-        return CandidateSet("fallback", (), False, "fallback")
+def _metadata_rows(repo: Path, query: str, types: tuple[str, ...], status: str | None,
+                   module: str | None, scope: MemoryScope, origin_ref: str | None = None) -> list[CandidateRef]:
     tokens = tuple(token.casefold() for token in query.split() if token)
     rows: list[CandidateRef] = []
-    root = repo / "docs"
+    root = repo / ("docs/memory" if origin_ref else "docs")
     if not root.is_dir():
-        return CandidateSet("fallback", (), False, "fallback")
+        return rows
     for path in sorted(root.rglob("*.md")):
         rel = path.relative_to(repo).as_posix()
         if not is_memory_markdown(rel):
@@ -207,7 +224,8 @@ def fallback_candidates(repo: Path, query: str, *, limit: int, types: tuple[str,
             continue
         try:
             content = _read_source(repo, rel)
-            if not content.startswith(prefix) or not _matches_filters(rel, content, types, status, module):
+            if not content.startswith(prefix) or not _matches_filters(
+                    rel, content, types, status, module, scope, origin_ref):
                 continue
         except (OSError, UnicodeError, StaleCandidate):
             continue
@@ -215,15 +233,51 @@ def fallback_candidates(repo: Path, query: str, *, limit: int, types: tuple[str,
                        if line.startswith("# ")), path.stem)
         rows.append(CandidateRef(
             path=rel, score=hits / len(tokens), generation="fallback",
-            content_digest=hashlib.sha256(content).hexdigest(), anchor=anchor[:200],
+            content_digest=hashlib.sha256(content).hexdigest(), anchor=anchor[:200], origin_ref=origin_ref,
         ))
     rows.sort(key=lambda item: (-item.score, item.path))
+    return rows
+
+
+def _with_parents(rows: list[CandidateRef], query: str, limit: int, types: tuple[str, ...],
+                  status: str | None, module: str | None, scope: MemoryScope,
+                  generation: str) -> list[CandidateRef]:
+    seen = {row.path for row in rows}
+    # Give current-checkout matches priority. Only query ancestors for capacity
+    # the local corpus has not already filled.
+    score_factor = min((row.score for row in rows), default=1.0) / 2
+    for origin_ref, parent in scope.parent_worktrees:
+        if len(rows) > limit:
+            break
+        for ref in _metadata_rows(parent, query, types, status, module, scope, origin_ref):
+            if ref.path in seen:
+                continue
+            seen.add(ref.path)
+            rows.append(replace(ref, generation=generation, score=ref.score * score_factor))
+            if len(rows) > limit:
+                break
+        score_factor /= 2
+    return rows
+
+
+def fallback_candidates(repo: Path, query: str, *, limit: int, types: tuple[str, ...] = (),
+                        status: str | None = None, module: str | None = None,
+                        scope: MemoryScope | None = None) -> CandidateSet:
+    """Search bounded metadata from the checkout and explicitly shared ancestors."""
+    if not isinstance(query, str) or not query.strip() or type(limit) is not int or limit < 0:
+        raise ValueError("fallback needs a non-empty query and non-negative limit")
+    if limit == 0:
+        return CandidateSet("fallback", (), False, "fallback")
+    scope = scope or resolve_memory_scope(repo)
+    rows = _metadata_rows(repo, query, types, status, module, scope)
+    rows = _with_parents(rows, query, limit, types, status, module, scope, "fallback")
     return CandidateSet("fallback", tuple(rows[:limit]),
                         len(rows) > limit, "fallback")
 
 
 def search_candidates(repo: Path, query: str, *, limit: int, types: tuple[str, ...] = (),
-                      status: str | None = None, module: str | None = None) -> CandidateSet:
+                      status: str | None = None, module: str | None = None,
+                      scope: MemoryScope | None = None, open_generation=None) -> CandidateSet:
     """Return metadata-only candidates from the current index or fallback.
 
     The semantic index is an optimization.  A missing dependency/index or an
@@ -235,18 +289,20 @@ def search_candidates(repo: Path, query: str, *, limit: int, types: tuple[str, .
         raise ValueError("candidate search needs a query and non-negative limit")
     if limit == 0:
         return CandidateSet("fallback", (), False, "fallback")
+    scope = scope or resolve_memory_scope(repo)
+    lock_fd = None
     try:
         import zvec
         from zvec import Query
         from zvec.extension.multi_vector_reranker import RrfReRanker
         from zvec.model.param.query import Fts
 
-        pointer = repo / ".repo-memory-kit/zvec/current.json"
-        raw = json.loads(pointer.read_text(encoding="utf-8"))
-        generation = raw.get("generation") if isinstance(raw, dict) else None
-        if not isinstance(generation, str):
-            raise ValueError("memory generation is absent")
+        generation = _scoped_generation(repo, scope)
         directory = repo / ".repo-memory-kit/zvec/generations" / generation
+        if open_generation is not None:
+            opened, lock_fd = open_generation(repo)
+            if opened != directory:
+                raise StaleCandidate("memory generation changed before lookup")
         collection = zvec.open(str(directory))
         fetch_limit = max(limit * 4, 20)
         results = collection.query(
@@ -263,7 +319,7 @@ def search_candidates(repo: Path, query: str, *, limit: int, types: tuple[str, .
                 continue
             try:
                 content = _read_source(repo, path)
-                if not _matches_filters(path, content, types, status, module):
+                if not _matches_filters(path, content, types, status, module, scope):
                     continue
             except (OSError, UnicodeError, StaleCandidate):
                 continue
@@ -275,7 +331,11 @@ def search_candidates(repo: Path, query: str, *, limit: int, types: tuple[str, .
                 anchor=str(anchor)[:200]))
             if len(rows) > limit:
                 break
+        rows = _with_parents(rows, query, limit, types, status, module, scope, generation)
         return CandidateSet(generation, tuple(rows[:limit]),
                             len(rows) > limit or len(results) >= fetch_limit, "zvec")
     except (ImportError, OSError, RuntimeError, TypeError, ValueError, KeyError):
-        return fallback_candidates(repo, query, limit=limit, types=types, status=status, module=module)
+        return fallback_candidates(repo, query, limit=limit, types=types, status=status, module=module, scope=scope)
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)

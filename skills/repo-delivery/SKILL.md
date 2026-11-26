@@ -63,11 +63,13 @@ Claude Code：`/repo-delivery`；Codex：`$repo-delivery`。canonical skill：`d
 
 ### 项目知识取证
 
+先复用同一任务、同阶段已回答当前问题且来源仍有效的证据。问题或阶段改变、来源更新或范围有缺口时，只补查受影响部分。
 需要项目知识时先调预算化 `memory_recall` MCP，绑定 Route/stage/subject/session；purpose 普通取证
 `target_evidence`、评审 `review_required`，业务说明写 query。仅不可见/不兼容/调用前失败才降级
 等价 CLI，再不可用才有界 metadata 查找；已开始而结果未知时停止降级并披露。无命中或截断只能作为未知证据。MCP schema 支持时用
 `context.compact: true`，只消费结构化正文。必要的重复查询可用 `known_digests` 声明当前同会话仍持有
 的正文摘要，`reused` 只引用这批已持有内容。会话、范围或可见材料变化时重新核实。
+Git 下用 `memory-recall --scope-info <当前工作树根>` 核对分支，多工作树时把 `scope_digest` 传给 MCP。同工作树同分支复用该摘要。切换后重验，舍弃旧范围的召回与已知摘要。MCP 绑定不匹配时复用本机 CLI 程序，参数显式指向当前根，即使 CLI 装在另一工作树。身份或 CLI 不可用时记录缺证。
 返回 `MEMORY_BYTE_LIMIT` 时按候选路径与摘要核实必需段落；候选本身不能证明正文已读或风险不存在。
 记录 `selected_path/reason_code/capability_snapshot/uncertainty`。
 stage：依赖选型 `design`，实施/复验 `execution`，交付审查 `closeout`。安全知识按
@@ -93,5 +95,6 @@ stage：依赖选型 `design`，实施/复验 `execution`，交付审查 `closeo
 
 ## 收口
 
+用户显式要求 `delivery-gate` 时立即载入并传入已持有证据。遇到外部前提缺失，按门禁收口并指出下一个可行验证。
 按 `references/evidence-closeout.md` 完成路线/治理/审查/回执、计划统一收口及文档记忆检查。
 证据齐全且无未决冲突才 READY；未运行不称通过。

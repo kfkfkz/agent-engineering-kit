@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 
 
 def _configure_utf8_stdio():
@@ -43,6 +44,7 @@ if not os.path.isfile(os.path.join(_package_root, "aek", "core", "dispatch.py"))
     print("AEK dispatch package missing or installation layout invalid", file=sys.stderr)
     raise SystemExit(3)
 sys.path.insert(0, _package_root)
+from aek.adapters.memory_scope import git_worktree_root, multiple_worktrees, resolve_memory_scope
 from aek.application.dispatch import DispatchService, MemoryReceiptStore
 from aek.application.memory_recall import validate_known_digests
 from aek.core.context.budget import CONTEXT_PURPOSES
@@ -84,6 +86,8 @@ TOOLS = [
                 "type": {"type": "string", "description": "类型过滤(逗号分隔): pitfall,decision,playbook,domain,sdd,receipt"},
                 "status": {"type": "string", "description": "状态过滤: confirmed,unverified"},
                 "top": {"type": "integer", "description": "最大返回数", "default": 8},
+                "scope_digest": {"type": "string", "pattern": CONTEXT_SUBJECT_PATTERN,
+                                 "description": "实际工作树和分支的 Memory scope 摘要"},
                 "context": {
                     "type": "object",
                     "description": "可选预算上下文；提供后返回结构化候选、展开、成本和不确定性。",
@@ -166,7 +170,10 @@ def tool_memory_recall(args):
     if not query:
         return {"error": "query is required"}
     target = _BOUND_REPO
-    cmd_args = [query, target]
+    scope, error = _memory_binding(args.get("scope_digest"), recall=True)
+    if error:
+        return error
+    cmd_args = [query, target, "--expect-scope", scope.digest]
     if args.get("type"):
         cmd_args.extend(["--type", args["type"]])
     if args.get("status"):
@@ -199,7 +206,7 @@ def tool_memory_recall(args):
         for digest in context.get("known_digests", ()):
             cmd_args.extend(["--known-digest", digest])
     rc, out, err = run_cli("memory-recall", cmd_args, target)
-    response = {"returncode": rc, "output": out.strip(),
+    response = {"returncode": rc, "output": out.strip(), "scope_digest": scope.digest,
                 "error": err.strip() if rc != 0 else ""}
     if context is None:
         response.update({
@@ -224,6 +231,22 @@ def tool_memory_recall(args):
             response["output"] = ""
     response["context_mode"] = "explicit"
     return response
+
+
+def _memory_binding(expected=None, *, recall=False):
+    scope = resolve_memory_scope(Path(_BOUND_REPO))
+    startup_root = git_worktree_root(Path.cwd()) if _installed_layout and scope.git else None
+    if ((startup_root is not None and startup_root != git_worktree_root(scope.root))
+            or (expected is not None and expected != scope.digest)):
+        return scope, {"returncode": 2, "output": "", "lookup_started": False,
+                       "reason_code": "MEMORY_SCOPE_MISMATCH",
+                       "error": "Memory MCP 与当前工作树或分支不匹配，请使用当前工作树的记忆入口"}
+    if (recall and scope.git and expected is None
+            and (startup_root is None or multiple_worktrees(scope.root))):
+        return scope, {"returncode": 2, "output": "", "lookup_started": False,
+                       "reason_code": "MEMORY_SCOPE_REQUIRED",
+                       "error": "请先从当前工作树获取 scope_digest，再查询项目记忆"}
+    return scope, None
 
 
 def _validate_memory_context(context):
@@ -262,6 +285,9 @@ def _validate_memory_context(context):
 
 def tool_memory_build(args):
     target = _BOUND_REPO
+    _, error = _memory_binding()
+    if error:
+        return error
     mode = args.get("mode", "build")
     if mode == "build":
         rc, out, err = run_cli("memory-build", [target], target)
@@ -286,6 +312,9 @@ def tool_domain_check(args):
 def tool_kit_status(args):
     target = os.path.abspath(_BOUND_REPO)
     status = {"target": target, "kit_version": None, "semantic_index": None, "domain_map": None}
+    scope, error = _memory_binding()
+    status["memory_scope"] = {"ref": scope.ref, "digest": scope.digest,
+                              "startup_matches": error is None}
 
     # manifest（Manifest v2：manifest.json；旧 install.sh 的文本 manifest 已退役）
     manifest = os.path.join(target, ".repo-memory-kit", "manifest.json")
@@ -307,11 +336,11 @@ def tool_kit_status(args):
         try:
             with open(pointer) as f:
                 gen = json.load(f).get("generation", "")
-            if gen:
+            if gen and (not scope.git or ptr.get("memory_scope_digest") == scope.digest):
                 gen_dir = os.path.join(zvec_dir, "generations", gen)
         except (OSError, ValueError):
             gen_dir = None
-    if gen_dir is None and os.path.isdir(os.path.join(zvec_dir, "recall")):
+    if not scope.git and gen_dir is None and os.path.isdir(os.path.join(zvec_dir, "recall")):
         gen_dir = os.path.join(zvec_dir, "recall")
     if gen_dir is not None and os.path.isdir(gen_dir):
         count_file = os.path.join(gen_dir, ".doc-count")
@@ -363,21 +392,32 @@ _DISPATCH_SESSION = uuid.uuid4().hex
 _DISPATCH = DispatchService(MemoryReceiptStore())
 
 
-def _dispatch_request_key(req_id, tool_name, arguments):
+def _dispatch_request_key(req_id, tool_name, arguments, *, scope_digest=None):
     payload = {"session": _DISPATCH_SESSION, "id": req_id,
                "tool": tool_name, "arguments": arguments}
+    if scope_digest is not None:
+        payload["memory_scope"] = scope_digest
     return hashlib.sha256(json.dumps(
         payload, ensure_ascii=False, sort_keys=True,
         separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _execute_tool(req_id, tool_name, arguments):
+    scope_digest = None
+    if tool_name in {"memory_recall", "memory_build", "kit_status"}:
+        recall = tool_name == "memory_recall"
+        scope, error = _memory_binding(arguments.get("scope_digest"), recall=recall)
+        if error and tool_name != "kit_status":
+            return error
+        scope_digest = scope.digest
+        if recall:
+            arguments = {**arguments, "scope_digest": scope_digest}
     decision = select_dispatch(
         service_version=_SERVICE_VERSION, minimum_version=_SERVICE_MINIMUM,
         available_capabilities=_SERVICE_CAPABILITIES,
         required_capability=tool_name, parity_passed=tool_name in _PARITY_PASSED)
     outcome = _DISPATCH.execute(
-        _dispatch_request_key(req_id, tool_name, arguments), decision,
+        _dispatch_request_key(req_id, tool_name, arguments, scope_digest=scope_digest), decision,
         read_only=tool_name in _READ_ONLY_TOOLS,
         service_ready=lambda: tool_name in SERVICE_TOOL_HANDLERS,
         service_call=lambda: SERVICE_TOOL_HANDLERS[tool_name](arguments),
