@@ -180,6 +180,7 @@ import os
 import pathlib  # load the host path flavour before simulating os.name
 import runpy
 import shutil   # avoid re-selecting nt/posix implementation after os.name changes
+import subprocess  # keep the real host transport before simulating Windows
 import sys
 import types
 

@@ -28,7 +28,13 @@ if not (_package_root / "aek/core/context/budget.py").is_file():
     print("✗ AEK package 缺失或安装布局无效", file=sys.stderr)
     raise SystemExit(3)
 sys.path.insert(0, str(_package_root))
-from aek.application.routing import RoutingError, evaluate_route
+sys.dont_write_bytecode = True
+from aek.adapters.task_scope import (
+    load_scope, observe_scope, save_scope, untracked_content, validate_proposal,
+)
+from aek.application.routing import (
+    RoutingError, approval_boundary, evaluate_route, unplanned_paths,
+)
 
 
 def _configure_utf8_stdio() -> None:
@@ -162,7 +168,7 @@ def _governance(repo: Path, diff_path: Path | None,
         # 不能等到交付才发现团队规则已经损坏。
         diff_text = ""
     evaluator = Path(__file__).resolve().with_name("governance-eval")
-    command = [sys.executable, str(evaluator), str(repo), "--json"]
+    command = [sys.executable, "-B", str(evaluator), str(repo), "--json"]
     if diff_path is not None:
         command.extend(("--diff", str(diff_path)))
     try:
@@ -264,6 +270,99 @@ def evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]
         raise RouteError(str(exc)) from exc
 
 
+def _proposed_diff(paths: list[str]) -> str:
+    return "".join(
+        f"diff --git {_quoted_diff_path('a', path)} {_quoted_diff_path('b', path)}\n"
+        f"--- {_quoted_diff_path('a', path)}\n+++ {_quoted_diff_path('b', path)}\n"
+        for path in paths)
+
+
+def _scoped_untracked_diff(repo: Path, path: str) -> str:
+    header = _proposed_diff([path])
+    try:
+        data = untracked_content(repo, path).decode("utf-8")
+    except (OSError, ValueError):
+        return header + "Binary files differ\n"
+    if "\0" in data:
+        return header + "Binary files differ\n"
+    lines = data.splitlines()
+    return (header + f"@@ -0,0 +1,{len(lines)} @@\n"
+            + "".join(f"+{line}\n" for line in lines))
+
+
+def evaluate_scope(repo: Path, card: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    proposed = args.propose or []
+    for path in proposed:
+        validate_proposal(repo, path)
+    approved = approval_boundary(card)
+    if args.start_scope:
+        checkout, prior, _, _ = observe_scope(repo)
+        result = evaluate(card, _governance(repo, None))
+        if result["ok"]:
+            save_scope(Path(args.start_scope), {
+                "version": 1, "checkout": checkout, "prior": prior,
+                "approved": approved, "confirmation": args.confirmation,
+            })
+        return result
+
+    snapshot = load_scope(Path(args.scope))
+    prior = snapshot["prior"]
+    preflight = bool(proposed or args.material_change or args.amend_scope)
+    checkout, current, untracked, patch = observe_scope(
+        repo, baseline=prior, collect_diff=not preflight)
+    if checkout != snapshot["checkout"]:
+        raise RouteError("任务基线或工作树已变化，需重新核对归属")
+    changed = sorted(current.keys() - prior.keys())
+    overlaps = sorted(path for path in prior
+                      if prior[path] != current.get(path) or path in proposed)
+    original_patterns = snapshot["approved"]["planned_paths"]
+    drift = unplanned_paths(changed + proposed, original_patterns)
+    if preflight:
+        diff = _proposed_diff(sorted(set(proposed + changed)))
+    else:
+        diff = patch.decode("utf-8", errors="replace")
+        # A header for every Git path preserves checks for binary and
+        # unusual paths even when Git's content patch cannot be decoded.
+        diff += _proposed_diff(changed)
+        for path in sorted(set(changed).intersection(untracked)):
+            diff += _scoped_untracked_diff(repo, path)
+    governance = _governance(repo, None, diff)
+    governance["changed_files"] = sorted(set(changed + proposed))
+    result = evaluate(card, governance)
+    issues = {}
+    if overlaps:
+        issues["SCOPE_OWNERSHIP_UNKNOWN"] = "任务可能修改了已有改动：" + ", ".join(overlaps)
+    if args.amend_scope:
+        # New approval can authorize future work. It cannot relabel paths
+        # already changed outside the previously recorded boundary.
+        drift = unplanned_paths(changed, original_patterns)
+        outside_new = unplanned_paths(changed + proposed, approved["planned_paths"])
+        drift = sorted(set(drift + outside_new))
+    elif approved != snapshot["approved"] or args.material_change:
+        issues["SCOPE_CONFIRMATION_REQUIRED"] = "变更意图或确认边界已变化"
+    if drift:
+        issues["SCOPE_DRIFT"] = "实际或拟改路径超出已确认范围：" + ", ".join(drift)
+    for code, message in issues.items():
+        if code not in result["route_verdict"]["reason_codes"]:
+            result["route_verdict"]["reason_codes"].append(code)
+            result["reasons"].append({"code": code, "message": message,
+                                      "minimum": result["minimum_route"]})
+    result["ok"] = result["ok"] and not issues
+    result["unplanned_files"] = sorted(set(result["unplanned_files"] + drift))
+    result["drift_detected"] = bool(result["unplanned_files"])
+    result["scope"] = {
+        "phase": "preflight" if preflight else "closeout",
+        "snapshot_digest": snapshot["digest"],
+        "overlapping_paths": overlaps,
+    }
+    if args.amend_scope and result["ok"]:
+        save_scope(Path(args.amend_scope), {
+            **snapshot, "approved": approved, "confirmation": args.confirmation,
+            "previous_scope": snapshot["digest"],
+        })
+    return result
+
+
 def _summary(result: dict[str, Any]) -> str:
     status = "PASS" if result["ok"] else "BLOCKED"
     lines = [
@@ -287,9 +386,19 @@ def main() -> int:
     final_group = parser.add_mutually_exclusive_group()
     final_group.add_argument("--diff", help="最终 unified diff 路径；提供时同时执行治理与漂移检查")
     final_group.add_argument("--git-ref", help="从 Git ref 到当前工作区生成最终 diff（含 untracked）")
+    final_group.add_argument("--start-scope", metavar="FILE", help="首次写入前保存当前任务范围与 Git 基线")
+    final_group.add_argument("--scope", metavar="FILE", help="核对已确认范围与实际工作区")
+    parser.add_argument("--propose", action="append", metavar="PATH", help="写入前核对拟改路径，可重复")
+    parser.add_argument("--material-change", action="store_true", help="报告现有路径内的新行为或边界变化")
+    parser.add_argument("--amend-scope", metavar="NEW_FILE", help="确认扩围后保存继承原基线的新范围")
+    parser.add_argument("--confirmation", help="当前实际用户指令或审批记录的引用")
     parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     parser.add_argument("--init", action="store_true", help="输出 Route Card 起始模板")
     args = parser.parse_args()
+    if ((args.propose or args.material_change or args.amend_scope) and not args.scope
+            or bool(args.confirmation and args.confirmation.strip()) != bool(args.start_scope or args.amend_scope)
+            or (args.material_change and args.amend_scope)):
+        parser.error("拟改路径和扩围须提供 --scope，新建或变更范围须提供 --confirmation")
 
     if args.init:
         print(json.dumps(_template(), ensure_ascii=False, indent=2))
@@ -304,10 +413,13 @@ def main() -> int:
         if not repo.is_dir():
             raise RouteError(f"目标仓库不存在或不是目录: {repo}")
         card = load_card(Path(args.card))
-        generated_diff = git_final_diff(repo, args.git_ref) if args.git_ref else None
-        governance = _governance(repo, diff_path, generated_diff)
-        result = evaluate(card, governance)
-    except RouteError as exc:
+        if args.start_scope or args.scope:
+            result = evaluate_scope(repo, card, args)
+        else:
+            generated_diff = git_final_diff(repo, args.git_ref) if args.git_ref else None
+            governance = _governance(repo, diff_path, generated_diff)
+            result = evaluate(card, governance)
+    except (RouteError, OSError, ValueError) as exc:
         print(f"✗ 路由评估阻断（fail-closed）: {exc}", file=sys.stderr)
         return 3
 

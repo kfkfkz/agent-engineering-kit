@@ -47,8 +47,7 @@ Claude Code：`/repo-delivery`；Codex：`$repo-delivery`。canonical skill：`d
 
 ## 按需 Reference（必须完整读取）
 
-从 `aek.core.context.reference_catalog.REFERENCE_CATALOG` 按 Route/stage 固定映射完整读取；
-不加载 Catalog 外文件，不在零阶段预读 closeout。不可导入时用下表，不扫描目录猜规则。
+按 `aek.core.context.reference_catalog.REFERENCE_CATALOG` 的 Route/stage 完整读取。不可导入时用下表。零阶段只读 route 阶段。
 
 | Route | `route` 阶段必读 | `closeout` 阶段必读 |
 | --- | --- | --- |
@@ -61,9 +60,13 @@ Claude Code：`/repo-delivery`；Codex：`$repo-delivery`。canonical skill：`d
 
 首次修改实现、配置或交付文档前，向用户简报目标和保持项、证据支持的最小方案与影响、验收和验证方式。Direct/Bounded 复用对话、当前 issue 或已有任务载体，一两句即可。正式设计和 Bug 仍按各自的确认要求推进。
 
+- 首次写入前运行 `route-eval <根> --card <卡> --start-scope <范围文件> --confirmation <已有授权引用>`。范围文件放仓库外或已忽略的任务状态目录。用有界路径覆盖同模块实现、局部辅助文件和回归测试。
+- 每批编辑前用 `--scope <范围文件> --propose <拟改路径>`，可重复指定路径。公共契约、默认行为、模块或权限实质扩围时加 `--material-change` 并暂停。取得增量确认后用更新卡片、`--scope <原范围> --amend-scope <新范围> --confirmation <引用>`。保留原 Git 快照，升路线不补授权。
+- 原有改动归属不明、工作树或基线变化时先核实。非 Git 用现有载体记录边界、VCS 基线和完整差异。
+
 ### 项目知识取证
 
-先复用同一任务、同阶段已回答当前问题且来源仍有效的证据。问题或阶段改变、来源更新或范围有缺口时，只补查受影响部分。
+执行、评审和交付先复用同一任务已回答当前问题且身份与来源仍有效的证据。阶段变化本身无需再查。按验收项或评审发现记录预期、关键位置、验证引用和缺项，交接规则见交付门禁的取证规范。
 需要项目知识时先调预算化 `memory_recall` MCP，绑定 Route/stage/subject/session；purpose 普通取证
 `target_evidence`、评审 `review_required`，业务说明写 query。仅不可见/不兼容/调用前失败才降级
 等价 CLI，再不可用才有界 metadata 查找；已开始而结果未知时停止降级并披露。无命中或截断只能作为未知证据。MCP schema 支持时用
@@ -78,12 +81,10 @@ stage：依赖选型 `design`，实施/复验 `execution`，交付审查 `closeo
 
 ### 实现与评审
 
-结构检索先用 `codebase-memory` Verify 绑定当前工作树与图谱，grep 仅补字面量或已知缺口。
-围绕本次待定事项读取完整的相关符号、调用边界和测试；已有证据可复用，工作树、来源摘要或适用范围变化时复核受影响项。
-根因未明或反复失败时用 `systematic-debugging` 定位。用户或宪章要求测试先行，或需建立关键行为回归时，按 `tdd` 验证。正式设计走 `design-pipeline`。
-人工门禁由人判断、Agent 落凭证继续；沉默/模糊或历史意见不算本轮签核，高风险未决先裁决。
-文档评审由 `design-pipeline` 内部显式使用 v2/summary；必要目标、背景与安全正文实际交付，
-缓存命中不作批准或已读证明。无进展/未知位置停止时保留问题、证据与原轮次上限后恢复。
+结构检索先用 `codebase-memory` Verify 绑定当前工作树与图谱，grep 仅补字面量或已知缺口。只核对待定事项相关的完整符号、调用边界和测试。
+首次执行需交接的前台检查用 `validation-run --repo <根> --log <日志> --receipt <回执> -- <命令>`。在任务状态目录或仓库外留回执与日志，按取证规范绑定完整输入。
+根因未明或反复失败用 `systematic-debugging`。要求测试先行或需建立关键行为回归时用 `tdd`。正式设计走 `design-pipeline`。人工门禁由人判断、Agent 落本轮凭证，高风险未决先裁决。
+文档评审由 `design-pipeline` 使用 v2/summary。实际交付必要目标、背景与安全正文。缓存命中不作批准或已读证明。无进展时保留问题、证据和原轮次上限。
 
 ### 缺陷排查与修复确认
 
@@ -95,6 +96,5 @@ stage：依赖选型 `design`，实施/复验 `execution`，交付审查 `closeo
 
 ## 收口
 
-用户显式要求 `delivery-gate` 时立即载入并传入已持有证据。遇到外部前提缺失，按门禁收口并指出下一个可行验证。
-按 `references/evidence-closeout.md` 完成路线/治理/审查/回执、计划统一收口及文档记忆检查。
+用户显式要求 `delivery-gate` 时立即载入并交接已有证据。`references/evidence-closeout.md` 定义统一收口。外部前提缺失时指出下一项可行验证。
 证据齐全且无未决冲突才 READY；未运行不称通过。

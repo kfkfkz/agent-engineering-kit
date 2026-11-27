@@ -56,6 +56,23 @@ def scope_digest(path: Path) -> str:
     return hashlib.sha256(snapshot).hexdigest()
 
 
+def current_scope(args: argparse.Namespace) -> str:
+    legacy = scope_digest(args.scope) if args.scope else None
+    if not args.repo:
+        if legacy is None:
+            raise ValueError("no scope supplied")
+        return legacy
+    script_dir = Path(__file__).resolve().parent
+    package_root = (script_dir.parent / "lib"
+                    if script_dir.name == "bin" and script_dir.parent.name == ".repo-memory-kit"
+                    else script_dir)
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    sys.dont_write_bytecode = True
+    from aek.adapters.task_scope import digest, evidence_inputs
+    return digest([evidence_inputs(args.repo.resolve(), tuple(args.input or [])), legacy])
+
+
 def reuse(path: Path, receipt: Path, binding: dict) -> dict:
     try:
         with open_regular(receipt) as source:
@@ -144,34 +161,51 @@ def run_check(path: Path, command: list[str]) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="validation-run", description="执行验证命令并保存完整日志")
-    parser.add_argument("--log", type=Path, required=True, help="完整日志路径，首次运行时必须不存在")
-    parser.add_argument("--scope", type=Path, help="当前范围快照（代码身份、环境、租户及适用输入）")
-    parser.add_argument("--receipt", type=Path, help="带范围绑定的检查结果文件，须同时提供 --scope")
+    parser.add_argument("--log", type=Path, help="完整日志路径，首次运行时必须不存在")
+    parser.add_argument("--scope", type=Path, help="当前验证元数据（环境、租户、策略等适用输入）")
+    parser.add_argument("--repo", type=Path, help="用实际 Git 工作树计算代码身份")
+    parser.add_argument("--input", action="append", metavar="PATH", help="仓库相对依赖文件，可重复")
+    parser.add_argument("--receipt", type=Path, help="带范围绑定的检查结果文件，须提供 --repo 或 --scope")
     parser.add_argument("--reuse", action="store_true", help="只校验当前范围和既有回执，绝不运行命令")
+    stamp = parser.add_mutually_exclusive_group()
+    stamp.add_argument("--fingerprint", action="store_true", help="输出当前证据依赖摘要，不执行命令")
+    stamp.add_argument("--verify-fingerprint", metavar="DIGEST", help="核对已有证据依赖摘要，不执行命令")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- 后传入命令及各参数")
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    if not command:
-        parser.error("提供 -- 后的验证命令")
-    if bool(args.scope) != bool(args.receipt) or (args.reuse and args.receipt is None):
-        parser.error("--scope 和 --receipt 一起提供；--reuse 需要两者")
+    if args.input and not args.repo:
+        parser.error("--input 需要 --repo")
+    if args.fingerprint or args.verify_fingerprint is not None:
+        if not args.repo or any((command, args.log, args.receipt, args.reuse)):
+            parser.error("证据摘要模式需要 --repo 且不接受命令、日志或回执")
+        try:
+            current = current_scope(args)
+        except (OSError, ValueError, ImportError):
+            return emit(error("SCOPE_UNVERIFIED"))
+        if args.verify_fingerprint is not None and args.verify_fingerprint != current:
+            return emit(error("EVIDENCE_SCOPE_MISMATCH"))
+        return emit({"status": "PASS", "scope_digest": current, "exit_code": 0})
+    if not args.log or not command:
+        parser.error("提供 --log 和 -- 后的验证命令")
+    if bool(args.scope or args.repo) != bool(args.receipt) or (args.reuse and args.receipt is None):
+        parser.error("--repo 或 --scope 与 --receipt 一起提供；--reuse 需要回执")
 
     path = args.log.absolute()
-    if args.scope is None:
+    if args.receipt is None:
         return emit(run_check(path, command))
     try:
-        binding = {"receipt_version": 1, "scope_digest": scope_digest(args.scope),
+        binding = {"receipt_version": 1, "scope_digest": current_scope(args),
                    "check_digest": hashlib.sha256(
                        json.dumps([os.getcwd(), command]).encode("ascii")).hexdigest()}
-    except (OSError, ValueError):
+    except (OSError, ValueError, ImportError):
         return emit(error("SCOPE_UNVERIFIED"))
     if args.reuse:
         summary = reuse(path, args.receipt, binding)
         if summary.get("reused"):
             try:
-                if binding["scope_digest"] != scope_digest(args.scope):
+                if binding["scope_digest"] != current_scope(args):
                     return emit(error("SCOPE_CHANGED"))
-            except (OSError, ValueError):
+            except (OSError, ValueError, ImportError):
                 return emit(error("SCOPE_UNVERIFIED"))
         return emit(summary)
 
@@ -184,8 +218,8 @@ def main() -> int:
         with receipt:
             summary = run_check(path, command)
             try:
-                unchanged = binding["scope_digest"] == scope_digest(args.scope)
-            except (OSError, ValueError):
+                unchanged = binding["scope_digest"] == current_scope(args)
+            except (OSError, ValueError, ImportError):
                 unchanged = False
             if not unchanged:
                 return emit(error("SCOPE_CHANGED", check_result=summary))

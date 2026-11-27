@@ -126,6 +126,23 @@ def _matches(path: str, patterns: list[str]) -> bool:
     return False
 
 
+def unplanned_paths(paths, patterns: list[str]) -> list[str]:
+    return sorted(path for path in set(paths) if not _matches(path, patterns))
+
+
+def approval_boundary(card: dict[str, Any]) -> dict[str, Any]:
+    """Scope intent is independent of a route override."""
+    footprint = card["footprint"]
+    return {
+        "planned_paths": sorted(footprint["planned_paths"]),
+        "modules": footprint["modules"],
+        "repos": footprint["repos"],
+        "work_kind": card["work_kind"],
+        "behavior_change": card["behavior_change"],
+        "risk_overlays": sorted(card["risk_overlays"]),
+    }
+
+
 def evaluate_route(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]:
     """Return the complete, presenter-independent route decision."""
     minimum, reasons = _minimum(card)
@@ -176,8 +193,7 @@ def evaluate_route(card: dict[str, Any], governance: dict[str, Any]) -> dict[str
     changed = governance.get("changed_files", [])
     if not isinstance(changed, list) or not all(isinstance(item, str) for item in changed):
         raise RoutingError("governance changed_files 必须是字符串数组")
-    unplanned = sorted(path for path in changed
-                       if not _matches(path, card["footprint"]["planned_paths"]))
+    unplanned = unplanned_paths(changed, card["footprint"]["planned_paths"])
     if unplanned:
         reasons.append({"code": "SCOPE_DRIFT",
                         "message": "最终 diff 含 Route Card 未计划路径: " + ", ".join(unplanned),

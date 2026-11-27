@@ -9,15 +9,15 @@ description: "代码评审、交付校验与回执。用户点名 delivery-gate 
 
 ## 范围与治理
 
-1. 固定目标、验收、基线、Route Card 和最终 diff，区分本轮改动与用户已有改动。Direct 以对话保存等价事实时，收口前生成临时 Route Card。
-2. 内部运行 `.repo-memory-kit/bin/route-eval <仓库根> --card <卡片> --git-ref <基线> --json`。默认包含 tracked 与未忽略的 untracked 文件。仅在已有可信完整 diff 时用 `--diff`。`route_valid=false`、`route_efficient=false` 或 `drift_detected=true` 时阻断，说明路径新增原因，修正路线或保留有依据的 `route_override` 后复验。
+1. 固定目标、验收、基线、Route Card 和最终 diff，区分本轮改动与用户已有改动。传入写入前记录的最新已确认范围快照，保留其原 Git 基线。
+2. 有范围快照时运行 `.repo-memory-kit/bin/route-eval <仓库根> --card <卡片> --scope <范围文件> --json`。校验暂存、未暂存和非忽略的未跟踪文件。有明确旧流程基线的任务仍可用 `--git-ref <基线>`，可信完整 diff 用 `--diff`。范围、归属或路线失败时说明原因并保持阻塞。提高路线不能补授权。
 3. 采用 `route-eval` 返回的治理命中和 `required_actions`，单独诊断才运行 `governance-eval`。旧 `min_route:*` 按程序的迁移结果转换为治理要求，风险本身不升任务路线。
 
 ## 评审
 
 ### 代码评审取证顺序
 
-按 [取证规范](references/review-evidence.md) 使用预算化 Memory MCP、新鲜图谱和当前源码。复用与本轮范围、阶段和身份相符的已有证据。
+按 [取证规范](references/review-evidence.md) 先核验执行阶段的交接，再定向补需要的 Memory、图谱和源码证据。
 
 核对行为和失败路径、宪章、调用面与兼容性、测试、维护性、文档和记忆、实际 diff 与冻结设计。按 CRITICAL/HIGH/MEDIUM/LOW 报告位置、触发条件、影响、证据和最小修复方向。合并同根因，保留关联位置。未覆盖范围和不确定性写进结论。纯偏好不阻塞。
 
@@ -37,7 +37,7 @@ HIGH、CRITICAL 和交付阻断发现须检查反证，包括不可达、上游�
 
 每项强制验证先明确通过条件、证据与依赖。优先使用原生摘要。缺少摘要的前台检查用 `.repo-memory-kit/bin/validation-run --log <新日志> -- <命令> [参数…]`。失败按位置补读，修复后按原断言复跑直接回归。
 
-有明确复用需求时加 `--scope <当前范围快照> --receipt <回执>`，复验加 `--reuse`。按实际代码/工作树、环境、租户、策略及相关输入重新核对快照，再匹配命令与日志。范围不明、证据冲突或失效时记待验证。命令退出 0 只证明该检查的通过条件。
+有现成回执时先用相同 `--repo`、适用的 `--input`、`--scope`、工作目录及命令调用 `validation-run --reuse`。工具比对当前输入和日志，成功时直接引用回执。相关输入变化时只补做受影响的检查。依赖范围不明用完整 Git 可见差异，外部输入不能核验时保留待验证。命令退出 0 只证明该检查的通过条件。
 
 消费宿主完成事件，无通知时按需查状态。同一失败且无新线索，或强制检查缺少外部前提时，以 NOT READY 收口，回执记录证据、缺项及下一步。仍可继续定位根因时按 `systematic-debugging` 有界推进。
 

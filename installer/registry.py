@@ -371,6 +371,7 @@ AEK_PACKAGE_FILES = (
     "adapters/plan_transaction.py",
     "adapters/evidence.py",
     "adapters/change_scope.py",
+    "adapters/task_scope.py",
     "adapters/review_markdown.py",
     "adapters/review_lifecycle_store.py",
     "adapters/work_unit_store.py",

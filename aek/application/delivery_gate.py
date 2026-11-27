@@ -91,6 +91,8 @@ def _requirement_origins(
         return rule_ids, [f"rule_match:{rule_id}" for rule_id in rule_ids]
     if source.startswith("profile:"):
         return [source], [source]
+    if (profile, kind, requirement, source) == ("lightweight", "reviews", "inline", "inline_review"):
+        return ["profile:lightweight"], ["profile:lightweight"]
     if source.startswith("risk_overlay:"):
         return ["kit:risk-overlay"], [source]
     if source.startswith("legacy:"):

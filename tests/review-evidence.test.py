@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from aek.application.review_evidence import plan_code_review_evidence
+from aek.application.identity import bind_receipt
+from aek.application.review_evidence import ReviewEvidenceReuse, plan_code_review_evidence
 from aek.core.codebase_context import (
     CapabilityState,
     DirtyState,
@@ -16,6 +17,7 @@ from aek.core.context.lookup import (
     LookupAttempt,
     plan_knowledge_lookup,
 )
+from aek.core.context.identity import build_identity
 
 
 class ReviewEvidencePlanTests(unittest.TestCase):
@@ -100,6 +102,43 @@ class ReviewEvidencePlanTests(unittest.TestCase):
         self.assertIn("MCP_NOT_VISIBLE", plan.limitations)
         self.assertEqual(plan.steps[1].channel, "bounded_source")
         self.assertFalse(plan.may_claim_complete_structure)
+
+    def test_trusted_current_handoff_omits_duplicate_lookups(self) -> None:
+        def identity(*, query="a", generation="a", deps="a"):
+            return build_identity({
+                "subject": {"worktree": "a" * 64, "dependencies": deps * 64},
+                "artifact": {"diff": "a" * 64},
+                "policy": {"rules": "a" * 64},
+                "context": {"query": query * 64, "generation": generation * 64},
+                "evidence": {"provenance": "a" * 64},
+            })
+
+        refs = {"memory": "host:memory", "graph": "host:graph"}
+        receipts = {
+            ref: bind_receipt(identity(), {"kind": kind, "ref": ref, "complete": True})
+            for kind, ref in refs.items()
+        }
+
+        def plan(memory_identity, graph_identity, lookup=receipts.get):
+            return plan_code_review_evidence(
+                memory=plan_knowledge_lookup(self.memory_capabilities()),
+                codebase=self.fresh_graph(), include_textual_checks=False,
+                reuse=ReviewEvidenceReuse(
+                    {"memory": memory_identity, "graph": graph_identity}, refs, lookup))
+
+        current = plan(identity(), identity())
+        self.assertEqual(current.reused_refs, tuple(refs.values()))
+        self.assertEqual(current.allowed_tools, ("targeted_source_read",))
+        stale_graph = plan(identity(), identity(generation="b"))
+        self.assertEqual(stale_graph.reused_refs, ("host:memory",))
+        self.assertIn("search_graph", stale_graph.allowed_tools)
+        stale_memory = plan(identity(query="b"), identity())
+        self.assertEqual(stale_memory.reused_refs, ("host:graph",))
+        self.assertIn("memory_recall", stale_memory.allowed_tools)
+        untrusted = plan(identity(), identity(), lookup=lambda ref: None)
+        self.assertEqual(untrusted.reused_refs, ())
+        self.assertIn("memory_recall", untrusted.allowed_tools)
+        self.assertIn("search_graph", untrusted.allowed_tools)
 
 
 if __name__ == "__main__":

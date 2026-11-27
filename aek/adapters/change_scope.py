@@ -50,7 +50,7 @@ _DOC_NEGATIVE_PRODUCERS = {
 }
 
 
-def _git(root: Path, *args: str) -> bytes:
+def _git(root: Path, *args: str, allowed_status: tuple[int, ...] = (0,)) -> bytes:
     try:
         env = {key: value for key, value in os.environ.items()
                if not key.upper().startswith("GIT_")}
@@ -59,7 +59,7 @@ def _git(root: Path, *args: str) -> bytes:
             capture_output=True, timeout=20, check=False, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ValueError("cannot capture Git change scope") from exc
-    if result.returncode or len(result.stdout) > _MAX_GIT_OUTPUT:
+    if result.returncode not in allowed_status or len(result.stdout) > _MAX_GIT_OUTPUT:
         raise ValueError("Git change scope is invalid or exceeds the bound")
     return result.stdout
 

@@ -25,4 +25,4 @@
 
 ## 输出
 
-超出预计范围必须更新 Route Card 后继续。完成后读取 `evidence-closeout.md`，留下紧凑但可复现的证据。
+超出已确认范围按入口的增量确认规则处理，保留原快照。完成后读取 `evidence-closeout.md`，留下紧凑可复验的证据。
