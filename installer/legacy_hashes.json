@@ -616,6 +616,19 @@
       "skill-claude-memory-capture": "canonical_sha256:cff924b316681e6de7669c63aedc20363b1a83210415778071a7ab87356935c5",
       "skill-claude-memory-check": "canonical_sha256:143f5fe5f13245ace3ed72e346452b70fb9884e436cff18527b504a8d6f60da2"
     },
+    "6a56dee": {
+      "bin-agent-engineering-mcp": "canonical_sha256:1839a3842a4f9f6953ad0ed41ff50b5fdcd220535907f9941aa8f795223adb76",
+      "bin-memory-recall": "canonical_sha256:6ecc792d3c0040a4099a125159dc29267cdbcd5e7e0376e78238087896926d83",
+      "bin-route-eval": "canonical_sha256:1b080174d1ee7fb9fc8d1482a64be6d8de152607123dfa8a9726d41c6d34e8d5",
+      "lib-aek-application-memory_recall-py": "canonical_sha256:fbbdd918dba390bcf1c3c0512b28d17dab731383c160c0302c5a4261b6d4a155",
+      "lib-aek-application-routing-py": "canonical_sha256:4bba788c7439620919c9c15a9008d3434ce533e05e316fa101f21a1aaeed32d2",
+      "skill-agents-delivery-gate-reference-review-evidence": "canonical_sha256:479c352249245160424e528424ce7b138d7f19cf22de12f1a54e8ab6e8d99b58",
+      "skill-agents-repo-delivery": "canonical_sha256:cebcd1a188d8f47823f4f61307b1afec9ebdd85b2f8ff61b589e962312957286",
+      "skill-agents-security-review": "canonical_sha256:81fde2ef434ca9943e2976f06e78a9eb03288aa12e1b96d435d9504935fe5142",
+      "skill-claude-delivery-gate-reference-review-evidence": "canonical_sha256:479c352249245160424e528424ce7b138d7f19cf22de12f1a54e8ab6e8d99b58",
+      "skill-claude-repo-delivery": "canonical_sha256:cebcd1a188d8f47823f4f61307b1afec9ebdd85b2f8ff61b589e962312957286",
+      "skill-claude-security-review": "canonical_sha256:81fde2ef434ca9943e2976f06e78a9eb03288aa12e1b96d435d9504935fe5142"
+    },
     "6c713cb": {
       "bin-agent-engineering-mcp": "canonical_sha256:8e01299debc5c4a5cc8eba637cfd66b22c4aa8ac6cd70010b377d972e75743f8",
       "bin-doc-gate": "canonical_sha256:deb5add7ffe102805ad2c60fdd15990f3a74e0f4d986d91d35ac980e309810f7",

@@ -483,6 +483,34 @@ for root in .claude .agents; do
     done
 done
 
+python3 - "$P" <<'PY' \
+    && ok "两端 Skills 绑定原问题与验收，泛化查询须用户明确要求" \
+    || bad "已安装的定点取证和评审边界缺失"
+from pathlib import Path
+import sys
+
+project = Path(sys.argv[1])
+expectations = {
+    "repo-delivery/SKILL.md": ("新增核查须对应原问题", "用户明确要求泛化查询后再查"),
+    "systematic-debugging/SKILL.md": ("根因已证实且直接影响明确时进入方案交付",),
+    "delivery-gate/SKILL.md": ("围绕本轮 diff、原问题、已确认验收和直接影响",
+                               "HIGH、CRITICAL 和交付阻断发现须检查反证"),
+    "delivery-gate/references/review-evidence.md": ("筛出符合上述范围的候选",),
+    "design-pipeline/SKILL.md": ("须对应已确认需求及其直接影响",),
+    "design-pipeline/references/review-workflow.md": ("全文送审仍按这次已确认的任务范围",),
+    "design-pipeline/references/reviewer-issues.md": ("本轮待复核的已有问题",
+                                                   "用户明确要求泛化查询后再纳入"),
+    "security-review/SKILL.md": ("用户明确要求时才查询同类入口",),
+}
+for client in (".claude", ".agents"):
+    for relative, markers in expectations.items():
+        document = (project / client / "skills" / relative).read_text(encoding="utf-8")
+        assert all(marker in document for marker in markers), (client, relative)
+template = (project / "docs/01-需求/_模板/测试方案.md").read_text(encoding="utf-8")
+assert "每条用例必须挂到验收项" in template
+assert "只为本次已确认验收、直接受影响的行为或适用治理添加用例" in template
+PY
+
 memory_rules="$P/docs/memory/RULES.md"
 grep -Eq '优先使用 .memory_recall. MCP' "$memory_rules" \
     && grep -q '现有取证未覆盖时，定向读取' "$memory_rules" \

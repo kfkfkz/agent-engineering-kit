@@ -19,7 +19,7 @@ description: "代码评审、交付校验与回执。用户点名 delivery-gate 
 
 按 [取证规范](references/review-evidence.md) 先核验执行阶段的交接，再定向补需要的 Memory、图谱和源码证据。
 
-核对行为和失败路径、宪章、调用面与兼容性、测试、维护性、文档和记忆、实际 diff 与冻结设计。按 CRITICAL/HIGH/MEDIUM/LOW 报告位置、触发条件、影响、证据和最小修复方向。合并同根因，保留关联位置。未覆盖范围和不确定性写进结论。纯偏好不阻塞。
+围绕本轮 diff、原问题、已确认验收和直接影响，核对适用的行为、失败路径、兼容性、回归、维护性、设计、文档、记忆与治理要求。按 CRITICAL/HIGH/MEDIUM/LOW 报告位置、触发条件、影响、证据和最小修复方向。合并同根因并保留关联位置，披露未覆盖范围和不确定性。纯偏好不阻塞。同类疑点留作线索，用户明确要求泛化查询后再验证。
 
 命中安全规则时调用 `security-review`，按 [安全工作流](../security-review/references/workflow.md) 将当前要求、来源和证明送入原 Composer。未知、过期、缺失或 ERROR 证据保持 PENDING，硬违反为 FAIL。风险接受不能替代技术证明。关闭须可信 READY 及同一 VERIFIED 快照的 closure_proof。
 

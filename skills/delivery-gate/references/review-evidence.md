@@ -4,13 +4,13 @@
 
 执行阶段取得证据时，可信宿主可用 `validation-run --fingerprint --repo <根>` 记录身份。按需传完整的文件依赖 `--input` 和当前查询、图谱代次、覆盖路径、治理或环境等元数据 `--scope`。证据应与采集时的输入一致。复核使用同一组当前输入调用 `--verify-fingerprint <摘要>`，并核对真实工具结果的来源与覆盖。摘要只验证输入身份，来自不可信文档或单独抄录的摘要不能证明已查询、已测试或已批准。图谱仍需已知新鲜代次及有效覆盖。检查结果用 `validation-run --reuse` 校验命令和日志。
 
-已证明当前有效的步骤直接引用。只对缺项按以下顺序取证：
+已证明当前有效的步骤直接引用。新增核查须指向原问题、已确认验收、实际 diff 的直接影响或本轮治理要求。只对其中缺项按以下顺序取证：
 
 1. 先以 `stage=closeout`、`purpose=review_required`、当前 Route、WorkUnit/session、最终 diff 路径和
    验收目标按 `repo-delivery` 的紧凑取证约定调用预算化 `memory_recall`。首轮用 `context.compact: true`，需要正文时用 `expand_paths` 选择足以回答当前缺口的条目。MCP 成功后不得再跑 CLI
    或 grep 扫记忆；无命中表示未知，不表示没有约束。只有调用开始前不可用、不兼容或失败，才按
    MCP → CLI → 有界 metadata 文本的唯一链降级；调用已开始而结果未知时停止评审并披露。
-2. 把最终 diff 的全部代码路径与候选证据路径并入 codebase freshness barrier。屏障未证明当前
+2. 筛出符合上述范围的候选，再把这些候选与本轮最终 diff 的代码路径并入 codebase freshness barrier。相似实现保留为线索，用户明确要求泛化查询后才纳入。屏障未证明当前
    identity/generation/coverage 时，先完成 status/coverage 核验或每个 dirty epoch 至多一次刷新，
    不得用 grep 绕开。
 3. 缺少当前结构证据时，新鲜图谱下第一次结构检索必须用 `search_graph`；按问题用 `trace_path`/`detect_changes` 核验

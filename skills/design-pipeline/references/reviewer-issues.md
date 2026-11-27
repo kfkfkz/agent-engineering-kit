@@ -21,9 +21,10 @@
 required_change/affected_ids，severity 只允许 blocker/major/minor。`affected_ids`
 填受影响的 A/F/D/T/TC ID；无法定位时写 `UNSCOPED`，不得猜 ID。
 
-incremental 发现未知位置/范围缺口时先保留 OPEN occurrence，再按机器结论扩大或 full，
-未覆盖的问题不能 VERIFIED/CLOSED。当前 full 已完整覆盖材料仍有未知位置时，停止相同
-全文重送，等待定位证据；full 之外的范围在已有权限/计划内显式扩大，否则交维护者裁决。
+只有本轮待复核的已有问题，或直接影响本次已确认验收、保持项及适用治理的新问题，才进入 Issue 生命周期和证据核查。
+对这些问题，incremental 发现未知位置或材料缺口时先保留 OPEN occurrence，再按机器结论扩大送审材料或 full。
+未覆盖的问题不能 VERIFIED/CLOSED。当前 full 已完整覆盖材料仍有未知位置时，停止相同全文重送，等待定位证据。
+范围外相似疑点留作线索，用户明确要求泛化查询后再纳入取证和验证。
 需要澄清旧问题位置时，仅实际 Reviewer 在本轮 full receipt 的 `issue_locations` 返回
 `{fingerprint, document, heading, section_digest}`；必须绑定原 fingerprint、当前实际章节字节，
 并覆盖该问题全部已知 owner/位置。Author 提示只是待验证背景，不改旧 occurrence；Gate
