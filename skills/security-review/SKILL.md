@@ -14,7 +14,7 @@ description: "按变更风险审查应用代码、第三方依赖和 Agent 配�
 
 遵循 `delivery-gate` 的取证顺序。优先核验并引用同任务已持有的有效证据，仅为缺项补查。需要召回时以当前真实 stage、
 `purpose=review_required`（审查）或 `target_evidence`（取依据）和当前 diff/风险主题
-调用预算化 `memory_recall`，读取相关安全决定、坑点和旧回执。MCP 成功后不重复 CLI/grep。全部变更代码路径须有 codebase freshness barrier 证据，新鲜度未证明时先核验或按 dirty epoch 至多刷新
+调用预算化 `memory_recall`，首轮用 `context.compact: true`，按具体缺口用 `expand_paths` 读取相关安全决定或旧回执。MCP 成功后不重复 CLI/grep。全部变更代码路径须有 codebase freshness barrier 证据，新鲜度未证明时先核验或按 dirty epoch 至多刷新
 一次。第一次结构检索必须用 `codebase-memory` 图工具，候选确定后统一检查 coverage，再回到精确源码
 核实；rg/grep 仅补字面量、配置、非代码文件或 coverage 明示缺口。降级必须披露 reason、范围和
 confidence，不能声称完整结构影响。

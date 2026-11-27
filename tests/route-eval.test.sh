@@ -536,6 +536,53 @@ python3 "$KIT/route-eval" --init > "$T/init.json"
 python3 -c "import json; d=json.load(open('$T/init.json')); assert d['version']==1 and d['route']=='bounded' and d['footprint']['planned_paths']==[] and d['route_override'] is None" \
     && ok "--init 输出合法 Route Card" || bad "--init 模板非法"
 
+run_rc python3 "$KIT/route-eval" "$REPO" --make-card "$T/bad-policy-card.json" \
+    --kind bug --behavior local --path src/x.py
+if [ "$rc" = 3 ] && [ ! -e "$T/bad-policy-card.json" ]; then
+    ok "治理非法时不生成卡片"
+else
+    bad "生成卡片绕过了治理校验"
+fi
+printf '{"version":1,"rules":[]}\n' > "$REPO/.repo-memory-kit/governance.json"
+python3 - "$KIT" "$REPO" "$T" <<'PY' \
+    && ok "生成卡片自动裁决且复用原路由和风险要求" \
+    || bad "生成卡片的路线或治理裁决异常"
+from pathlib import Path
+import json
+import subprocess
+import sys
+
+kit, repo, tmp = map(Path, sys.argv[1:])
+cmd = [sys.executable, str(kit / "route-eval"), str(repo), "--json"]
+
+def generate(file, *flags):
+    result = json.loads(subprocess.check_output(cmd + ["--make-card", str(file), *flags]))
+    card = json.loads(file.read_text(encoding="utf-8"))
+    assert card["version"] == 1 and card["route"] == result["selected_route"]
+    assert result["ok"] and result["route_fit"] == "exact"
+    assert result == json.loads(subprocess.check_output(cmd + ["--card", str(file)]))
+    return result
+
+target = tmp / "generated.json"
+result = generate(target, "--kind", "bug", "--behavior", "local", "--path", "src/a.py",
+                  "--path", "tests/a.py", "--risk", "security_privacy")
+assert result["selected_route"] == "bounded"
+assert "independent" in result["governance"]["risk_requirements"]["reviews"]
+assert generate(tmp / "public.json", "--kind", "feature", "--behavior", "public",
+                "--path", "src/api.py")["selected_route"] == "standard"
+before = target.read_bytes()
+second = subprocess.run(cmd + ["--make-card", str(target), "--kind", "docs",
+                               "--behavior", "none", "--path", "README.md"], capture_output=True)
+assert second.returncode == 3 and target.read_bytes() == before
+PY
+run_rc python3 "$KIT/route-eval" "$REPO" --make-card "$T/escape.json" \
+    --kind bug --behavior local --path ../outside.py
+if [ "$rc" = 3 ] && [ ! -e "$T/escape.json" ]; then
+    ok "生成卡片复用仓库相对路径约束"
+else
+    bad "生成卡片接纳了逃逸路径"
+fi
+
 echo
 echo "route-eval 测试: $pass 通过, $fail 失败"
 [ "$fail" = 0 ]

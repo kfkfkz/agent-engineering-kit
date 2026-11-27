@@ -373,6 +373,12 @@ RD="$P/.agents/skills/repo-delivery/SKILL.md"
 grep -q '^## 零阶段路线' "$RD" \
     && ok "repo-delivery 在深读上下文前先做零阶段分流" \
     || bad "repo-delivery 缺少零阶段快速分流"
+grep -q '立即运行 `route-eval' "$RD" \
+    && grep -q '已有根因依据、最小影响面和回归办法时' "$RD" \
+    && grep -q '首轮只看候选' "$RD" \
+    && grep -q 'expand_paths' "$RD" \
+    && ok "repo-delivery 先裁决路线，按待决问题有界取证" \
+    || bad "repo-delivery 缺少取证收敛或候选优先入口"
 grep -q '只有正向证据才升径' "$RD" \
     && ok "repo-delivery 要求用正向证据升级路线" \
     || bad "repo-delivery 缺少防保守过度路由规则"

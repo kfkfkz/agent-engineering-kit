@@ -143,7 +143,9 @@ def approval_boundary(card: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def evaluate_route(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]:
+def evaluate_route(
+    card: dict[str, Any], governance: dict[str, Any], *, auto_select: bool = False,
+) -> dict[str, Any]:
     """Return the complete, presenter-independent route decision."""
     minimum, reasons = _minimum(card)
     policy = _policy(governance)
@@ -167,7 +169,7 @@ def evaluate_route(card: dict[str, Any], governance: dict[str, Any]) -> dict[str
         for item in risk_requirements["reviews"])
                     else policy["review_depth"])
     receipt_mode = policy["receipt_mode"]
-    selected = card["route"]
+    selected = minimum if auto_select else card["route"]
     route_valid = ROUTES.index(selected) >= ROUTES.index(minimum)
     override = card.get("route_override")
     if not route_valid:

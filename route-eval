@@ -109,6 +109,10 @@ def load_card(path: Path) -> dict[str, Any]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RouteError(f"Route Card 无法读取: {exc}") from exc
+    return validate_card(data)
+
+
+def validate_card(data: object) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise RouteError("Route Card 顶层必须是对象")
     if data.get("version") != 1:
@@ -262,10 +266,12 @@ def git_final_diff(repo: Path, ref: str) -> str:
     return tracked.stdout + additions
 
 
-def evaluate(card: dict[str, Any], governance: dict[str, Any]) -> dict[str, Any]:
+def evaluate(
+    card: dict[str, Any], governance: dict[str, Any], *, auto_select: bool = False,
+) -> dict[str, Any]:
     """Compatibility wrapper; production decisions live in Application."""
     try:
-        return evaluate_route(card, governance)
+        return evaluate_route(card, governance, auto_select=auto_select)
     except RoutingError as exc:
         raise RouteError(str(exc)) from exc
 
@@ -378,6 +384,24 @@ def _summary(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _make_card(repo: Path, args: argparse.Namespace) -> dict[str, Any]:
+    card = _template()
+    card.update(work_kind=args.kind, behavior_change=args.behavior,
+                risk_overlays=list(dict.fromkeys(args.risk or [])))
+    card["footprint"]["planned_paths"] = list(dict.fromkeys(args.path))
+    if args.modules is not None:
+        card["footprint"]["modules"] = args.modules
+    result = evaluate(validate_card(card), _governance(repo, None), auto_select=True)
+    card["route"] = result["selected_route"]
+    if result["ok"]:
+        # A generated routing decision is only a plan. The existing scope
+        # modes capture authorization and actual worktree changes separately.
+        with Path(args.make_card).open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(card, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="route-eval",
                                      description="任务复杂度路由与最终范围漂移校验")
@@ -388,6 +412,13 @@ def main() -> int:
     final_group.add_argument("--git-ref", help="从 Git ref 到当前工作区生成最终 diff（含 untracked）")
     final_group.add_argument("--start-scope", metavar="FILE", help="首次写入前保存当前任务范围与 Git 基线")
     final_group.add_argument("--scope", metavar="FILE", help="核对已确认范围与实际工作区")
+    final_group.add_argument("--make-card", metavar="NEW_FILE", help="单仓库单会话任务生成卡片并裁决路线")
+    card_input = parser.add_argument_group("生成卡片")
+    card_input.add_argument("--kind", choices=WORK_KINDS, help="本轮工作类型")
+    card_input.add_argument("--behavior", choices=BEHAVIOR_CHANGES, help="本轮可观察行为变化")
+    card_input.add_argument("--path", action="append", metavar="PATH", help="仓库相对路径或 glob，可重复")
+    card_input.add_argument("--risk", action="append", choices=sorted(RISK_OVERLAYS), help="风险要求，可重复")
+    card_input.add_argument("--modules", type=int, help="独立模块数，默认 1")
     parser.add_argument("--propose", action="append", metavar="PATH", help="写入前核对拟改路径，可重复")
     parser.add_argument("--material-change", action="store_true", help="报告现有路径内的新行为或边界变化")
     parser.add_argument("--amend-scope", metavar="NEW_FILE", help="确认扩围后保存继承原基线的新范围")
@@ -395,6 +426,11 @@ def main() -> int:
     parser.add_argument("--json", action="store_true", help="输出机器可读 JSON")
     parser.add_argument("--init", action="store_true", help="输出 Route Card 起始模板")
     args = parser.parse_args()
+    if args.make_card:
+        if args.card or args.init or not (args.kind and args.behavior and args.path):
+            parser.error("--make-card 需要 --kind、--behavior 和 --path，并独占卡片入口")
+    elif any(value is not None for value in (args.kind, args.behavior, args.path, args.risk, args.modules)):
+        parser.error("生成卡片参数需要 --make-card")
     if ((args.propose or args.material_change or args.amend_scope) and not args.scope
             or bool(args.confirmation and args.confirmation.strip()) != bool(args.start_scope or args.amend_scope)
             or (args.material_change and args.amend_scope)):
@@ -403,8 +439,8 @@ def main() -> int:
     if args.init:
         print(json.dumps(_template(), ensure_ascii=False, indent=2))
         return 0
-    if not args.card:
-        print("✗ 路由评估阻断（fail-closed）: 除 --init 外必须提供 --card", file=sys.stderr)
+    if not (args.card or args.make_card):
+        print("✗ 路由评估阻断（fail-closed）: 提供 --card 或 --make-card", file=sys.stderr)
         return 3
 
     repo = Path(args.repo).resolve()
@@ -412,13 +448,16 @@ def main() -> int:
     try:
         if not repo.is_dir():
             raise RouteError(f"目标仓库不存在或不是目录: {repo}")
-        card = load_card(Path(args.card))
-        if args.start_scope or args.scope:
-            result = evaluate_scope(repo, card, args)
+        if args.make_card:
+            result = _make_card(repo, args)
         else:
-            generated_diff = git_final_diff(repo, args.git_ref) if args.git_ref else None
-            governance = _governance(repo, diff_path, generated_diff)
-            result = evaluate(card, governance)
+            card = load_card(Path(args.card))
+            if args.start_scope or args.scope:
+                result = evaluate_scope(repo, card, args)
+            else:
+                generated_diff = git_final_diff(repo, args.git_ref) if args.git_ref else None
+                governance = _governance(repo, diff_path, generated_diff)
+                result = evaluate(card, governance)
     except (RouteError, OSError, ValueError) as exc:
         print(f"✗ 路由评估阻断（fail-closed）: {exc}", file=sys.stderr)
         return 3

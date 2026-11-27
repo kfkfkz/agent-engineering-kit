@@ -66,7 +66,7 @@ from aek.adapters.memory import (
 )
 from aek.adapters.memory_scope import resolve_memory_scope
 from aek.adapters.telemetry import ContextLedger
-from aek.application.memory_recall import recall_context, validate_known_digests
+from aek.application.memory_recall import recall_context, validate_expand_paths, validate_known_digests
 from aek.core.context.budget import CONTEXT_PURPOSES, resolve_context_budget
 from aek.core.context.memory import is_memory_markdown
 from aek.core.context.lookup import (
@@ -644,13 +644,20 @@ def main():
                     help="结构化检索中当前会话已持有的正文 SHA-256，可重复")
     ap.add_argument("--compact-json", action="store_true",
                     help="结构化检索输出紧凑 JSON")
+    expansion = ap.add_mutually_exclusive_group()
+    expansion.add_argument("--candidates-only", action="store_true",
+                           help="只返回候选摘要和引用")
+    expansion.add_argument("--expand-path", action="append",
+                           help="只展开当前候选中的仓库相对路径，可重复")
     ap.add_argument("--lookup-channel", choices=("cli", "mcp"), default="cli",
                     help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
-    if (args.known_digest or args.compact_json) and not args.context_json:
-        ap.error("--known-digest 和 --compact-json 需要 --context-json")
+    if (args.known_digest or args.compact_json or args.candidates_only or args.expand_path) and not args.context_json:
+        ap.error("--known-digest、--compact-json、--candidates-only 和 --expand-path 需要 --context-json")
     try:
         known_digests = validate_known_digests(args.known_digest)
+        expand_paths = (validate_expand_paths(args.expand_path or [])
+                        if args.candidates_only or args.expand_path else None)
     except ValueError as exc:
         ap.error(str(exc))
 
@@ -728,7 +735,8 @@ def main():
                     mcp_compatible=args.lookup_channel == "mcp",
                     cli_available=True, bounded_text_available=True,
                     evidence=(f"adapter:{args.lookup_channel}",))),
-                purpose=args.purpose, known_digests=known_digests)
+                purpose=args.purpose, known_digests=known_digests,
+                expand_paths=expand_paths)
             if resolve_memory_scope(repo) != scope:
                 raise StaleCandidate("Memory 工作树或分支在检索期间发生变化")
         except (OSError, ValueError) as exc:

@@ -114,6 +114,12 @@ assert data['kit_version'] != 'not installed'
 SDD="$P/docs/需求/合同迁移"
 mkdir -p "$SDD"
 printf '# contractfixture\n\nApproved SDD evidence.\n' > "$SDD/需求分析.md"
+python3 - "$SDD/需求分析.md" <<'PY'
+from pathlib import Path
+import sys
+with Path(sys.argv[1]).open("a", encoding="utf-8") as document:
+    document.write("b" * 32768 + "\n")
+PY
 python3 "$P/.repo-memory-kit/bin/memory-recall" --rebuild "$P" >/dev/null 2>&1
 RESP=$(mcp_rpc '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"memory_recall","arguments":{"query":"RULES"}}}')
 printf '%s\n' "$RESP" | python3 -c "
@@ -154,9 +160,22 @@ result = json.load(sys.stdin)["result"]
 data = json.loads(result["content"][0]["text"])
 assert not result["isError"] and data["returncode"] == 0, data
 assert data["candidates"]["source"] == "zvec", data
+assert [row["path"] for row in data["candidates"]["candidates"]] == ["docs/需求/合同迁移/需求分析.md"], data
+assert data["reason"] == "CANDIDATES_ONLY" and data["expanded"] == [], data
+assert data["tool_calls"]["memory_open"] == 0 and data["capsule"] is None, data
+assert len(result["content"][0]["text"].encode("utf-8")) < 4096, data
+' && ok "已安装 Memory MCP 紧凑召回只交付中文目录 SDD 摘要" || bad "MCP 紧凑召回异常: $OUT"
+EXPAND=$(printf '%s' "$REQ" | sed 's/"compact":true/"compact":true,"expand_paths":["docs\/需求\/合同迁移\/需求分析.md"]/')
+OUT=$(mcp_rpc "$EXPAND")
+printf '%s\n' "$OUT" | python3 -c '
+import json, sys
+result = json.load(sys.stdin)["result"]
+data = json.loads(result["content"][0]["text"])
+assert not result["isError"] and data["returncode"] == 0, data
 assert len(data["expanded"]) == 1, data
 assert data["expanded"][0]["path"] == "docs/需求/合同迁移/需求分析.md", data
-' && ok "已安装 Memory MCP 召回新版中文目录 SDD" || bad "MCP SDD 召回异常: $OUT"
+assert len(data["expanded"][0]["content"].encode("utf-8")) >= 32768, data
+' && ok "已安装 Memory MCP 按引用展开所选中文目录 SDD" || bad "MCP 选择展开异常: $OUT"
 LEDGER="$P/.repo-memory-kit/context/sdd-mcp-test-bbbbbbbbbbbb.jsonl"
 cp "$LEDGER" "$T/sdd-mcp-before.jsonl"
 LOWER=$(printf '%s' "$REQ" | sed 's/"route":"standard"/"route":"bounded"/')

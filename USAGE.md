@@ -54,6 +54,8 @@ Memory 单独绑定实际工作树和分支。多工作树时，Agent 从 `memor
 
 AEK 注册的 MCP 工具为 `memory_recall`、`memory_build`、`domain_check`、`kit_status`，均绑定安装目标仓库。codebase-memory 的工具由其独立运行时提供。
 
+`memory_recall` 的 `context.compact: true` 默认交付候选摘要、路径和摘要指纹。需要正文时保持查询与任务身份，在 `context.expand_paths` 中指定候选路径。CLI 对应 `--context-json --candidates-only` 或 `--context-json --expand-path <候选路径>`。候选摘要可用于选择来源，审查结论以核验过的来源为证。
+
 语义检索的可选依赖是 `zvec`。将它安装到 MCP 使用的 Python 环境后，在项目目录重建索引：
 
 ```bash
@@ -286,6 +288,8 @@ doctor 还会比较团队治理规则与当前默认规则，列出缺失和不�
 `--adopt-legacy` 拒绝覆盖已有 manifest；恢复策略需依据事务报告选择。卸载不会移除机器级 codebase-memory MCP。
 
 ## 开发与验证
+
+单仓库单会话变更可用 `route-eval <根> --make-card <新卡> --kind bug --behavior local --path <仓库相对路径>` 生成卡片并裁决。用重复的 `--path`、`--risk` 和可选的 `--modules` 表达已知范围。复杂任务继续用 `--init` 模板和 `--card` 提交事实。
 
 使用 `repo-delivery` 时，Git 任务在首次编辑前记录已确认的变更范围。每批候选编辑先核对范围。实质扩围单独确认，交付再用同一基线核对暂存区、工作区和未忽略的未跟踪文件。未入库的 aek 运行日志和缓存从范围快照排除。该检查通过 Skill 和交付门禁执行，直接使用编辑器或 shell 仍可绕过写入前检查。非 Git 项目沿用任务记录和 VCS 差异核验。
 

@@ -58,14 +58,15 @@ class MemoryRecallServiceTests(unittest.TestCase):
                 f"# database item {index}\n\nbody {index}\n", encoding="utf-8")
 
     def recall(self, route: str, *, known_digests=(), stage="routing",
-               stream=None, candidate_read=read_candidate):
+               stream=None, candidate_read=read_candidate, expand_paths=None,
+               risk_required=False):
         budget = resolve_context_budget(route, stage, "quick")
         stream = stream or route
         ledger = ContextLedger(self.repo / f"{stream}.jsonl")
         return recall_context(
             self.repo, "database", budget, ledger,
             session_id=f"session-{stream}", subject_digest="a" * 64,
-            risk_required=False,
+            risk_required=risk_required,
             candidate_search=lambda repo, query: fallback_candidates(
                 repo, query, limit=budget.memory_candidate_limit),
             candidate_read=candidate_read,
@@ -73,7 +74,40 @@ class MemoryRecallServiceTests(unittest.TestCase):
                 self.repo / ".repo-memory-kit/context/capsules"),
             lookup_plan=plan_knowledge_lookup(CapabilitySnapshot(
                 True, True, True, True, True, ("test:tools/list",))),
-            known_digests=known_digests)
+            known_digests=known_digests, expand_paths=expand_paths)
+
+    def test_summary_returns_references_without_opening_bodies_or_capsule(self):
+        def unexpected_read(*args):
+            self.fail("candidate-only recall opened a body")
+
+        report = self.recall("standard", candidate_read=unexpected_read,
+                             expand_paths=(), risk_required=True)
+        self.assertTrue(report.candidates.candidates)
+        self.assertEqual(report.reason, "CANDIDATES_ONLY")
+        self.assertEqual(report.expanded, ())
+        self.assertIsNone(report.capsule)
+        self.assertEqual(report.tool_calls["memory_open"], 0)
+        self.assertEqual(report.report.observed_channels, ("memory_candidate",))
+        self.assertTrue(report.needs_more_candidates)
+
+    def test_expansion_opens_only_the_selected_current_candidate(self):
+        opened = []
+
+        def record_read(repo, ref, generation):
+            opened.append(ref.path)
+            return read_candidate(repo, ref, generation)
+
+        summary = self.recall("bounded", expand_paths=())
+        chosen = summary.candidates.candidates[2]
+        result = self.recall("bounded", expand_paths=(chosen.path,), candidate_read=record_read)
+        self.assertEqual(opened, [chosen.path])
+        self.assertEqual([ref.content_digest for ref in result.expanded], [chosen.content_digest])
+        missing = self.recall("bounded", expand_paths=("docs/unmatched.md",),
+                              candidate_read=record_read, risk_required=True)
+        self.assertEqual(opened, [chosen.path])
+        self.assertEqual(missing.reason, "REQUESTED_CANDIDATE_NOT_FOUND")
+        self.assertTrue(missing.needs_more_candidates)
+        self.assertEqual(missing.uncertainty, "truncated_unknown")
 
     def test_direct_delivers_no_memory_body(self) -> None:
         result = self.recall("direct")

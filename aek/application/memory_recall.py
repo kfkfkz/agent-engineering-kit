@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
@@ -24,7 +24,7 @@ from aek.core.context.lookup import (
     KnowledgeLookupPlan,
     plan_knowledge_lookup,
 )
-from aek.core.context.memory import CandidateSet, select_expansions
+from aek.core.context.memory import CandidateSet, is_memory_markdown, select_expansions
 from aek.core.context.telemetry import (
     ContextChannelLimit,
     ContextReport,
@@ -54,6 +54,13 @@ def validate_known_digests(value: object) -> tuple[str, ...]:
     return tuple(dict.fromkeys(validate_context_subject_digest(item) for item in value))
 
 
+def validate_expand_paths(value: object) -> tuple[str, ...]:
+    if (not isinstance(value, (list, tuple)) or len(value) > 16
+            or not all(is_memory_markdown(item) for item in value)):
+        raise ValueError("expand_paths must contain at most 16 repository-relative Memory Markdown paths")
+    return tuple(dict.fromkeys(value))
+
+
 @dataclass(frozen=True)
 class MemoryRecallResult:
     candidates: CandidateSet
@@ -81,6 +88,7 @@ def recall_context(
     lookup_plan: KnowledgeLookupPlan | None = None,
     purpose: str = "target_evidence",
     known_digests: tuple[str, ...] = (),
+    expand_paths: tuple[str, ...] | None = None,
 ) -> MemoryRecallResult:
     if not isinstance(query, str) or not query.strip():
         raise ValueError("memory query is required")
@@ -89,6 +97,7 @@ def recall_context(
     validate_context_session_id(session_id)
     validate_context_subject_digest(subject_digest)
     known = set(validate_known_digests(known_digests))
+    requested = None if expand_paths is None else frozenset(validate_expand_paths(expand_paths))
     history = ledger.read()
     validate_route_history(history, budget.route)
     previously_delivered = {
@@ -112,9 +121,18 @@ def recall_context(
         raise ValueError("candidate adapter returned an invalid batch")
     if len(batch.candidates) > budget.memory_candidate_limit:
         raise ValueError("candidate adapter exceeded the route budget")
+    selection_batch = batch
+    missing = False
+    if requested is not None:
+        matches = tuple(ref for ref in batch.candidates if ref.path in requested)
+        missing = len(matches) < len(requested)
+        selection_batch = replace(
+            batch, candidates=matches,
+            has_more=batch.has_more or missing or (risk_required and len(matches) < len(batch.candidates)))
     selection = select_expansions(
-        batch, limit=budget.memory_expand_limit, risk_required=risk_required)
-    use_capsule = budget.route in {"standard", "initiative"}
+        selection_batch, limit=budget.memory_expand_limit, risk_required=risk_required)
+    use_capsule = (budget.route in {"standard", "initiative"}
+                   and (requested is None or bool(selection.selected)))
     if use_capsule and capsule_store is None:
         raise ValueError("standard and initiative recall require a capsule store")
     # Validate the candidate generation and sources before reporting delivery.
@@ -182,7 +200,7 @@ def recall_context(
         ledger, budget, coverage="partial",
         expected_channels=expected,
         observed_channels=None, bypass_detected=False)
-    if deferred or selection.needs_more_candidates or batch.has_more:
+    if deferred or missing or selection.needs_more_candidates or batch.has_more:
         uncertainty = "truncated_unknown"
     elif not batch.candidates:
         uncertainty = "no_match_unknown"
@@ -190,9 +208,14 @@ def recall_context(
         uncertainty = "index_fallback"
     else:
         uncertainty = lookup_plan.uncertainty
+    reason = selection.reason
+    if requested is not None and not requested and batch.candidates:
+        reason = "CANDIDATES_ONLY"
+    elif missing:
+        reason = "REQUESTED_CANDIDATE_NOT_FOUND"
     return MemoryRecallResult(
         batch, tuple(expanded), selection.needs_more_candidates or (deferred and risk_required),
-        "MEMORY_BYTE_LIMIT" if deferred else selection.reason,
+        "MEMORY_BYTE_LIMIT" if deferred else reason,
         capsule, capsule_reused, report,
         lookup_plan.selected_path, lookup_plan.reason_code,
         lookup_plan.capability_snapshot.as_dict(), uncertainty,
